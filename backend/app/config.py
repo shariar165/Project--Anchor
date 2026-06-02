@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     sms_api_key: str = ""
     sms_sender_id: str = "AnchorAI"
 
+    # Ollama
+    ollama_base_url: str = "http://localhost:11434"
+
     # HIBP
     hibp_check_enabled: bool = True
 

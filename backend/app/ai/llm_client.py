@@ -1,17 +1,21 @@
 """
 Async LLM client for Anchor AI.
-Primary: Ollama local inference (Qwen3 models).
-Fallback: Deterministic stub when Ollama is offline (CI / dev without GPU).
+Primary: Ollama inference (URL from OLLAMA_BASE_URL env var, defaults to localhost:11434).
+Fallback: Deterministic stub when Ollama is unreachable (CI / dev without GPU).
 """
 import json
 import logging
 import httpx
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 SMALL_MODEL = "qwen3:1.7b"
 MAIN_MODEL = "qwen3:8b"
-OLLAMA_BASE = "http://localhost:11434"
+
+
+def _ollama_base() -> str:
+    return get_settings().ollama_base_url
 
 _available: bool | None = None
 
@@ -22,7 +26,7 @@ async def _check_availability() -> bool:
         return _available
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get(f"{OLLAMA_BASE}/api/tags")
+            r = await client.get(f"{_ollama_base()}/api/tags")
             _available = r.status_code == 200
     except Exception:
         _available = False
@@ -36,7 +40,7 @@ async def generate(prompt: str, model: str = MAIN_MODEL, temperature: float = 0.
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
             resp = await client.post(
-                f"{OLLAMA_BASE}/api/generate",
+                f"{_ollama_base()}/api/generate",
                 json={
                     "model": model,
                     "prompt": prompt,
