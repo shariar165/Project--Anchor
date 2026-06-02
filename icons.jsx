@@ -224,6 +224,28 @@ const IconThumbDown = (p) => <Ic {...p}>
   <path d="M17 2v11M22 11V4a2 2 0 0 0-2-2H6.7a2 2 0 0 0-2 1.7l-1.4 7A2 2 0 0 0 5.3 13H11l-1 5a2.5 2.5 0 0 0 5 1l2-6"/>
 </Ic>;
 
+const IconDoc = (p) => <Ic {...p}>
+  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+  <path d="M14 2v6h6"/>
+  <path d="M9 13h6M9 17h4"/>
+  <circle cx="9" cy="9" r="0.8" fill="currentColor"/>
+</Ic>;
+
+const IconSend = (p) => <Ic {...p}>
+  <path d="M22 2 11 13"/>
+  <path d="M22 2 15 22 11 13 2 9z"/>
+</Ic>;
+
+const IconPaperclip = (p) => <Ic {...p}>
+  <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 0 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+</Ic>;
+
+const IconDownload = (p) => <Ic {...p}>
+  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+  <path d="m7 10 5 5 5-5"/>
+  <path d="M12 15V3"/>
+</Ic>;
+
 Object.assign(window, {
   IconAnchor, IconMessage, IconHome, IconFile, IconShield, IconUser, IconBell,
   IconMic, IconImage, IconSearch, IconArrowLeft, IconArrowRight, IconArrowUp,
@@ -231,5 +253,5 @@ Object.assign(window, {
   IconStar, IconClock, IconLock, IconEyeOff, IconPlus, IconAlert, IconChevronRight,
   IconScale, IconNews, IconBadge, IconGlobe, IconUpload, IconSparkles, IconChat,
   IconSettings, IconPhone, IconHeart, IconRoute, IconLink, IconCamera, IconMore,
-  IconThumbUp, IconThumbDown,
+  IconThumbUp, IconThumbDown, IconDoc, IconSend, IconPaperclip, IconDownload,
 });

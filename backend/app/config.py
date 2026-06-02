@@ -52,6 +52,52 @@ class Settings(BaseSettings):
     # HIBP
     hibp_check_enabled: bool = True
 
+    # FCM (Firebase Cloud Messaging)
+    fcm_project_id: str = ""
+    fcm_service_account_json_path: str = ""
+    fcm_default_ttl_seconds: int = 300
+
+    # Alert system — locked values per spec
+    alert_hold_duration_seconds: int = 4
+    alert_video_length_seconds: int = 10
+    alert_daily_limit_per_user: int = 1
+    alert_autoclose_hours: int = 24
+    alert_zone_radius_m: int = 1000
+    alert_zone_fallback_radius_m: int = 2000
+    alert_nearby_batch_size: int = 50
+    alert_nearby_pause_threshold: int = 3
+    alert_location_staleness_minutes: int = 10
+    alert_false_ban_days: int = 30
+    # Hex-encoded 32-byte keys — must be set in production
+    alert_actor_hmac_key: str = Field(default="0" * 64)
+    alert_encryption_key: str = Field(default="0" * 64)
+
+    # ── Verification Feed ──────────────────────────────────────────
+    feed_title_max_chars: int = 100
+    feed_body_max_chars: int = 1000
+    feed_tags_max_count: int = 5
+    feed_max_attachments: int = 5
+    feed_max_attachment_mb: int = 10
+    ai_prescreen_timeout_seconds: int = 10
+    trusted_source_bronze_weight: float = 1.2
+    trusted_source_silver_weight: float = 1.5
+    trusted_source_gold_weight: float = 2.0
+    community_corroborate_indicator_min: int = 5
+    challenge_review_ratio: float = 0.5
+    flag_to_queue_threshold: int = 3
+    confirmation_eligibility_min: int = 10
+    trust_milestone_bronze: int = 5
+    trust_milestone_silver: int = 10
+    trust_milestone_gold: int = 15
+    fake_news_strike_first_ban_days: int = 30
+    fake_news_strike_second_ban_days: int = 60
+    archive_incident_hours: int = 48
+    archive_road_hours: int = 24
+    archive_safety_hours: int = 72
+    archive_civic_event_hours: int = 168
+    archive_missing_person_hours: int = 720
+    publish_rate_limit_per_user_per_hour: int = 3
+
     @model_validator(mode="after")
     def require_real_secrets_in_production(self) -> "Settings":
         if self.environment == "production":
@@ -59,6 +105,10 @@ class Settings(BaseSettings):
                 raise ValueError("PASSWORD_PEPPER must be set in production — default value is insecure")
             if self.secret_key == "0" * 64:
                 raise ValueError("SECRET_KEY must be set in production — default value is insecure")
+            if self.alert_actor_hmac_key == "0" * 64:
+                raise ValueError("ALERT_ACTOR_HMAC_KEY must be set in production")
+            if self.alert_encryption_key == "0" * 64:
+                raise ValueError("ALERT_ENCRYPTION_KEY must be set in production")
         return self
 
     @property
@@ -78,6 +128,14 @@ class Settings(BaseSettings):
     @property
     def pepper_bytes(self) -> bytes:
         return bytes.fromhex(self.password_pepper)
+
+    @property
+    def alert_actor_hmac_key_bytes(self) -> bytes:
+        return bytes.fromhex(self.alert_actor_hmac_key)
+
+    @property
+    def alert_encryption_key_bytes(self) -> bytes:
+        return bytes.fromhex(self.alert_encryption_key)
 
 
 @lru_cache

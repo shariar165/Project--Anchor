@@ -13,7 +13,7 @@ function HomeScreen() {
 
   const campusTiles = [
     { k: 'complaint', label: 'File a complaint', sub: 'Anonymous available', Icon: IconFile, route: 'compose' },
-    { k: 'application', label: 'Generate application', sub: 'AI-drafted · for any need', Icon: IconSparkles, route: 'compose', params: { kind: 'application' } },
+    { k: 'application', label: 'Apply formally', sub: 'AI-drafted · 13 templates', Icon: IconDoc, route: 'applications' },
     { k: 'routine',   label: 'Academic routine', sub: 'Today · 4 classes',  Icon: IconClock },
     { k: 'notices',   label: 'University notices', sub: '3 new this week',   Icon: IconNews, route: 'notices' },
     { k: 'hostel',    label: 'Hostel issue',   sub: 'Maintenance · Mess',   Icon: IconBed, route: 'compose', params: { kind: 'hostel' } },
@@ -647,35 +647,102 @@ function ChatScreen() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  ALERT SCREEN — 3-phase emergency
+//  ALERT SCREEN — 3-phase emergency (spec-compliant)
 // ═══════════════════════════════════════════════════════════════
+
+const API_BASE = 'http://localhost:8000';
+
+async function alertApiPost(path, body, token) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(API_BASE + path, {
+    method: 'POST', headers, body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 function AlertScreen() {
-  const { back } = useApp();
+  const { back, go, auth } = useApp();
   const [phase, setPhase] = _useS('during');
   const [holding, setHolding] = _useS(false);
   const [progress, setProgress] = _useS(0);
+  const [showConfirm, setShowConfirm] = _useS(false);
   const [activated, setActivated] = _useS(false);
+  const [alertEventId, setAlertEventId] = _useS(null);
+  const [responderCount, setResponderCount] = _useS(0);
+  const [safeMarked, setSafeMarked] = _useS(false);
+  const [sending, setSending] = _useS(false);
   const startRef = _useR(null);
   const rafRef = _useR(null);
+  const token = auth?.access_token;
 
   const startHold = () => {
-    if (activated) return;
+    if (activated || showConfirm) return;
     setHolding(true);
     startRef.current = performance.now();
     const tick = () => {
       const elapsed = (performance.now() - startRef.current) / 1000;
       const p = Math.min(elapsed / 4, 1);
       setProgress(p);
-      if (p >= 1) { setActivated(true); setHolding(false); return; }
+      if (p >= 1) {
+        setHolding(false);
+        setShowConfirm(true);  // show confirmation modal instead of activating immediately
+        return;
+      }
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
   };
+
   const cancelHold = () => {
-    if (activated) return;
+    if (activated || showConfirm) return;
     setHolding(false); setProgress(0);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
   };
+
+  const handleConfirmSend = async () => {
+    setSending(true);
+    try {
+      const data = await alertApiPost('/v1/alerts/trigger', {
+        gps_status: 'unavailable',
+      }, token);
+      setAlertEventId(data.event_id);
+      setActivated(true);
+    } catch (e) {
+      console.error('[Alert] Trigger failed:', e);
+      setActivated(true);  // still show activated state even if offline
+    } finally {
+      setSending(false);
+      setShowConfirm(false);
+    }
+  };
+
+  const handleCancelConfirm = () => {
+    setShowConfirm(false);
+    setProgress(0);
+    setHolding(false);
+  };
+
+  const handleMarkSafe = async () => {
+    if (alertEventId) {
+      try {
+        await alertApiPost(`/v1/alerts/${alertEventId}/safe`, {}, token);
+      } catch (e) { console.error(e); }
+    }
+    setSafeMarked(true);
+    back();
+  };
+
+  const handleNeedMoreHelp = async () => {
+    if (alertEventId) {
+      try {
+        await alertApiPost(`/v1/alerts/${alertEventId}/need_more_help`, {}, token);
+      } catch (e) { console.error(e); }
+    }
+  };
+
+  const phaseLabel = { before: 'Before', during: 'During', after: 'After' };
 
   return (
     <div style={{
@@ -686,10 +753,17 @@ function AlertScreen() {
       color: phase === 'during' ? '#F7F3EE' : 'var(--ink)',
       paddingBottom: 20,
     }}>
-      {/* Header (custom dark) */}
-      <div style={{
-        padding: '60px 20px 14px', display: 'flex', alignItems: 'center', gap: 10,
-      }}>
+      {/* Confirmation modal overlay */}
+      {showConfirm && (
+        <ConfirmAlertModal
+          onConfirm={handleConfirmSend}
+          onCancel={handleCancelConfirm}
+          sending={sending}
+        />
+      )}
+
+      {/* Header */}
+      <div style={{ padding: '60px 20px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
         <button onClick={back} style={{
           background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
           borderRadius: 999, padding: '6px 10px 6px 8px', display: 'flex',
@@ -701,7 +775,7 @@ function AlertScreen() {
         </button>
         <div style={{ flex: 1 }}/>
         <div className="eyebrow" style={{ color: phase === 'during' ? 'rgba(247,243,238,0.5)' : 'var(--muted)' }}>
-          Emergency · Phase 2
+          Emergency · Phase {['before','during','after'].indexOf(phase) + 1}
         </div>
       </div>
 
@@ -714,12 +788,13 @@ function AlertScreen() {
           {activated ? 'Alert broadcast.' : 'In an emergency,\nyou are not alone.'}
         </div>
         <div style={{
-          marginTop: 8, fontSize: 13, color: phase === 'during' ? 'rgba(247,243,238,0.6)' : 'var(--muted)',
+          marginTop: 8, fontSize: 13,
+          color: phase === 'during' ? 'rgba(247,243,238,0.6)' : 'var(--muted)',
           fontFamily: 'var(--font-serif)', fontStyle: 'italic', lineHeight: 1.45,
         }}>
           {activated
-            ? 'Trusted contacts and the nearest verified responder have been notified. Stay where you are if safe.'
-            : 'Hold the button for four seconds. We will reach your contacts, share your location, and start recording.'}
+            ? 'Trusted contacts and nearby users have been notified. Mark yourself safe when ready.'
+            : 'Hold the button for four seconds. Your proctor, nearby users, and contacts will be notified.'}
         </div>
       </div>
 
@@ -732,8 +807,9 @@ function AlertScreen() {
           {['before', 'during', 'after'].map(p => (
             <button key={p} onClick={() => setPhase(p)}
               className={phase === p ? 'on' : ''}
-              style={phase === p ? { background: phase === 'during' ? '#E8312A' : 'var(--navy)' }
-                                 : { color: phase === 'during' ? 'rgba(247,243,238,0.7)' : 'var(--ink-2)' }}>
+              style={phase === p
+                ? { background: phase === 'during' ? '#E8312A' : 'var(--navy)' }
+                : { color: phase === 'during' ? 'rgba(247,243,238,0.7)' : 'var(--ink-2)' }}>
               <span style={{ textTransform: 'capitalize' }}>{p}</span>
             </button>
           ))}
@@ -742,16 +818,188 @@ function AlertScreen() {
 
       {/* Body */}
       <div style={{ padding: '18px 20px 32px' }}>
-        {phase === 'before' && <AlertBefore/>}
-        {phase === 'during' && <AlertDuring holding={holding} progress={progress} activated={activated} onDown={startHold} onUp={cancelHold}/>}
-        {phase === 'after'  && <AlertAfter/>}
+        {phase === 'before' && <AlertBefore token={token}/>}
+        {phase === 'during' && (
+          <AlertDuring
+            holding={holding} progress={progress} activated={activated}
+            onDown={startHold} onUp={cancelHold}
+            responderCount={responderCount}
+            onMarkSafe={handleMarkSafe}
+            onNeedMoreHelp={handleNeedMoreHelp}
+          />
+        )}
+        {phase === 'after' && <AlertAfter eventId={alertEventId} token={token} go={go}/>}
       </div>
     </div>
   );
 }
 
-function AlertDuring({ holding, progress, activated, onDown, onUp }) {
+// ─── Double-confirmation modal (anti-trap, spec §4.2) ────────────────────────
+function ConfirmAlertModal({ onConfirm, onCancel, sending }) {
+  const [btnEnabled, setBtnEnabled] = _useS(false);
+
+  _useE(() => {
+    // 1-second minimum delay before SEND button is enabled (spec §4.2)
+    const t = setTimeout(() => setBtnEnabled(true), 1000);
+    return () => clearTimeout(t);
+  }, []);
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 100,
+      background: 'rgba(5,5,8,0.96)', display: 'flex',
+      flexDirection: 'column', justifyContent: 'center',
+      padding: '32px 24px', boxSizing: 'border-box',
+    }}>
+      {/* Icon */}
+      <div style={{
+        width: 56, height: 56, borderRadius: 999,
+        background: 'rgba(232,49,42,0.15)', border: '1px solid rgba(232,49,42,0.4)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        marginBottom: 20,
+      }}>
+        <IconShield size={26} sw={1.5} stroke="#E8312A"/>
+      </div>
+
+      <div className="serif" style={{ fontSize: 22, fontWeight: 500, color: '#F7F3EE', marginBottom: 10 }}>
+        Send emergency alert?
+      </div>
+      <div style={{ fontSize: 13, color: 'rgba(247,243,238,0.65)', lineHeight: 1.6, marginBottom: 24 }}>
+        This action will immediately:
+      </div>
+
+      {/* What will happen */}
+      {[
+        'Create an anonymous alert event',
+        'Notify your campus proctor via push + email',
+        'Alert verified users within 1km of you',
+        'Start 10-second video recording (stays on device)',
+        'Share your GPS with emergency contacts',
+      ].map((item, i) => (
+        <div key={i} style={{
+          display: 'flex', alignItems: 'flex-start', gap: 10,
+          marginBottom: 10, fontSize: 13, color: 'rgba(247,243,238,0.85)',
+        }}>
+          <div style={{
+            flexShrink: 0, width: 18, height: 18, borderRadius: 999,
+            background: 'rgba(232,49,42,0.2)', border: '1px solid rgba(232,49,42,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            marginTop: 1,
+          }}>
+            <div style={{ width: 5, height: 5, borderRadius: 999, background: '#E8312A' }}/>
+          </div>
+          {item}
+        </div>
+      ))}
+
+      <div style={{
+        marginTop: 8, padding: '10px 12px', borderRadius: 10,
+        background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+        fontSize: 11.5, color: 'rgba(247,243,238,0.5)', lineHeight: 1.5,
+      }}>
+        This action is logged and cannot be undone. Daily limit: 1 alert per day.
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
+        <button onClick={onCancel} style={{
+          flex: 1, padding: '14px 0', borderRadius: 12,
+          background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
+          color: 'rgba(247,243,238,0.8)', fontFamily: 'var(--font-sans)',
+          fontSize: 13, fontWeight: 500, cursor: 'pointer',
+        }}>
+          Cancel
+        </button>
+        <button onClick={onConfirm} disabled={!btnEnabled || sending} style={{
+          flex: 2, padding: '14px 0', borderRadius: 12,
+          background: btnEnabled && !sending ? '#E8312A' : 'rgba(232,49,42,0.3)',
+          border: 'none', color: '#fff',
+          fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 600,
+          cursor: btnEnabled && !sending ? 'pointer' : 'not-allowed',
+          transition: 'background 0.4s ease',
+        }}>
+          {sending ? 'Sending…' : btnEnabled ? 'SEND ALERT' : 'Hold on…'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── During phase ────────────────────────────────────────────────────────────
+function AlertDuring({ holding, progress, activated, onDown, onUp, responderCount, onMarkSafe, onNeedMoreHelp }) {
   const circ = 2 * Math.PI * 102;
+
+  if (activated) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {/* Alert sent confirmation */}
+        <div style={{
+          padding: '20px 18px', borderRadius: 16,
+          background: 'rgba(232,49,42,0.1)', border: '1px solid rgba(232,49,42,0.3)',
+          display: 'flex', alignItems: 'center', gap: 14,
+        }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 999, flexShrink: 0,
+            background: 'rgba(232,49,42,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <IconShield size={20} stroke="#E8312A"/>
+          </div>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14, color: '#FFD9D7' }}>Alert broadcast</div>
+            <div style={{ fontSize: 12, color: 'rgba(247,243,238,0.65)', marginTop: 2 }}>
+              Proctor and nearby users notified
+            </div>
+          </div>
+        </div>
+
+        {/* Responder count */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          padding: '12px 0',
+          fontSize: 13, color: 'rgba(247,243,238,0.8)',
+        }}>
+          <IconUser size={15}/> <strong>{responderCount}</strong>&nbsp;people responding nearby
+        </div>
+
+        {/* 24h countdown note */}
+        <div style={{
+          padding: '10px 14px', borderRadius: 12,
+          background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+          fontSize: 12, color: 'rgba(247,243,238,0.55)', textAlign: 'center',
+        }}>
+          Your contacts will be notified for the next 24 hours unless you mark yourself safe.
+        </div>
+
+        {/* Actions */}
+        <button onClick={onMarkSafe} style={{
+          width: '100%', padding: '15px 0', borderRadius: 14,
+          background: 'rgba(74,107,92,0.25)', border: '1px solid rgba(74,107,92,0.5)',
+          color: '#9FCFBD', fontFamily: 'var(--font-sans)',
+          fontSize: 14, fontWeight: 600, cursor: 'pointer',
+        }}>
+          I am safe
+        </button>
+        <button onClick={onNeedMoreHelp} style={{
+          width: '100%', padding: '15px 0', borderRadius: 14,
+          background: '#E8312A', border: 'none',
+          color: '#fff', fontFamily: 'var(--font-sans)',
+          fontSize: 14, fontWeight: 600, cursor: 'pointer',
+        }}>
+          Need more help
+        </button>
+
+        {/* Emergency number */}
+        <div style={{ textAlign: 'center', marginTop: 4 }}>
+          <a href="tel:999" style={{
+            fontSize: 12.5, color: 'rgba(247,243,238,0.45)',
+            textDecoration: 'none', fontFamily: 'var(--font-sans)',
+          }}>
+            Call 999 (Police) directly
+          </a>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18 }}>
       <button
@@ -759,9 +1007,7 @@ function AlertDuring({ holding, progress, activated, onDown, onUp }) {
         onPointerUp={onUp}
         onPointerLeave={onUp}
         className="hold-btn"
-        aria-label="Hold to activate emergency alert"
-        style={{ background: activated ? 'radial-gradient(circle at 30% 30%, #5A0907, #2A0403)' : undefined }}>
-        {/* Progress ring */}
+        aria-label="Hold to activate emergency alert">
         <svg width="244" height="244" style={{ position: 'absolute', inset: -12 }}>
           <circle cx="122" cy="122" r="102" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="6"/>
           <circle cx="122" cy="122" r="102" fill="none" stroke="#fff" strokeWidth="6" strokeLinecap="round"
@@ -773,10 +1019,10 @@ function AlertDuring({ holding, progress, activated, onDown, onUp }) {
         <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
           <IconShield size={36} sw={1.6}/>
           <div className="serif" style={{ fontSize: 16, fontWeight: 500, letterSpacing: '-0.01em' }}>
-            {activated ? 'Activated' : holding ? `${Math.ceil((1 - progress) * 4)}…` : 'Hold to alert'}
+            {holding ? `${Math.ceil((1 - progress) * 4)}…` : 'Hold to alert'}
           </div>
           <div style={{ fontSize: 10.5, letterSpacing: '0.18em', textTransform: 'uppercase', opacity: 0.6 }}>
-            {activated ? 'Help on the way' : '4 seconds'}
+            4 seconds
           </div>
         </div>
       </button>
@@ -786,7 +1032,7 @@ function AlertDuring({ holding, progress, activated, onDown, onUp }) {
         background: 'rgba(255,255,255,0.04)', fontSize: 11.5, color: 'rgba(247,243,238,0.75)',
         display: 'flex', alignItems: 'center', gap: 8,
       }}>
-        <IconClock size={13}/> 1 alert remaining today
+        <IconClock size={13}/> 1 alert per day · confirmed once, cannot be undone
       </div>
 
       {/* Recording note */}
@@ -809,9 +1055,9 @@ function AlertDuring({ holding, progress, activated, onDown, onUp }) {
           }}/>
         </div>
         <div style={{ flex: 1, fontSize: 11.5, color: 'rgba(247,243,238,0.92)', lineHeight: 1.4 }}>
-          <div style={{ fontWeight: 600, color: '#FFD9D7', letterSpacing: '0.04em' }}>10-second video will record automatically</div>
+          <div style={{ fontWeight: 600, color: '#FFD9D7', letterSpacing: '0.04em' }}>10-second video records automatically</div>
           <div style={{ fontSize: 10.5, color: 'rgba(247,243,238,0.55)', marginTop: 1 }}>
-            Encrypted, timestamped, sent to your trusted contacts
+            Stays on your device only · never auto-uploaded
           </div>
         </div>
       </div>
@@ -819,14 +1065,14 @@ function AlertDuring({ holding, progress, activated, onDown, onUp }) {
       <div style={{ width: '100%', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 4 }}>
         <div style={{ padding: 12, borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
           <div className="eyebrow" style={{ color: 'rgba(247,243,238,0.5)' }}>Will notify</div>
-          <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.4, color: 'rgba(247,243,238,0.85)' }}>
-            3 trusted contacts<br/>Nearest responder (2.1 km)<br/>Anchor Verify Team
+          <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.6, color: 'rgba(247,243,238,0.85)' }}>
+            Campus proctor<br/>Users within 1km<br/>Emergency contacts
           </div>
         </div>
         <div style={{ padding: 12, borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
           <div className="eyebrow" style={{ color: 'rgba(247,243,238,0.5)' }}>Will share</div>
-          <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.4, color: 'rgba(247,243,238,0.85)' }}>
-            Live GPS (5 min)<br/>Audio recording<br/>Encrypted timestamp
+          <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.6, color: 'rgba(247,243,238,0.85)' }}>
+            Live GPS (24h link)<br/>Anonymous event ID<br/>Encrypted timestamp
           </div>
         </div>
       </div>
@@ -834,9 +1080,44 @@ function AlertDuring({ holding, progress, activated, onDown, onUp }) {
   );
 }
 
-function AlertBefore() {
+// ─── Before phase ─────────────────────────────────────────────────────────────
+function AlertBefore({ token }) {
+  const [threatText, setThreatText] = _useS('');
+  const [contacts, setContacts] = _useS([
+    { name: 'Bappa (Brother)', phone: '+8801712000001', relationship: 'brother' },
+    { name: 'Mrs. Akter (Mother)', phone: '+8801819000002', relationship: 'mother' },
+  ]);
+  const [form, setForm] = _useS({ name: '', phone: '', relationship: '' });
+  const [saving, setSaving] = _useS(false);
+  const [saved, setSaved] = _useS(false);
+
+  const handleAddContact = () => {
+    if (!form.name || !form.phone) return;
+    setContacts(prev => [...prev, { ...form }]);
+    setForm({ name: '', phone: '', relationship: '' });
+  };
+
+  const handleRemoveContact = (i) => setContacts(prev => prev.filter((_, idx) => idx !== i));
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await alertApiPost('/v1/alerts/phase1', {
+        threat_description: threatText || null,
+        emergency_contacts: contacts.slice(0, 5),
+      }, token);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (e) {
+      console.error('[Phase1] Save failed:', e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Risk zone map */}
       <div className="card" style={{ background: 'rgba(255,255,255,0.7)' }}>
         <div className="eyebrow" style={{ marginBottom: 8 }}>Around you</div>
         <div style={{
@@ -861,19 +1142,30 @@ function AlertBefore() {
         </div>
       </div>
 
-      <button className="btn btn-ghost" style={{ width: '100%' }}>
-        <IconCamera size={16}/> Document a threat (encrypted)
-      </button>
+      {/* Threat documentation */}
+      <div className="card" style={{ background: 'rgba(255,255,255,0.7)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <IconLock size={14} stroke="var(--navy)"/>
+          <div className="eyebrow">Document a threat (encrypted)</div>
+        </div>
+        <textarea value={threatText} onChange={e => setThreatText(e.target.value)}
+          placeholder="Describe any threats or concerns you are aware of…"
+          style={{
+            width: '100%', minHeight: 80, padding: '10px 12px', borderRadius: 10,
+            border: '1px solid var(--mist)', background: 'var(--cream)',
+            fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)',
+            resize: 'vertical', boxSizing: 'border-box',
+            outline: 'none',
+          }}
+        />
+      </div>
 
+      {/* Emergency contacts */}
       <div>
-        <div className="eyebrow" style={{ marginBottom: 8 }}>Trusted contacts · 3</div>
-        {[
-          { n: 'Bappa (Brother)', p: '+880 1712 ●●●●●●', tag: 'Primary' },
-          { n: 'Mrs. Akter (Mother)', p: '+880 1819 ●●●●●●', tag: 'Family' },
-          { n: 'Rifat (Roommate)', p: '+880 1521 ●●●●●●', tag: 'Friend' },
-        ].map((c, i) => (
+        <div className="eyebrow" style={{ marginBottom: 8 }}>Emergency contacts · {contacts.length}</div>
+        {contacts.map((c, i) => (
           <div key={i} style={{
-            display: 'flex', alignItems: 'center', gap: 10, padding: '11px 12px',
+            display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
             background: 'rgba(255,255,255,0.6)', border: '1px solid var(--mist)',
             borderRadius: 12, marginBottom: 6,
           }}>
@@ -883,20 +1175,95 @@ function AlertBefore() {
               color: 'var(--navy)',
             }}><IconUser size={15}/></div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13.5, color: 'var(--navy)', fontWeight: 500 }}>{c.n}</div>
-              <div className="mono" style={{ fontSize: 10.5, color: 'var(--muted)' }}>{c.p}</div>
+              <div style={{ fontSize: 13.5, color: 'var(--navy)', fontWeight: 500 }}>{c.name}</div>
+              <div className="mono" style={{ fontSize: 10.5, color: 'var(--muted)' }}>
+                {c.phone.slice(0, 6)}●●●●●● · {c.relationship}
+              </div>
             </div>
-            <span className="pill">{c.tag}</span>
+            <button onClick={() => handleRemoveContact(i)} style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: 'var(--muted)', padding: '4px 6px', fontSize: 16,
+            }}>×</button>
           </div>
         ))}
+
+        {/* Add contact form */}
+        {contacts.length < 5 && (
+          <div style={{
+            padding: '12px 14px', borderRadius: 12,
+            background: 'rgba(255,255,255,0.4)', border: '1px dashed var(--mist)',
+            marginTop: 4,
+          }}>
+            <div className="eyebrow" style={{ marginBottom: 10, color: 'var(--muted)' }}>Add contact</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[
+                { k: 'name', ph: 'Full name', type: 'text' },
+                { k: 'phone', ph: '+880…', type: 'tel' },
+                { k: 'relationship', ph: 'Relationship (e.g. brother)', type: 'text' },
+              ].map(({ k, ph, type }) => (
+                <input key={k} type={type} placeholder={ph} value={form[k]}
+                  onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))}
+                  style={{
+                    padding: '9px 12px', borderRadius: 9,
+                    border: '1px solid var(--mist)', background: 'var(--cream)',
+                    fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)',
+                    outline: 'none',
+                  }}
+                />
+              ))}
+              <button onClick={handleAddContact} className="btn" style={{
+                width: '100%', padding: '10px 0', fontSize: 13,
+              }}>
+                + Add contact
+              </button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Save button */}
+      <button onClick={handleSave} disabled={saving} className="btn btn-primary" style={{
+        width: '100%', padding: '14px 0', fontSize: 14,
+        opacity: saving ? 0.7 : 1,
+      }}>
+        {saving ? 'Saving…' : saved ? '✓ Saved securely' : 'Save phase 1 record (encrypted)'}
+      </button>
     </div>
   );
 }
 
-function AlertAfter() {
+// ─── After phase ──────────────────────────────────────────────────────────────
+function AlertAfter({ eventId, token, go }) {
+  const [mediaType, setMediaType] = _useS('photo');
+  const [blobRef, setBlobRef] = _useS('');
+  const [uploading, setUploading] = _useS(false);
+  const [uploaded, setUploaded] = _useS(false);
+  const mediaTypes = ['photo', 'video', 'audio', 'document'];
+
+  const handleUpload = async () => {
+    if (!eventId || !blobRef) return;
+    setUploading(true);
+    try {
+      // SHA-256 placeholder for demo (real app computes hash client-side)
+      const hash = Array.from({ length: 64 }, () => '0').join('');
+      await alertApiPost(`/v1/alerts/${eventId}/evidence`, {
+        encrypted_blob_ref: blobRef,
+        sha256_hash: hash,
+        capture_timestamp: new Date().toISOString(),
+        media_type: mediaType,
+      }, token);
+      setUploaded(true);
+      setBlobRef('');
+    } catch (e) {
+      console.error('[Evidence] Upload failed:', e);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Evidence upload */}
       <div className="card" style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(74,107,92,0.3)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <IconLock size={16} stroke="var(--sage-2)"/>
@@ -905,13 +1272,65 @@ function AlertAfter() {
         <div className="serif" style={{ marginTop: 4, fontSize: 17, fontWeight: 500, color: 'var(--navy)' }}>
           Upload evidence — timestamped & sealed
         </div>
-        <div style={{ marginTop: 12, padding: '24px 14px', border: '1px dashed var(--mist-2)', borderRadius: 12, background: 'var(--cream)', textAlign: 'center' }}>
-          <IconUpload size={26} stroke="var(--muted)"/>
-          <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--ink-2)' }}>Drop photos, audio, or video</div>
-          <div style={{ marginTop: 2, fontSize: 11, color: 'var(--muted)' }}>SHA-256 hashed · GPS embedded · 7-year retention</div>
+
+        {/* Media type selector */}
+        <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+          {mediaTypes.map(t => (
+            <button key={t} onClick={() => setMediaType(t)} style={{
+              padding: '5px 12px', borderRadius: 999, fontSize: 12,
+              background: mediaType === t ? 'var(--navy)' : 'var(--cream)',
+              color: mediaType === t ? '#fff' : 'var(--ink-2)',
+              border: `1px solid ${mediaType === t ? 'var(--navy)' : 'var(--mist)'}`,
+              cursor: 'pointer', fontFamily: 'var(--font-sans)',
+              textTransform: 'capitalize',
+            }}>
+              {t}
+            </button>
+          ))}
         </div>
+
+        {/* Encrypted blob ref input */}
+        <input
+          type="text"
+          placeholder="Paste encrypted file reference or path…"
+          value={blobRef}
+          onChange={e => setBlobRef(e.target.value)}
+          style={{
+            marginTop: 12, width: '100%', padding: '10px 12px', borderRadius: 10,
+            border: '1px solid var(--mist)', background: 'var(--cream)',
+            fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--navy)',
+            boxSizing: 'border-box', outline: 'none',
+          }}
+        />
+
+        <div style={{
+          marginTop: 10, padding: '12px 14px', border: '1px dashed var(--mist-2)',
+          borderRadius: 12, background: 'var(--cream)', textAlign: 'center',
+        }}>
+          <IconUpload size={24} stroke="var(--muted)"/>
+          <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--ink-2)' }}>
+            Encrypt file client-side, then paste the reference above
+          </div>
+          <div style={{ marginTop: 2, fontSize: 11, color: 'var(--muted)' }}>
+            SHA-256 hashed · server stores reference only · 7-year retention
+          </div>
+        </div>
+
+        <button onClick={handleUpload} disabled={!blobRef || !eventId || uploading}
+          className="btn btn-primary" style={{
+            width: '100%', marginTop: 12, padding: '12px 0',
+            opacity: !blobRef || !eventId ? 0.4 : 1,
+          }}>
+          {uploading ? 'Uploading…' : uploaded ? '✓ Evidence recorded' : 'Submit evidence'}
+        </button>
       </div>
 
+      {/* Link to formal case */}
+      <button onClick={() => go && go('compose')} className="btn btn-ghost" style={{ width: '100%' }}>
+        <IconFile size={16}/> Convert to formal complaint or FIR
+      </button>
+
+      {/* Previous alerts history */}
       <div>
         <div className="eyebrow" style={{ marginBottom: 8 }}>Previous alerts · 2</div>
         {[

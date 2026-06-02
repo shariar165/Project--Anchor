@@ -12,6 +12,11 @@ from app.redis import get_redis, close_redis
 from app.limiter import limiter
 from app.routers import auth, mfa, sessions, tracking
 from app.routers import ai as ai_router
+from app.routers import alerts as alerts_router
+from app.routers import admin_alerts as admin_alerts_router
+from app.routers import applications as applications_router
+from app.routers import feed as feed_router
+from app.routers import feed_admin as feed_admin_router
 
 
 @asynccontextmanager
@@ -51,7 +56,7 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_origins_list,
         allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
@@ -60,6 +65,18 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router)
     app.include_router(tracking.router)
     app.include_router(ai_router.router)
+    app.include_router(alerts_router.router)
+    app.include_router(admin_alerts_router.router)
+    app.include_router(applications_router.router)
+    app.include_router(feed_router.router)
+    app.include_router(feed_admin_router.router)
+
+    # Serve uploaded feed attachments in dev
+    from fastapi.staticfiles import StaticFiles
+    from pathlib import Path as _Path
+    _upload_dir = _Path(__file__).parent.parent / "uploads" / "feed"
+    _upload_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/uploads/feed", StaticFiles(directory=str(_upload_dir)), name="feed_uploads")
 
     @app.get("/health", tags=["health"])
     async def health():
