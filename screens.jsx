@@ -20,6 +20,21 @@ function HomeScreen() {
       .catch(() => {});
   }, [mode]);
 
+  // Live verification feed preview — tokens live in localStorage, not AppCtx
+  const [feedPosts, setFeedPosts] = _useS([]);
+  _useE(() => {
+    const token = localStorage.getItem('anchor_access_token');
+    if (!token) return;
+    const hasTenant = !!auth?.user?.tenant_id;
+    const scope = (mode === 'campus' && hasTenant) ? 'campus' : 'national';
+    fetch(`http://localhost:8000/v1/feed?scope=${scope}&sort=recent&page_size=3`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (Array.isArray(data) && data.length) setFeedPosts(data); })
+      .catch(() => {});
+  }, [mode]);
+
   const campusTiles = [
     { k: 'complaint', label: 'File', sub: 'Complaint · Report · Grievance', Icon: IconFile, route: 'new-filing' },
     { k: 'application', label: 'Apply formally', sub: 'AI-drafted · 13 templates', Icon: IconDoc, route: 'applications' },
@@ -214,7 +229,16 @@ function HomeScreen() {
             color: 'var(--navy)', fontSize: 12, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
           }}>Open →</button>
         </div>
-        {FEED.filter(f => f.scope === mode).slice(0, 2).map(f => <FeedRowMini key={f.id} item={f}/>)}
+        {(feedPosts.length
+          ? feedPosts
+          : FEED.filter(f => f.scope === mode)
+        ).slice(0, 2).map(f => (
+          <FeedRowMini
+            key={f.id}
+            item={f}
+            onOpen={f.post_number ? () => go('feed-post', { id: f.id }) : undefined}
+          />
+        ))}
       </div>
     </>
   );
@@ -1719,23 +1743,42 @@ function NewsArt({ variant }) {
 // ═══════════════════════════════════════════════════════════════
 //  FeedRowMini — compact preview for Home
 // ═══════════════════════════════════════════════════════════════
-function FeedRowMini({ item }) {
+function FeedRowMini({ item, onOpen }) {
+  const isApi = !!item.post_number;
+  const kicker   = isApi ? (item.category || '').replace(/_/g, ' ').toUpperCase() : item.kicker;
+  const headline = isApi ? item.title : item.headline;
+  const corr     = isApi ? (item.signal_counts?.corroborate || 0) : item.corr;
+  const chal     = isApi ? (item.signal_counts?.challenge   || 0) : item.chal;
+  const when     = isApi
+    ? new Date(item.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+    : item.byline?.when;
+
   return (
     <div style={{ padding: '14px 0', borderTop: '1px solid var(--mist)', display: 'flex', gap: 12 }}>
       <div style={{ width: 80, height: 60, borderRadius: 6, overflow: 'hidden', flexShrink: 0, position: 'relative' }}>
-        <NewsArt variant={item.art}/>
+        <NewsArt variant={item.art || 'a'}/>
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="news-kicker" style={{ marginBottom: 3, fontSize: 9 }}>{item.kicker}</div>
-        <div className="serif" style={{ fontSize: 14, fontWeight: 500, lineHeight: 1.15, color: 'var(--navy)' }}>{item.headline}</div>
+        <div className="news-kicker" style={{ marginBottom: 3, fontSize: 9 }}>{kicker}</div>
+        <div className="serif" style={{ fontSize: 14, fontWeight: 500, lineHeight: 1.15, color: 'var(--navy)' }}>{headline}</div>
         <div style={{ marginTop: 6, display: 'flex', gap: 10, alignItems: 'center', fontSize: 10.5, color: 'var(--muted)' }}>
           <span style={{ color: 'var(--sage-2)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-            <IconCheck size={10} sw={2.4}/> {item.corr}
+            <IconCheck size={10} sw={2.4}/> {corr}
           </span>
           <span style={{ color: 'var(--ember)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-            <IconX size={10} sw={2.4}/> {item.chal}
+            <IconX size={10} sw={2.4}/> {chal}
           </span>
-          <span style={{ marginLeft: 'auto' }}>{item.byline.when}</span>
+          <span style={{ marginLeft: 'auto' }}>{when}</span>
+          {onOpen && (
+            <button
+              onClick={e => { e.stopPropagation(); onOpen(); }}
+              style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: 'var(--navy)', fontSize: 11,
+                fontFamily: 'var(--font-serif)', fontStyle: 'italic', padding: 0,
+              }}
+            >Open →</button>
+          )}
         </div>
       </div>
     </div>

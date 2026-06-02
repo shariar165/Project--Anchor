@@ -160,15 +160,13 @@ function FeedPostCard({ post, onTap }) {
 
 function VerificationFeedScreen() {
   const { go, mode, auth } = useApp();
-  const hasTenant = !!auth.user?.tenant_id;
-  const canSeeCampus = auth.user?.role === 'student' && hasTenant;
-  const [scope, setScope] = React.useState(mode === 'campus' && hasTenant ? 'campus' : 'national');
+  const canSeeCampus = mode === 'campus' && !!auth?.user?.tenant_id;
+  const [scope, setScope] = React.useState(canSeeCampus ? 'campus' : 'national');
   const [category, setCategory] = React.useState(null);
   const [sort, setSort] = React.useState('recent');
   const [posts, setPosts] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState('');
-  const isStudent = auth.user?.role === 'student';
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
 
   React.useEffect(() => {
@@ -181,8 +179,10 @@ function VerificationFeedScreen() {
       let url = `/v1/feed?scope=${scope}&sort=${sort}&page=1&page_size=30`;
       if (category) url += `&category=${category}`;
       const data = await vfFetch(url);
-      setPosts(data);
-    } catch (e) { setError(e.message); }
+      setPosts(Array.isArray(data) ? data : (data?.items ?? []));
+    } catch (e) {
+      setError(e.message);
+    }
     setLoading(false);
   }
 
@@ -252,11 +252,6 @@ function VerificationFeedScreen() {
       </div>
 
       {/* Publish FAB */}
-      <button onClick={() => go('feed-publish')} style={{
-        position: 'fixed', bottom: 96, right: 20, zIndex: 20,
-        background: accent, color: 'white', border: 'none', borderRadius: 999,
-        padding: '12px 20px', fontSize: 14, fontWeight: 700, boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
-      }}>+ Publish</button>
     </>
   );
 }
@@ -265,15 +260,14 @@ function VerificationFeedScreen() {
 
 function PublishScreen() {
   const { go, back, mode, auth } = useApp();
-  const isStudent = auth.user?.role === 'student';
   const hasTenant = !!auth.user?.tenant_id;
-  const canPublishCampus = isStudent && hasTenant;
+  const canPublishCampus = hasTenant;
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
 
   const [step, setStep] = React.useState(0);
   const [form, setForm] = React.useState({
-    category: '', scope: 'national', title: '', body: '',
-    tags: [], geo_lat: '', geo_lng: '', geo_address: '', attachmentIds: [],
+    category: '', scope: (mode === 'campus' && hasTenant) ? 'campus' : 'national',
+    title: '', body: '', tags: [], geo_lat: '', geo_lng: '', geo_address: '', attachmentIds: [],
   });
   const [tagInput, setTagInput] = React.useState('');
   const [uploading, setUploading] = React.useState(false);
@@ -307,32 +301,48 @@ function PublishScreen() {
   const doPublish = async (suToken) => {
     setPublishing(true); setError('');
     try {
-      const body = {
+      const payload = {
         scope: form.scope,
         category: form.category,
         title: form.title,
         body: form.body,
         tags: form.tags,
       };
-      if (form.geo_lat) body.geo_lat = parseFloat(form.geo_lat);
-      if (form.geo_lng) body.geo_lng = parseFloat(form.geo_lng);
-      if (form.geo_address) body.geo_address = form.geo_address;
+      if (form.geo_lat) payload.geo_lat = parseFloat(form.geo_lat);
+      if (form.geo_lng) payload.geo_lng = parseFloat(form.geo_lng);
+      if (form.geo_address) payload.geo_address = form.geo_address;
 
-      const data = await vfFetch('/v1/feed', {
+      // Use raw fetch — NOT apiFetch — so we handle 401 ourselves without triggering
+      // apiFetch's redirect-to-login behavior when a step-up token expires.
+      const res = await fetch(VF_BASE + '/v1/feed', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + (suToken || stepupToken || localStorage.getItem('anchor_stepup_token') || ''),
+          'Authorization': 'Bearer ' + suToken,
         },
-      body: JSON.stringify(body),
+        body: JSON.stringify(payload),
       });
+
+      if (res.status === 401) {
+        localStorage.removeItem('anchor_stepup_token');
+        setShowStepUp(true);
+        setPublishing(false);
+        return;
+      }
+
+      if (!res.ok) {
+        let detail = 'Publish failed';
+        try {
+          const d = await res.json();
+          detail = typeof d.detail === 'string' ? d.detail : (d.detail?.message || JSON.stringify(d.detail));
+        } catch {}
+        throw new Error(detail);
+      }
+
+      const data = await res.json();
       go('feed-post', { id: data.post_id });
     } catch (e) {
-      if (e.message && e.message.includes('401')) {
-        setShowStepUp(true);
-      } else {
-        setError(e.message);
-      }
+      setError(e.message);
     }
     setPublishing(false);
   };
