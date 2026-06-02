@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     archive_missing_person_hours: int = 720
     publish_rate_limit_per_user_per_hour: int = 3
 
+    # ── Filing system ──────────────────────────────────────────────
+    complaint_draft_min_body_chars: int = 10
+    tracking_code_length: int = 12
+    anonymous_moderation_max_hours: int = 72
+    subject_response_window_days: int = 7
+    filing_upload_dir: str = "data/filing_uploads"
+
     @model_validator(mode="after")
     def require_real_secrets_in_production(self) -> "Settings":
         if self.environment == "production":

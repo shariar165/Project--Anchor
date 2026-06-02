@@ -17,6 +17,7 @@ from app.routers import admin_alerts as admin_alerts_router
 from app.routers import applications as applications_router
 from app.routers import feed as feed_router
 from app.routers import feed_admin as feed_admin_router
+from app.routers import filings as filings_router
 
 
 @asynccontextmanager
@@ -29,6 +30,13 @@ async def lifespan(app: FastAPI):
         if vector_store.count("national") == 0 and bm25_index.index_count("national") == 0:
             import asyncio
             asyncio.create_task(load_sample_corpus(generate_prefixes=False))
+    except Exception:
+        pass
+    try:
+        from app.database import AsyncSessionLocal
+        from app.services.filing_svc import seed_templates
+        async with AsyncSessionLocal() as _db:
+            await seed_templates(_db)
     except Exception:
         pass
     yield
@@ -70,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(applications_router.router)
     app.include_router(feed_router.router)
     app.include_router(feed_admin_router.router)
+    app.include_router(filings_router.router)
 
     # Serve uploaded feed attachments in dev
     from fastapi.staticfiles import StaticFiles

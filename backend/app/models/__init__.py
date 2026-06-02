@@ -25,6 +25,11 @@ from app.models.feed import (
     PostScope, PostCategory, PostState, AIPrescreenVerdict,
     SignalType, FlagReason, ModerationAction, TrustTier,
 )
+from app.models.filing import (
+    FilingTemplate, Filing, FilingAttachment, FilingReview,
+    SubjectResponse, ClassroomReport,
+    FilingCategory, FilingAnonymityMode, FilingState, ClassroomIssueType,
+)
 
 __all__ = [
     "Base", "TimestampMixin",
@@ -51,4 +56,8 @@ __all__ = [
     "UserFeedTrust",
     "PostScope", "PostCategory", "PostState", "AIPrescreenVerdict",
     "SignalType", "FlagReason", "ModerationAction", "TrustTier",
+    # Filing system
+    "FilingTemplate", "Filing", "FilingAttachment", "FilingReview",
+    "SubjectResponse", "ClassroomReport",
+    "FilingCategory", "FilingAnonymityMode", "FilingState", "ClassroomIssueType",
 ]

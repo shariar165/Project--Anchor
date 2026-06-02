@@ -1,17 +1,89 @@
 // Anchor — Screens part 2: Cases, CaseDetail, Map, Feed, Lawyers, Notices, Profile
 
+// ── Helper: map a real Filing to the CaseCard display format ──────────────────
+
+function mapFilingToCase(f) {
+  const stateMap = {
+    draft: 'submitted',
+    moderation_queue: 'review',
+    routed: 'review',
+    subject_notified: 'review',
+    subject_responded: 'review',
+    under_review: 'review',
+    resolved: 'resolved',
+    dismissed: 'resolved',
+    withdrawn: 'resolved',
+    spam_rejected: 'resolved',
+  };
+  const routingMap = {
+    dept_head: 'Department Head',
+    dean: "Dean's Office",
+    proctor: 'Proctor',
+    provost: 'Provost',
+    vc: 'Vice Chancellor',
+  };
+  const routing = f.template?.routing_target
+    ? routingMap[f.template.routing_target] || f.template.routing_target
+    : 'Administration';
+  const date = f.updated_at
+    ? new Date(f.updated_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : '';
+  return {
+    id: f.id,
+    displayId: f.filing_number || 'Draft',
+    title: f.template?.name || f.category,
+    status: stateMap[f.state] || 'submitted',
+    scope: 'campus',
+    updated: date,
+    anon: f.template?.anonymity_mode === 'anonymous',
+    desc: f.body || '(No description)',
+    routing: [routing],
+    timeline: [{ t: 'Submitted', d: f.submitted_at ? new Date(f.submitted_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Pending', done: !!f.submitted_at }],
+    isRealFiling: true,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  CASES SCREEN
 // ═══════════════════════════════════════════════════════════════
 function CasesScreen() {
   const { go, mode } = useApp();
   const [tab, setTab] = React.useState('all');
-  const inMode = ACTIVE_CASES.filter(c => c.scope === mode);
+
+  // Always fetch real filings from API — no mock data
+  const [campusFilings, setCampusFilings] = React.useState([]);
+  const [loadingFilings, setLoadingFilings] = React.useState(false);
+  const [filingsError, setFilingsError] = React.useState(null);
+
+  React.useEffect(() => {
+    setLoadingFilings(true);
+    setFilingsError(null);
+    if (typeof filingApiFetch === 'function') {
+      filingApiFetch('/v1/filings?page=1')
+        .then(data => setCampusFilings((data || []).map(mapFilingToCase)))
+        .catch(() => setFilingsError('Could not load filings — is the server running?'))
+        .finally(() => setLoadingFilings(false));
+    } else {
+      setLoadingFilings(false);
+    }
+  }, [mode]);
+
+  // Real API data for both modes
+  const inMode = campusFilings;
+
   const filtered = inMode.filter(c =>
     tab === 'all' ? true :
     tab === 'active' ? c.status !== 'resolved' :
     /* resolved */ c.status === 'resolved'
   );
+
+  const handleOpenCase = (c) => {
+    if (c.isRealFiling) {
+      go('filing', { id: c.id });
+    } else {
+      go('case', { id: c.id });
+    }
+  };
 
   return (
     <>
@@ -20,28 +92,50 @@ function CasesScreen() {
         <div className="eyebrow">{mode === 'campus' ? 'Campus' : 'National'} · my cases</div>
         <h1 className="h-display" style={{ margin: '4px 0 4px', fontSize: 26, lineHeight: 1.05 }}>My Cases</h1>
         <div style={{ fontSize: 13, color: 'var(--muted)', fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>
-          {mode === 'campus' ? 'Filed within Daffodil — routed through the campus hierarchy.' : 'Filed across Bangladesh — routed through legal channels.'}
+          Your complaints, reports, and grievances — tracked in real time.
         </div>
       </div>
 
       <div style={{ padding: '14px 20px 8px' }}>
         <div className="tabbar">
-          {[['all', `All · ${inMode.length}`], ['active', `Active · ${inMode.filter(c => c.status !== 'resolved').length}`], ['resolved', `Resolved · ${inMode.filter(c => c.status === 'resolved').length}`]].map(([k, l]) => (
+          {[
+            ['all',      `All · ${inMode.length}`],
+            ['active',   `Active · ${inMode.filter(c => c.status !== 'resolved').length}`],
+            ['resolved', `Resolved · ${inMode.filter(c => c.status === 'resolved').length}`],
+          ].map(([k, l]) => (
             <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>
           ))}
         </div>
       </div>
 
       <div style={{ padding: '8px 20px 28px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {filtered.map(c => <CaseCard key={c.id} c={c} onOpen={() => go('case', { id: c.id })}/>)}
-        {filtered.length === 0 && (
+        {loadingFilings && (
+          <div style={{ textAlign: 'center', padding: 32, color: 'var(--muted)', fontSize: 13 }}>Loading cases…</div>
+        )}
+        {filingsError && !loadingFilings && (
+          <div style={{
+            padding: 14, background: 'rgba(232,49,42,0.06)', borderRadius: 12,
+            border: '1px solid rgba(232,49,42,0.2)', color: 'var(--red)', fontSize: 12.5, textAlign: 'center',
+          }}>
+            {filingsError}
+            <div style={{ marginTop: 8 }}>
+              <button onClick={() => go('new-filing')} className="btn btn-primary" style={{ fontSize: 12 }}>
+                <IconSparkles size={12}/> File a complaint
+              </button>
+            </div>
+          </div>
+        )}
+        {!loadingFilings && filtered.map(c => (
+          <CaseCard key={c.id} c={c} onOpen={() => handleOpenCase(c)}/>
+        ))}
+        {!loadingFilings && filtered.length === 0 && !filingsError && (
           <div style={{ padding: '60px 20px', textAlign: 'center' }}>
             <div className="serif" style={{ fontSize: 20, color: 'var(--navy)' }}>No cases here yet.</div>
             <div style={{ marginTop: 6, fontSize: 13, color: 'var(--muted)', fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>
-              When you file a complaint or draft a GD, it appears here.
+              File a complaint, report, or grievance and it will appear here.
             </div>
-            <button onClick={() => go('compose')} className="btn btn-primary" style={{ marginTop: 14 }}>
-              <IconSparkles size={14}/> Start a new one
+            <button onClick={() => go('new-filing')} className="btn btn-primary" style={{ marginTop: 14 }}>
+              <IconSparkles size={14}/> File a complaint
             </button>
           </div>
         )}
@@ -51,14 +145,16 @@ function CasesScreen() {
 }
 
 function CaseCard({ c, onOpen }) {
+  // For real filings use displayId (filing number); for mock cases use id
+  const displayId = c.displayId || c.id;
   return (
     <button onClick={onOpen} style={{
-      textAlign: 'left', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+      width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
       borderRadius: 16, padding: 16, cursor: 'pointer',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>{c.id}</span>
+          <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>{displayId}</span>
           {c.anon && <span className="anon"><IconEyeOff size={12}/> Anonymous</span>}
         </div>
         <StatusPill status={c.status}/>
@@ -68,7 +164,9 @@ function CaseCard({ c, onOpen }) {
       </div>
       <Stepper status={c.status}/>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
-        <div style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>{c.routed}</div>
+        <div style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>
+          {c.routed || (c.routing?.length ? `Routed to: ${c.routing[0]}` : '')}
+        </div>
         <div className="serif" style={{ fontSize: 11.5, color: 'var(--muted)', fontStyle: 'italic' }}>{c.updated}</div>
       </div>
     </button>

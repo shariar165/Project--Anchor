@@ -267,6 +267,11 @@ function RouteView() {
     'new-application': NewApplicationScreen,
     'application':     ApplicationDetailScreen,
     'campus-settings': CampusSettingsScreen,
+    // Filing system (complaints, reports, grievances)
+    'filings':          FilingsListScreen,
+    'new-filing':       NewFilingScreen,
+    'filing':           FilingDetailScreen,
+    'classroom-report': ClassroomReportScreen,
     // Auth screens (loaded from auth.jsx)
     'login':           LoginScreen,
     'register':        RegisterChoiceScreen,

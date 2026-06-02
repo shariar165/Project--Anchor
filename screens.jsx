@@ -11,13 +11,22 @@ function HomeScreen() {
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
   const isStudent = auth?.user?.role === 'student';
 
+  // Live filings preview — replace demo data with real API cases
+  const [previewFilings, setPreviewFilings] = _useS([]);
+  _useE(() => {
+    if (typeof filingApiFetch !== 'function') return;
+    filingApiFetch('/v1/filings?page=1')
+      .then(data => setPreviewFilings((data || []).slice(0, 3)))
+      .catch(() => {});
+  }, [mode]);
+
   const campusTiles = [
-    { k: 'complaint', label: 'File a complaint', sub: 'Anonymous available', Icon: IconFile, route: 'compose' },
+    { k: 'complaint', label: 'File', sub: 'Complaint · Report · Grievance', Icon: IconFile, route: 'new-filing' },
     { k: 'application', label: 'Apply formally', sub: 'AI-drafted · 13 templates', Icon: IconDoc, route: 'applications' },
     { k: 'routine',   label: 'Academic routine', sub: 'Today · 4 classes',  Icon: IconClock },
     { k: 'notices',   label: 'University notices', sub: '3 new this week',   Icon: IconNews, route: 'notices' },
-    { k: 'hostel',    label: 'Hostel issue',   sub: 'Maintenance · Mess',   Icon: IconBed, route: 'compose', params: { kind: 'hostel' } },
-    { k: 'classroom', label: 'Report classroom', sub: 'AC · Projector · Net', Icon: IconBuilding, route: 'compose', params: { kind: 'classroom' } },
+    { k: 'my-filings', label: 'My filings', sub: 'Track complaints & reports', Icon: IconFile, route: 'filings' },
+    { k: 'classroom', label: 'Report classroom', sub: 'AC · Projector · Net', Icon: IconBuilding, route: 'classroom-report' },
     { k: 'feed',      label: 'Campus verified',sub: 'Notices & rumours',     Icon: IconNews, route: 'feed' },
     { k: 'rate',      label: 'Rate department', sub: 'SWE · CSE · BBA',     Icon: IconStar },
   ];
@@ -132,33 +141,68 @@ function HomeScreen() {
         </div>
       </div>
 
-      {/* My Cases preview */}
+      {/* My Cases preview — real filings from API */}
       <div style={{ padding: '20px 0 8px 20px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingRight: 20, marginBottom: 10 }}>
-          <div className="eyebrow">Active cases · {mode === 'campus' ? 'Campus' : 'National'}</div>
+          <div className="eyebrow">My filings · recent</div>
           <button onClick={() => go('cases')} style={{
             background: 'transparent', border: 'none', cursor: 'pointer',
             color: 'var(--navy)', fontSize: 12, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
           }}>View all →</button>
         </div>
-        <div className="h-scroll no-scrollbar" style={{ paddingRight: 20 }}>
-          {ACTIVE_CASES.filter(c => c.scope === mode).slice(0, 3).map(c => (
-            <button key={c.id} onClick={() => go('case', { id: c.id })} style={{
-              width: 250, textAlign: 'left', background: 'rgba(255,255,255,0.7)',
-              border: '1px solid var(--mist)', borderRadius: 14, padding: 14, cursor: 'pointer',
+        {previewFilings.length === 0 ? (
+          /* Empty state — no filed cases yet */
+          <div style={{ paddingRight: 20 }}>
+            <button onClick={() => go('new-filing')} style={{
+              width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.6)',
+              border: '1px dashed var(--mist-2)', borderRadius: 14, padding: '14px 16px', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 12,
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <span className="mono" style={{ fontSize: 10.5, color: 'var(--muted)' }}>{c.id}</span>
-                <StatusPill status={c.status}/>
+              <div style={{
+                width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                background: `${accent}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: accent,
+              }}>
+                <IconFile size={16}/>
               </div>
-              <div className="serif" style={{ fontSize: 14.5, fontWeight: 500, color: 'var(--navy)', lineHeight: 1.25, marginBottom: 6 }}>
-                {c.title}
+              <div>
+                <div className="serif" style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--navy)', marginBottom: 2 }}>No filings yet</div>
+                <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>Tap to file a complaint, report, or grievance</div>
               </div>
-              <Stepper status={c.status}/>
-              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>{c.routed}</div>
+              <IconChevronRight size={14} stroke="var(--mist-2)" style={{ marginLeft: 'auto', flexShrink: 0 }}/>
             </button>
-          ))}
-        </div>
+          </div>
+        ) : (
+          <div className="h-scroll no-scrollbar" style={{ paddingRight: 20 }}>
+            {previewFilings.map(f => {
+              const stateMap = {
+                draft: 'submitted', moderation_queue: 'review', routed: 'review',
+                subject_notified: 'review', subject_responded: 'review', under_review: 'review',
+                resolved: 'resolved', dismissed: 'resolved', withdrawn: 'resolved',
+              };
+              const displayState = stateMap[f.state] || 'submitted';
+              return (
+                <button key={f.id} onClick={() => go('filing', { id: f.id })} style={{
+                  width: 240, flexShrink: 0, textAlign: 'left', background: 'rgba(255,255,255,0.7)',
+                  border: '1px solid var(--mist)', borderRadius: 14, padding: 14, cursor: 'pointer',
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>
+                      {f.filing_number || 'Draft'}
+                    </span>
+                    <StatusPill status={displayState}/>
+                  </div>
+                  <div className="serif" style={{ fontSize: 14, fontWeight: 500, color: 'var(--navy)', lineHeight: 1.25, marginBottom: 6 }}>
+                    {f.template?.name || f.category}
+                  </div>
+                  <Stepper status={displayState}/>
+                  <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+                    {f.state.replace(/_/g, ' ')} · {new Date(f.updated_at || f.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Verification feed preview */}
