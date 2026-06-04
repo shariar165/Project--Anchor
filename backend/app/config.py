@@ -12,9 +12,11 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
-    # JWT Ed25519 key paths
+    # JWT Ed25519 key paths (local dev) or inline content (Railway/prod)
     jwt_private_key_path: str = ".keys/ed25519_private.pem"
     jwt_public_key_path: str = ".keys/ed25519_public.pem"
+    jwt_private_key_content: str = ""
+    jwt_public_key_content: str = ""
 
     # Password pepper — hex-encoded 32 bytes
     password_pepper: str = Field(default="0" * 64)
@@ -127,11 +129,15 @@ class Settings(BaseSettings):
 
     @property
     def jwt_private_key(self) -> str:
+        if self.jwt_private_key_content:
+            return self.jwt_private_key_content.replace("\\n", "\n")
         with open(self.jwt_private_key_path, "r") as f:
             return f.read()
 
     @property
     def jwt_public_key(self) -> str:
+        if self.jwt_public_key_content:
+            return self.jwt_public_key_content.replace("\\n", "\n")
         with open(self.jwt_public_key_path, "r") as f:
             return f.read()
 
