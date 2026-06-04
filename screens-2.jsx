@@ -749,13 +749,30 @@ function decorateHeadline(text) {
 // ═══════════════════════════════════════════════════════════════
 //  LAWYERS SCREEN
 // ═══════════════════════════════════════════════════════════════
+const LAWYER_AVATAR_COLORS = ['#4A6B5C', '#0B1D35', '#B8893A', '#C44536', '#5C6B4A', '#2D4A6B'];
+
+function lawyerInitials(name) {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function lawyerColor(id) {
+  const n = parseInt(String(id).replace(/-/g, '').slice(0, 8), 16) || 0;
+  return LAWYER_AVATAR_COLORS[n % LAWYER_AVATAR_COLORS.length];
+}
+
 function LawyersScreen() {
-  const lawyers = [
-    { n: 'Adv. Farzana Kabir', spec: ['Criminal', 'Cyber'], lang: 'BN · EN', rate: 4.9, count: 312, bar: 'BC-2014-DH-04812', avail: 'Available now', initials: 'FK', color: '#4A6B5C' },
-    { n: 'Adv. Tanvir Hossain', spec: ['Civil', 'Constitutional'], lang: 'BN · EN', rate: 4.7, count: 198, bar: 'BC-2011-DH-02144', avail: 'Replies in 1h', initials: 'TH', color: '#0B1D35' },
-    { n: 'Adv. Mahbuba Akter', spec: ['Family', 'DV Act'], lang: 'BN', rate: 4.8, count: 240, bar: 'BC-2016-DH-06721', avail: 'Available tomorrow', initials: 'MA', color: '#B8893A' },
-    { n: 'Adv. Rifat Chowdhury', spec: ['Cyber', 'Criminal'], lang: 'BN · EN · HI', rate: 4.6, count: 154, bar: 'BC-2018-DH-07810', avail: 'Available now', initials: 'RC', color: '#C44536' },
-  ];
+  const [lawyers, setLawyers] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError]   = React.useState('');
+
+  React.useEffect(() => {
+    fetch('http://localhost:8000/v1/lawyers')
+      .then(r => { if (!r.ok) throw new Error('Failed to load'); return r.json(); })
+      .then(data => { setLawyers(data); setLoading(false); })
+      .catch(() => { setError('Could not load lawyers. Check your connection.'); setLoading(false); });
+  }, []);
 
   return (
     <>
@@ -787,48 +804,66 @@ function LawyersScreen() {
       </div>
 
       <div style={{ padding: '12px 20px 28px' }}>
-        {lawyers.map((l, i) => (
-          <div key={i} style={{
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            Loading lawyers…
+          </div>
+        )}
+        {error && (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--red)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            {error}
+          </div>
+        )}
+        {!loading && !error && lawyers.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            No lawyers found.
+          </div>
+        )}
+        {lawyers.map((l) => (
+          <div key={l.id} style={{
             padding: 14, background: 'rgba(255,255,255,0.7)',
             border: '1px solid var(--mist)', borderRadius: 14, marginBottom: 10,
           }}>
             <div style={{ display: 'flex', gap: 12 }}>
               <div style={{
                 width: 52, height: 52, borderRadius: 12, flexShrink: 0,
-                background: `linear-gradient(135deg, ${l.color}, ${l.color}cc)`,
+                background: `linear-gradient(135deg, ${lawyerColor(l.id)}, ${lawyerColor(l.id)}cc)`,
                 color: '#F7F3EE',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 18,
                 border: '1px solid rgba(11,29,53,0.08)',
-              }}>{l.initials}</div>
+              }}>{lawyerInitials(l.name)}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div className="serif" style={{ fontSize: 15.5, fontWeight: 500, color: 'var(--navy)' }}>{l.n}</div>
-                  <span title="Verified bar-council ID" style={{
-                    width: 14, height: 14, borderRadius: 999, background: 'var(--gold)', color: '#fff',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}><IconCheck size={9} sw={3.2}/></span>
+                  <div className="serif" style={{ fontSize: 15.5, fontWeight: 500, color: 'var(--navy)' }}>{l.name}</div>
+                  {l.verified && (
+                    <span title="Verified bar-council ID" style={{
+                      width: 14, height: 14, borderRadius: 999, background: 'var(--gold)', color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}><IconCheck size={9} sw={3.2}/></span>
+                  )}
                 </div>
-                <div className="mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 1 }}>{l.bar}</div>
-                <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
-                  {l.spec.map(s => (
-                    <span key={s} style={{
-                      padding: '2px 7px', borderRadius: 6, background: 'var(--cream-2)',
-                      border: '1px solid var(--mist)', fontSize: 10, color: 'var(--ink-2)',
-                    }}>{s}</span>
-                  ))}
-                </div>
-                <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--muted)' }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><IconStar size={11} stroke="var(--gold)" fill="var(--gold)"/> {l.rate} <span style={{ color: 'var(--mist-2)' }}>·</span> {l.count}</span>
-                  <span>{l.lang}</span>
-                </div>
+                {l.bar_number && (
+                  <div className="mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 1 }}>{l.bar_number}</div>
+                )}
+                {(l.specializations || []).length > 0 && (
+                  <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
+                    {l.specializations.map(s => (
+                      <span key={s} style={{
+                        padding: '2px 7px', borderRadius: 6, background: 'var(--cream-2)',
+                        border: '1px solid var(--mist)', fontSize: 10, color: 'var(--ink-2)',
+                      }}>{s}</span>
+                    ))}
+                  </div>
+                )}
+                {l.district && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>
+                    {l.district}
+                  </div>
+                )}
               </div>
             </div>
-            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--mist)', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--sage-2)' }}>
-                <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--sage)' }}/> {l.avail}
-              </span>
-              <span style={{ flex: 1 }}/>
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--mist)', display: 'flex', justifyContent: 'flex-end' }}>
               <button style={{
                 padding: '8px 12px', borderRadius: 10, background: 'var(--navy)', color: '#F7F3EE',
                 border: 'none', fontSize: 12, fontWeight: 500, cursor: 'pointer',
@@ -1059,7 +1094,48 @@ function SettingsGroup({ title, items }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  ROUTINES SCREEN — stub (full implementation pending)
+// ═══════════════════════════════════════════════════════════════
+function RoutinesScreen() {
+  return (
+    <>
+      <Header back title="Academic Routine" subtitle="Your class schedule"/>
+      <div style={{ padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{
+          padding: '20px', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+          borderRadius: 14, textAlign: 'center', color: 'var(--muted)',
+          fontFamily: 'var(--font-sans)', fontSize: 13,
+        }}>
+          Routine data is loading…
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  DEPT RATING SCREEN — stub (full implementation pending)
+// ═══════════════════════════════════════════════════════════════
+function DeptRatingScreen() {
+  return (
+    <>
+      <Header back title="Rate Your Department" subtitle="SWE · CSE · BBA"/>
+      <div style={{ padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{
+          padding: '20px', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+          borderRadius: 14, textAlign: 'center', color: 'var(--muted)',
+          fontFamily: 'var(--font-sans)', fontSize: 13,
+        }}>
+          Department ratings are loading…
+        </div>
+      </div>
+    </>
+  );
+}
+
 Object.assign(window, {
   CasesScreen, CaseDetailScreen, MapScreen, FeedScreen,
   LawyersScreen, NoticesScreen, ProfileScreen,
+  RoutinesScreen, DeptRatingScreen,
 });
