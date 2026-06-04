@@ -1237,24 +1237,52 @@ function TrackingLookupScreen() {
   const [result, setResult] = useState(null);
   const [notFound, setNotFound] = useState(false);
 
-  const lookup = () => {
+  const STATUS_LABELS = {
+    received:     'Submitted',
+    under_review: 'Under Review',
+    escalated:    'Escalated',
+    resolved:     'Resolved',
+    dismissed:    'Dismissed',
+    withdrawn:    'Withdrawn',
+  };
+
+  const lookup = async () => {
     const key = code.toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (key.length < 8) return;
     setLoading(true);
     setResult(null);
     setNotFound(false);
-    // BACKEND INTEGRATION POINT: GET /complaints/track/:code
-    setTimeout(() => {
+    try {
+      const res = await fetch(`${AUTH_API}/complaints/track/${key}`);
+      const data = await res.json();
+      if (!res.ok || !data.found) {
+        setNotFound(true);
+      } else {
+        setResult({
+          ref:         data.code,
+          title:       'Anonymous complaint [details redacted]',
+          status:      data.status,
+          statusLabel: STATUS_LABELS[data.status] || data.status,
+          level:       '—',
+          lastUpdated: '—',
+          adminNote:   data.status_message || 'No update from admin yet.',
+        });
+      }
+    } catch (_) {
+      setNotFound(true);
+    } finally {
       setLoading(false);
-      const r = MOCK_TRACKING[key];
-      if (r) setResult(r);
-      else setNotFound(true);
-    }, 700);
+    }
   };
 
   const statusColors = {
-    submitted: 'var(--muted)', review: 'var(--gold)',
-    escalated: 'var(--ember)', resolved: 'var(--sage)',
+    submitted:    'var(--muted)',
+    received:     'var(--muted)',
+    under_review: 'var(--gold)',
+    escalated:    'var(--ember)',
+    resolved:     'var(--sage)',
+    dismissed:    'var(--muted)',
+    withdrawn:    'var(--muted)',
   };
 
   const cleanLen = code.replace(/[^A-Z0-9]/gi, '').length;

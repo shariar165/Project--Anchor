@@ -1,15 +1,21 @@
 import pytest
 from httpx import AsyncClient
-from app.models.anonymous import AnonymousIdentityMapping
+from app.models.filing import Filing, FilingTemplate
 
 
 @pytest.mark.asyncio
 async def test_tracking_found(client: AsyncClient, db_session):
-    record = AnonymousIdentityMapping(
-        anonymous_code="ANCH123456789A",
-        complaint_id="CPL-001",
-        status="under_review",
-        status_message="Your complaint is being reviewed.",
+    template = FilingTemplate(key="test_tmpl", name="Test", category="complaint")
+    db_session.add(template)
+    await db_session.flush()
+
+    record = Filing(
+        template_id=template.id,
+        anonymous_tracking_code="ANCH123456789A",
+        state="under_review",
+        final_outcome_note="Your complaint is being reviewed.",
+        category="complaint",
+        language="en",
     )
     db_session.add(record)
     await db_session.commit()
@@ -19,6 +25,7 @@ async def test_tracking_found(client: AsyncClient, db_session):
     data = resp.json()
     assert data["found"] is True
     assert data["status"] == "under_review"
+    assert data["status_message"] == "Your complaint is being reviewed."
 
 
 @pytest.mark.asyncio
