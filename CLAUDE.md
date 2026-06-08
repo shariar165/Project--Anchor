@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Anchor AI** is a civic trust platform with two layers:
+**Anchor AI** is a civic trust platform with three layers:
 
 1. **Frontend prototype** — React 18 SPA (CDN + Babel Standalone, no build step) in the repo root
 2. **Backend API** — FastAPI + PostgreSQL + Redis in `backend/`; see `backend/CLAUDE.md` for full backend guidance
-3. **Admin panel** — separate no-build React prototype in `D:\Project-Anchor_admin\`; has its own `CLAUDE.md`
+3. **Admin panel** — no-build React prototype in `admin/`; has its own `admin/CLAUDE.md`
 
 Both frontend layers share two operating modes:
 - **Campus Mode** (DIU — Daffodil International University): complaints, applications, academic routine, campus notices
@@ -126,29 +126,68 @@ Key utility classes: `.eyebrow`, `.pill`, `.card`, `.btn`/`.btn-primary`/`.btn-g
 
 ---
 
-## Admin Panel (`D:\Project-Anchor_admin\`)
+## Admin Panel (`admin/`)
 
-Separate no-build React prototype. See `D:\Project-Anchor_admin\CLAUDE.md` for full details.
+No-build React prototype. Full source in `admin/src/`. Deploys to Vercel as a separate project (root directory: `admin/`).
 
 ### Running
 
 ```bash
-cd D:\Project-Anchor_admin
-python -m http.server 8081
+cd admin
+python -m http.server 8081        # Python
+npx serve .                        # Node alternative
+```
+
+Must be served over HTTP — `file://` breaks relative script imports due to browser CORS.
+
+### Entry Points
+
+- **`index.html`** — standalone, self-contained; all JSX from `src/` is inlined as `<script type="text/babel">` blocks. Works offline once cached.
+- **`src/*.jsx`** — modular source of truth. Edit here; if you change logic, re-inline into `index.html` manually in dependency order.
+
+### File Load Order (critical)
+
+No module system — each file exposes components via `Object.assign(window, { ... })`. Load order:
+
+```
+data → primitives → shell → entry → uni-dashboard → uni-complaints →
+uni-routine → uni-misc → super → settings → tweaks-panel → app
 ```
 
 ### Architecture
 
 Two surfaces sharing the `AdminShell` layout (`src/shell.jsx`):
 
-| Surface | Route prefix | Accent | Key file |
-|---------|-------------|--------|----------|
-| University Admin | `/university/...` | `--sage` | `src/uni-*.jsx` |
-| Super Admin | `/super/...` | `--ember` | `src/super.jsx` |
+| Surface | Accent | Entry route | Key file |
+|---------|--------|-------------|----------|
+| University Admin | `--sage` (green) | `/university/login` → `/university/dashboard` | `src/uni-*.jsx` |
+| Super Admin | `--ember` (red) | `/super/login` → `/super/dashboard` | `src/super.jsx` |
 
-Hash-based routing via `useHashRoute` in `src/app.jsx`. Adding a new screen requires wiring it in both the sidebar nav config (in `shell.jsx`) and the `uniView`/`supView` switch in `app.jsx`.
+Hash-based routing via `useHashRoute` in `src/app.jsx`. Adding a new screen requires wiring it in both the sidebar nav config inside `AdminShell` (`shell.jsx`) **and** the `uniView`/`supView` switch in `app.jsx`.
 
-All API calls go through `AnchorAPI` in `src/api.jsx` which reads `anchor_admin_access_token` from `localStorage` and auto-refreshes on 401.
+All API calls go through `AnchorAPI` in `src/api.jsx` — reads `anchor_admin_access_token` from `localStorage` and auto-refreshes on 401.
+
+### Theming System
+
+Colors are CSS custom properties on `:root`. Three orthogonal tweak dimensions set as `data-*` attributes on `<html>` by `app.jsx`:
+
+- `data-palette` — `civic | court | field | ops` (swaps accent colors)
+- `data-voice` — `serif | sans | mono` (swaps heading typeface)
+- `data-surface` — `paper | slate | canvas` (swaps card/border feel)
+
+Dark mode adds `html.dark` class, persisted to `localStorage` under key `anchor:dark`.
+
+### Shared Primitives (`src/primitives.jsx`)
+
+All UI building blocks live here and are exposed on `window`: `Icon`, `KpiCard`, `StatusPill`, `Card`, `PageHeader`, `PrimaryButton`, `GhostButton`, `DataTable`, `ConfirmModal`, `SlideOver`, `Timeline`, `Tag`, `MonoChip`, `AuditNote`, `useDark`. Use these — do not add one-off inline styles when a primitive covers the case.
+
+### Mock Data (`src/data.jsx`)
+
+All sample data (complaints, alerts, tenants, audit log, timetable, etc.) lives in `window.AnchorData` — a plain JS object, no API calls. To add a new data set, add it to the IIFE in `data.jsx` and expose it in the `return` statement.
+
+### Tweaks Panel (`src/tweaks-panel.jsx`)
+
+Ships its own isolated CSS string (`__TWEAKS_STYLE`) injected at runtime. Appears when the panel receives `__activate_edit_mode` via `postMessage`. The `useTweaks` hook stores state in React and posts `__edit_mode_set_keys` messages to the parent frame.
 
 ### Alert Console (Super Admin)
 
