@@ -324,6 +324,38 @@ async def trigger_alert(
     )
 
 
+# ─── My alerts history (static path — must be before /{event_id}) ────────────
+
+@router.get("/v1/alerts/me")
+@limiter.limit("30/minute")
+async def list_my_alerts(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(get_current_user),
+):
+    """Return the authenticated user's own past alert events (most recent first)."""
+    actor_hash = alert_svc.compute_anonymous_hash(token.user_id)
+    result = await db.execute(
+        select(AlertEvent)
+        .where(AlertEvent.anonymous_actor_hash == actor_hash)
+        .order_by(AlertEvent.created_at.desc())
+        .limit(20)
+    )
+    events = result.scalars().all()
+    return [
+        {
+            "event_id": str(ev.event_id),
+            "state": ev.state.value if hasattr(ev.state, "value") else ev.state,
+            "created_at": ev.created_at.isoformat() if ev.created_at else None,
+            "closed_at": ev.closed_at.isoformat() if ev.closed_at else None,
+            "closed_by": ev.closed_by,
+            "lat": ev.lat,
+            "lng": ev.lng,
+        }
+        for ev in events
+    ]
+
+
 # ─── Per-event endpoints (parameterised — must come AFTER static paths) ───────
 
 @router.get("/v1/alerts/{event_id}", response_model=AlertStatusResponse)

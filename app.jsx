@@ -15,6 +15,37 @@ const AUTH_ROUTES = new Set([
   'mfa-verify', 'mfa-setup', 'tracking-lookup',
 ]);
 
+function GeofenceConsentModal({ onAccept, onDecline }) {
+  return (
+    <div style={{ position:'fixed', inset:0, zIndex:9999, background:'rgba(11,29,53,0.55)',
+                  backdropFilter:'blur(4px)', display:'flex', alignItems:'flex-end', justifyContent:'center' }}>
+      <div style={{ background:'var(--cream)', borderRadius:'24px 24px 0 0', padding:'28px 24px 40px',
+                    width:'100%', maxWidth:402 }}>
+        <div style={{ width:40, height:4, borderRadius:999, background:'var(--mist)',
+                      margin:'0 auto 22px' }}/>
+        <div style={{ fontSize:22, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)',
+                      marginBottom:12 }}>Enable nearby alerts?</div>
+        <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.65,
+                    fontFamily:'var(--font-sans)', marginBottom:24 }}>
+          Anchor can notify you when someone near you triggers an emergency alert.
+          Your location is shared anonymously and never stored beyond 10 minutes.
+          You can turn this off at any time in Settings.
+        </p>
+        <button onClick={onAccept} className="btn btn-primary"
+          style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600, marginBottom:10 }}>
+          Enable nearby alerts
+        </button>
+        <button onClick={onDecline}
+          style={{ width:'100%', height:40, borderRadius:12, fontSize:14,
+                   background:'transparent', border:'none', cursor:'pointer',
+                   color:'var(--muted)', fontFamily:'var(--font-sans)' }}>
+          Not now
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AppProvider({ children }) {
   // Must be declared before useState so the initial mode and route are derived correctly
   const getStoredAuth = () => {
@@ -34,6 +65,12 @@ function AppProvider({ children }) {
     name: stored?.isAuthenticated ? 'home' : 'login',
     params: {},
   });
+  const [geofenceConsent, setGeofenceConsent] = useState(
+    localStorage.getItem('anchor_geofence_consent') === 'true'
+  );
+  const [showGeofencePrompt, setShowGeofencePrompt] = useState(false);
+  const watchIdRef = useRef(null);
+  const lastLocationPostRef = useRef(0);
 
   const go = (name, params = {}) => {
     setHistory(h => [...h, route]);
@@ -56,12 +93,18 @@ function AppProvider({ children }) {
     setAuth(newAuth);
     localStorage.setItem('anchor_auth', JSON.stringify(newAuth));
     if (userData.role === 'user') setMode('country');
+    if (localStorage.getItem('anchor_geofence_consent_answered') !== 'true') {
+      setShowGeofencePrompt(true);
+    }
   };
   const logout = () => {
     setAuth({ isAuthenticated: false, user: null, authStep: null, pendingIdentifier: null });
     localStorage.removeItem('anchor_auth');
     localStorage.removeItem('anchor_access_token');
     localStorage.removeItem('anchor_refresh_token');
+    localStorage.removeItem('anchor_geofence_consent');
+    localStorage.removeItem('anchor_geofence_consent_answered');
+    setGeofenceConsent(false);
     setHistory([]);
     setRoute({ name: 'login', params: {} });
   };
@@ -69,8 +112,62 @@ function AppProvider({ children }) {
     setAuth(a => ({ ...a, ...pending }));
   };
 
-  const value = { mode, setMode, route, go, back, lang, setLang, auth, login, logout, setAuthPending };
-  return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
+  useEffect(() => {
+    if (!auth.isAuthenticated || !geofenceConsent) {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+      return;
+    }
+    if (!navigator.geolocation) return;
+    const THROTTLE_MS = 90_000;
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        const now = Date.now();
+        if (now - lastLocationPostRef.current < THROTTLE_MS) return;
+        lastLocationPostRef.current = now;
+        const accessToken = localStorage.getItem('anchor_access_token');
+        if (!accessToken) return;
+        fetch('http://localhost:8000/v1/users/me/location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + accessToken },
+          body: JSON.stringify({ lat: pos.coords.latitude, lng: pos.coords.longitude, geofence_consent: true }),
+        }).catch(err => console.warn('[Location] Snapshot failed:', err));
+      },
+      (err) => console.info('[Location] watchPosition error:', err.code),
+      { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 }
+    );
+    return () => {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+    };
+  }, [auth.isAuthenticated, geofenceConsent]);
+
+  const value = { mode, setMode, route, go, back, lang, setLang, auth, login, logout,
+                  setAuthPending, geofenceConsent, setGeofenceConsent };
+  return (
+    <AppCtx.Provider value={value}>
+      {children}
+      {showGeofencePrompt && (
+        <GeofenceConsentModal
+          onAccept={() => {
+            localStorage.setItem('anchor_geofence_consent', 'true');
+            localStorage.setItem('anchor_geofence_consent_answered', 'true');
+            setGeofenceConsent(true);
+            setShowGeofencePrompt(false);
+          }}
+          onDecline={() => {
+            localStorage.setItem('anchor_geofence_consent', 'false');
+            localStorage.setItem('anchor_geofence_consent_answered', 'true');
+            setShowGeofencePrompt(false);
+          }}
+        />
+      )}
+    </AppCtx.Provider>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -252,13 +349,16 @@ function RouteView() {
     alert:   AlertScreen,
     map:     MapScreen,
     feed:            VerificationFeedScreen,
+    'news-feed':     FeedScreen,
     'feed-publish':  PublishScreen,
     'feed-post':     PostDetailScreen,
     'feed-profile':  FeedProfileScreen,
     'feed-admin':    FeedAdminScreen,
     'feed-moderate': FeedModerateScreen,
-    lawyers: LawyersScreen,
-    notices: NoticesScreen,
+    lawyers:      LawyersScreen,
+    notices:      NoticesScreen,
+    routines:     RoutinesScreen,
+    'dept-rating': DeptRatingScreen,
     profile: ProfileScreen,
     compose: ComposeScreen,
     rights:  RightsScreen,

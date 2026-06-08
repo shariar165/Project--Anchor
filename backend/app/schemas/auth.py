@@ -106,3 +106,5 @@ class UserInfo(BaseModel):
     mfa_enabled: bool
     email_verified: bool
     phone_verified: bool
+    total_filings: int = 0
+    resolved_filings: int = 0

@@ -43,6 +43,14 @@ def _disable_hibp(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _disable_email(monkeypatch):
+    """Block real email delivery in tests so dev_otp is always returned by /auth/register."""
+    async def _fake_send(to: str, subject: str, html_content: str) -> bool:
+        return False
+    monkeypatch.setattr("app.services.email.send_email", _fake_send)
+
+
+@pytest.fixture(autouse=True)
 def _disable_rate_limit():
     """
     Disable slowapi rate limiting for all tests.

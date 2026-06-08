@@ -346,18 +346,6 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const ZONES = [
-  { id:'z1', zone_type:'rape',       status:'active',              center_lat:23.7461, center_lng:90.3742, radius_m:500,  description_public:'A verified sexual assault incident has been reported in this area.',                         created_at:'May 20, 2026', label:'Dhanmondi-15' },
-  { id:'z2', zone_type:'murder',     status:'active',              center_lat:23.7589, center_lng:90.3634, radius_m:500,  description_public:'A verified murder case has been reported in this area.',                                   created_at:'May 18, 2026', label:'Mohammadpur-7' },
-  { id:'z3', zone_type:'rape',       status:'under_investigation', center_lat:23.8088, center_lng:90.3672, radius_m:500,  description_public:'A verified sexual assault incident has been reported in this area.',                         created_at:'May 14, 2026', label:'Mirpur-10' },
-  { id:'z4', zone_type:'murder',     status:'resolved',            center_lat:23.7228, center_lng:90.3668, radius_m:500,  description_public:'A verified murder case has been reported in this area.',                                   created_at:'Feb 2026',     label:'Hazaribagh' },
-  { id:'z5', zone_type:'rape',       status:'active',              center_lat:23.7340, center_lng:90.3980, radius_m:500,  description_public:'A verified sexual assault incident has been reported in this area.',                         created_at:'Apr 2026',     label:'New Market' },
-  { id:'z6', zone_type:'alert',      status:'active',              center_lat:23.7504, center_lng:90.3850, radius_m:1000, description_public:'An emergency alert was triggered nearby. Tap if you can assist or to view safety actions.',  created_at:'Jun 1, 2026',  label:'Sobhanbag Area' },
-  { id:'z7', zone_type:'university', status:'active', shape_type:'polygon',
-    polygon_geojson:{ type:'Feature', geometry:{ type:'Polygon',
-      coordinates:[[[90.4326,23.8742],[90.4396,23.8742],[90.4396,23.8792],[90.4326,23.8792],[90.4326,23.8742]]] } },
-    description_public:'Daffodil International University campus boundary.', created_at:'Jan 2026', label:'DIU Campus' },
-];
 
 function MapScreen() {
   const mapContainerRef = React.useRef(null);
@@ -370,6 +358,24 @@ function MapScreen() {
   const [userLoc,     setUserLoc]     = React.useState({ lat:23.7450, lng:90.3718 });
   const [locStatus,   setLocStatus]   = React.useState('default');
   const [nearbyZones, setNearbyZones] = React.useState([]);
+  const [zones,        setZones]        = React.useState([]);
+  const [zonesLoading, setZonesLoading] = React.useState(true);
+  const [zonesError,   setZonesError]   = React.useState(null);
+
+  const fetchZones = React.useCallback(() => {
+    fetch('http://localhost:8000/v1/zones')
+      .then(r => { if (!r.ok) throw new Error('Server error ' + r.status); return r.json(); })
+      .then(d => { setZones(Array.isArray(d) ? d : []); setZonesError(null); })
+      .catch(e => setZonesError(e.message || 'Could not reach server'))
+      .finally(() => setZonesLoading(false));
+  }, []);
+
+  // Fetch zones on mount, then poll every 30 s so new admin-created zones appear automatically
+  React.useEffect(() => {
+    fetchZones();
+    const id = setInterval(fetchZones, 30000);
+    return () => clearInterval(id);
+  }, [fetchZones]);
 
   // Init Leaflet map once on mount
   React.useEffect(() => {
@@ -410,7 +416,7 @@ function MapScreen() {
 
     const STATUS_LABEL = { active:'Active', under_investigation:'Under investigation', resolved:'Resolved' };
 
-    const visible = ZONES.filter(z =>
+    const visible = zones.filter(z =>
       z.status !== 'archived' &&
       typeFilters[z.zone_type] &&
       (filter === 'all' || z.status === filter)
@@ -450,13 +456,13 @@ function MapScreen() {
     });
 
     // Update nearby list (circle zones only, sorted by distance)
-    const nearby = ZONES
+    const nearby = zones
       .filter(z => z.status !== 'archived' && z.center_lat && typeFilters[z.zone_type] && (filter === 'all' || z.status === filter))
       .map(z => ({ ...z, dist: haversineDistance(userLoc.lat, userLoc.lng, z.center_lat, z.center_lng) }))
       .sort((a, b) => a.dist - b.dist)
       .slice(0, 5);
     setNearbyZones(nearby);
-  }, [filter, JSON.stringify(typeFilters), userLoc.lat, userLoc.lng]);
+  }, [filter, JSON.stringify(typeFilters), userLoc.lat, userLoc.lng, JSON.stringify(zones)]);
 
   // User location marker
   React.useEffect(() => {
@@ -472,7 +478,7 @@ function MapScreen() {
       .addTo(map);
   }, [userLoc.lat, userLoc.lng]);
 
-  const activeCount = ZONES.filter(z => z.status === 'active').length;
+  const activeCount = zones.filter(z => z.status === 'active').length;
   const locHint = {
     locating: 'Locating you…',
     found:    'Using your location',
@@ -488,12 +494,24 @@ function MapScreen() {
       <div style={{ padding: '4px 20px 12px' }}>
         <div className="eyebrow">Red Zone Map · Dhaka</div>
         <h1 className="h-display" style={{ fontSize: 24, margin: '4px 0 0', lineHeight: 1.1 }}>
-          {activeCount} active zones
+          {zonesLoading ? '…' : activeCount} active zones
         </h1>
         <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)', fontStyle: 'italic', fontFamily: 'var(--font-serif)' }}>
           {locHint}
         </div>
       </div>
+
+      {/* Error banner — shown when zone fetch fails */}
+      {zonesError && (
+        <div style={{ margin: '0 20px 10px', padding: '8px 12px', borderRadius: 10,
+          background: '#FEE2E2', color: '#991B1B', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ flex: 1 }}>⚠ {zonesError}</span>
+          <button onClick={fetchZones} style={{ marginLeft: 'auto', textDecoration: 'underline',
+            background: 'none', border: 'none', cursor: 'pointer', color: '#991B1B', fontSize: 12 }}>
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Status filter tabs */}
       <div style={{ padding: '0 20px 10px', display: 'flex', gap: 6, overflowX: 'auto' }} className="no-scrollbar">
@@ -506,6 +524,12 @@ function MapScreen() {
             fontSize: 11.5, fontWeight: 500,
           }}>{l}</button>
         ))}
+        <button onClick={fetchZones} style={{
+          padding: '7px 10px', borderRadius: 999, whiteSpace: 'nowrap', cursor: 'pointer',
+          background: 'rgba(255,255,255,0.7)', color: 'var(--ink-2)',
+          border: '1px solid var(--mist)', fontSize: 11.5, fontWeight: 500,
+          marginLeft: 'auto', flexShrink: 0,
+        }} title="Refresh zones">⟳</button>
       </div>
 
       {/* Map */}
@@ -566,20 +590,73 @@ function MapScreen() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  FEED SCREEN — newspaper layout, mode-filtered
+//  FEED SCREEN — newspaper layout, live from /v1/feed
 // ═══════════════════════════════════════════════════════════════
 function FeedScreen() {
   const { mode } = useApp();
   const [tab, setTab] = React.useState('top');
-  const items = FEED.filter(f => f.scope === mode);
+  const [posts, setPosts] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState('');
   const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
 
-  const visible = items.filter(it => {
-    if (tab === 'top')      return it.trusted || it.corr > 100;
-    if (tab === 'recent')   return true;
-    if (tab === 'trusted')  return it.trusted;
-    return true;
-  });
+  const ART_FOR_CATEGORY = {
+    incident: 'protest', missing_person: 'building', road: 'road',
+    safety: 'court', civic_event: 'building',
+  };
+  const KICKER_FOR_CATEGORY = {
+    incident: 'Incident', missing_person: 'Missing Person',
+    road: 'Road & Traffic', safety: 'Public Safety', civic_event: 'Civic Event',
+  };
+
+  function timeAgo(iso) {
+    if (!iso) return '';
+    const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+  }
+
+  function toItem(p) {
+    const scopeKey = p.scope === 'campus' ? 'campus' : 'country';
+    const edition = scopeKey === 'campus' ? 'Campus' : 'National';
+    const catLabel = KICKER_FOR_CATEGORY[p.category] || p.category;
+    return {
+      id: p.id,
+      scope: scopeKey,
+      art: ART_FOR_CATEGORY[p.category] || 'building',
+      kicker: edition + ' · ' + catLabel,
+      headline: p.title,
+      byline: { author: 'Community Reporter', source: 'Anchor Verified Feed', when: timeAgo(p.created_at) },
+      lead: '',
+      corr: p.signal_counts?.corroborate ?? 0,
+      chal: p.signal_counts?.challenge ?? 0,
+      trusted: p.admin_confirmed,
+    };
+  }
+
+  React.useEffect(() => {
+    setLoading(true);
+    setError('');
+    const apiScope = mode === 'campus' ? 'campus' : 'national';
+    const sort = tab === 'recent' ? 'recent' : 'corroborate';
+    const token = localStorage.getItem('anchor_access_token');
+    const headers = token ? { Authorization: 'Bearer ' + token } : {};
+    fetch(`http://localhost:8000/v1/feed?scope=${apiScope}&sort=${sort}&page=1&page_size=30`, { headers })
+      .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
+        return r.json();
+      })
+      .then(data => {
+        const items = Array.isArray(data) ? data : (data?.items ?? []);
+        setPosts(items);
+        setLoading(false);
+      })
+      .catch(err => { setError(err.message || 'Could not load feed.'); setLoading(false); });
+  }, [mode, tab]);
+
+  const items = posts.map(toItem);
+  const visible = tab === 'trusted' ? items.filter(it => it.trusted) : items;
   const [hero, ...rest] = visible;
 
   return (
@@ -598,7 +675,7 @@ function FeedScreen() {
             </div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0, paddingLeft: 10 }}>
-            <div className="eyebrow" style={{ fontSize: 9 }}>Vol. 1 · 042</div>
+            <div className="eyebrow" style={{ fontSize: 9 }}>Vol. 1 · Live</div>
             <div className="serif" style={{ fontStyle: 'italic', fontSize: 10.5, color: 'var(--muted)', marginTop: 2 }}>
               Human-moderated
             </div>
@@ -614,27 +691,45 @@ function FeedScreen() {
       </div>
 
       <div style={{ padding: '14px 20px 28px' }}>
-        {/* Hero story */}
-        {hero && <NewsFeature item={hero}/>}
-
-        {/* Section rule */}
-        {rest.length > 0 && (
-          <div className="news-rule">More from this edition</div>
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            Loading edition…
+          </div>
         )}
 
-        {/* Two-column-ish stack of rest */}
-        {rest.map(it => <NewsCard key={it.id} item={it}/>)}
-
-        {visible.length === 0 && (
-          <div style={{ padding: '60px 20px', textAlign: 'center' }}>
-            <div className="serif" style={{ fontSize: 20, color: 'var(--navy)' }}>Nothing in this section yet.</div>
-            <div style={{ marginTop: 6, fontSize: 13, color: 'var(--muted)', fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>
-              Switch tab to see other stories.
+        {!loading && error && (
+          <div style={{ margin: '16px 0', padding: '14px 16px', background: 'rgba(232,49,42,0.06)', border: '1px solid rgba(232,49,42,0.2)', borderRadius: 12 }}>
+            <div style={{ fontSize: 13, color: 'var(--red)', fontFamily: 'var(--font-sans)' }}>{error}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, fontFamily: 'var(--font-sans)' }}>
+              Check that the backend server is running on port 8000.
             </div>
           </div>
         )}
 
-        <div className="rule-fancy" style={{ marginTop: 22 }}>End of edition · {items.length} verified items</div>
+        {!loading && !error && (
+          <>
+            {hero && <NewsFeature item={hero}/>}
+
+            {rest.length > 0 && (
+              <div className="news-rule">More from this edition</div>
+            )}
+
+            {rest.map(it => <NewsCard key={it.id} item={it}/>)}
+
+            {visible.length === 0 && (
+              <div style={{ padding: '60px 20px', textAlign: 'center' }}>
+                <div className="serif" style={{ fontSize: 20, color: 'var(--navy)' }}>Nothing in this section yet.</div>
+                <div style={{ marginTop: 6, fontSize: 13, color: 'var(--muted)', fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>
+                  Switch tab to see other stories.
+                </div>
+              </div>
+            )}
+
+            {visible.length > 0 && (
+              <div className="rule-fancy" style={{ marginTop: 22 }}>End of edition · {visible.length} verified items</div>
+            )}
+          </>
+        )}
       </div>
     </>
   );
@@ -883,21 +978,42 @@ function LawyersScreen() {
 //  NOTICES SCREEN
 // ═══════════════════════════════════════════════════════════════
 function NoticesScreen() {
-  const notices = [
-    { tag: 'University-wide', date: 'May 23, 2026', title: 'Summer 2026 mid-term examination schedule released',
-      bn: 'গ্রীষ্ম ২০২৬ মিড-টার্ম পরীক্ষার সময়সূচি প্রকাশিত',
-      summary: 'Mid-terms for all departments will commence on June 8. Detailed routine attached. Students must collect admit cards from departmental offices by June 3.' },
-    { tag: 'Department · SWE', date: 'May 22, 2026', title: 'SWE-3rd year industrial visit — registration open',
-      bn: 'SWE-৩য় বর্ষের ইন্ডাস্ট্রিয়াল ভিজিটের রেজিস্ট্রেশন চলছে',
-      summary: 'Two-day visit to Robi Axiata and BJIT. Limited to 60 students. Selection on merit + first-come basis.' },
-    { tag: 'Batch · 2024', date: 'May 21, 2026', title: 'Tuition fee installment reminder — 2nd cycle',
-      bn: '২৪ ব্যাচ — টিউশন ফি ২য় কিস্তির রিমাইন্ডার',
-      summary: 'Final date to pay 2nd installment is May 31. Late payment incurs 5% surcharge.' },
-    { tag: 'University-wide', date: 'May 19, 2026', title: 'Library inter-section renovation — temporary access changes',
-      bn: 'লাইব্রেরি সেকশনের সংস্কার — সাময়িক প্রবেশ পরিবর্তন',
-      summary: 'Sections A and B will be closed from May 25 to June 12. Students may access digital library and reading room C as usual.' },
-  ];
-  const [showBn, setShowBn] = React.useState(false);
+  const TABS = ['All', 'University', 'Department', 'Batch'];
+  const SCOPE_MAP = { All: null, University: 'university', Department: 'dept', Batch: 'batch' };
+
+  const [tab, setTab] = React.useState('All');
+  const [notices, setNotices] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState('');
+
+  React.useEffect(() => {
+    setLoading(true);
+    setError('');
+    const scope = SCOPE_MAP[tab];
+    const qs = scope ? `?scope=${scope}&page=1` : '?page=1';
+    const token = localStorage.getItem('anchor_access_token');
+    const headers = token ? { Authorization: 'Bearer ' + token } : {};
+    fetch('http://localhost:8000/v1/notices' + qs, { headers })
+      .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
+        return r.json();
+      })
+      .then(data => { setNotices(data); setLoading(false); })
+      .catch(err => { setError(err.message || 'Could not load notices.'); setLoading(false); });
+  }, [tab]);
+
+  function tagLabel(n) {
+    if (n.scope === 'university') return 'University-wide';
+    if (n.scope === 'dept') return 'Department' + (n.dept ? ' · ' + n.dept : '');
+    if (n.scope === 'batch') return 'Batch' + (n.batch ? ' · ' + n.batch : '');
+    return n.scope;
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }); }
+    catch { return iso; }
+  }
 
   return (
     <>
@@ -905,44 +1021,53 @@ function NoticesScreen() {
 
       <div style={{ padding: '12px 20px 4px', display: 'flex', alignItems: 'center', gap: 8 }}>
         <div className="tabbar" style={{ flex: 1 }}>
-          {['All', 'University', 'Department', 'Batch'].map((t, i) => (
-            <button key={t} className={i === 0 ? 'on' : ''}>{t}</button>
+          {TABS.map(t => (
+            <button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>{t}</button>
           ))}
         </div>
       </div>
 
-      <div style={{ padding: '8px 20px 4px', display: 'flex', justifyContent: 'flex-end' }}>
-        <button onClick={() => setShowBn(v => !v)} style={{
-          padding: '6px 10px', borderRadius: 999, background: 'transparent',
-          border: '1px solid var(--mist-2)', fontSize: 11, fontWeight: 600,
-          letterSpacing: '0.06em', color: 'var(--ink-2)', cursor: 'pointer',
-          display: 'inline-flex', alignItems: 'center', gap: 5,
-        }}>
-          <IconSparkles size={12} stroke="var(--gold)"/> AI summary · {showBn ? 'বাংলা' : 'English'}
-        </button>
-      </div>
-
       <div style={{ padding: '8px 20px 28px' }}>
-        {notices.map((n, i) => (
-          <div key={i} style={{
-            padding: '18px 0', borderBottom: '1px solid var(--mist)',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <span className="eyebrow">{n.tag}</span>
-              <span style={{ width: 3, height: 3, borderRadius: 999, background: 'var(--mist-2)' }}/>
-              <span className="mono" style={{ fontSize: 10.5, color: 'var(--muted)' }}>{n.date}</span>
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            Loading notices…
+          </div>
+        )}
+
+        {!loading && error && (
+          <div style={{ margin: '16px 0', padding: '14px 16px', background: 'rgba(232,49,42,0.06)', border: '1px solid rgba(232,49,42,0.2)', borderRadius: 12 }}>
+            <div style={{ fontSize: 13, color: 'var(--red)', fontFamily: 'var(--font-sans)' }}>{error}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, fontFamily: 'var(--font-sans)' }}>
+              Check that the backend server is running on port 8000.
             </div>
-            <div className={showBn ? 'serif bn' : 'serif'} style={{
-              fontSize: showBn ? 18 : 19, fontWeight: 500,
+          </div>
+        )}
+
+        {!loading && !error && notices.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            No notices published yet for this category.
+          </div>
+        )}
+
+        {!loading && !error && notices.map(n => (
+          <div key={n.id} style={{ padding: '18px 0', borderBottom: '1px solid var(--mist)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span className="eyebrow">{tagLabel(n)}</span>
+              <span style={{ width: 3, height: 3, borderRadius: 999, background: 'var(--mist-2)' }}/>
+              <span className="mono" style={{ fontSize: 10.5, color: 'var(--muted)' }}>
+                {fmtDate(n.published_at || n.created_at)}
+              </span>
+            </div>
+            <div className="serif" style={{
+              fontSize: 19, fontWeight: 500,
               lineHeight: 1.2, color: 'var(--navy)', letterSpacing: '-0.005em',
             }}>
-              {showBn ? n.bn : n.title}
+              {n.title}
             </div>
-            <div style={{ marginTop: 8, padding: '10px 12px', background: 'rgba(184,137,58,0.06)', border: '1px solid rgba(184,137,58,0.18)', borderRadius: 10 }}>
-              <div className="eyebrow" style={{ color: 'var(--gold)', marginBottom: 4, fontSize: 9.5 }}>
-                <IconSparkles size={10} stroke="var(--gold)"/> AI summary
+            <div style={{ marginTop: 8, padding: '10px 12px', background: 'rgba(74,107,92,0.06)', border: '1px solid rgba(74,107,92,0.18)', borderRadius: 10 }}>
+              <div style={{ fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.45 }}>
+                {n.body.length > 280 ? n.body.slice(0, 280) + '…' : n.body}
               </div>
-              <div style={{ fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.45 }}>{n.summary}</div>
             </div>
           </div>
         ))}
@@ -955,7 +1080,7 @@ function NoticesScreen() {
 //  PROFILE SCREEN
 // ═══════════════════════════════════════════════════════════════
 function ProfileScreen() {
-  const { go, logout, auth } = useApp();
+  const { go, logout, auth, geofenceConsent, setGeofenceConsent } = useApp();
   const user = auth && auth.user;
   const displayName = user ? user.name : 'Sadia Akter';
   const isStudent = user && user.role === 'student';
@@ -1026,6 +1151,35 @@ function ProfileScreen() {
           { label: 'Export my data',      value: 'JSON · PDF',       Icon: IconUpload },
           { label: 'Delete account',      value: 'Permanent',         Icon: IconX, danger: true },
         ]}/>
+        {/* Location consent */}
+        <div style={{ marginBottom: 16 }}>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>Location</div>
+          <div style={{ background:'rgba(255,255,255,0.7)', border:'1px solid var(--mist)',
+                        borderRadius:14, padding:'12px 14px',
+                        display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <div>
+              <div style={{ fontSize:14, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-sans)' }}>
+                Nearby alerts
+              </div>
+              <div style={{ fontSize:12, color:'var(--muted)', fontFamily:'var(--font-sans)', marginTop:2 }}>
+                Share anonymous location for alert fan-out
+              </div>
+            </div>
+            <button onClick={() => {
+                const next = !geofenceConsent;
+                localStorage.setItem('anchor_geofence_consent', String(next));
+                localStorage.setItem('anchor_geofence_consent_answered', 'true');
+                setGeofenceConsent(next);
+              }}
+              style={{ width:44, height:26, borderRadius:999, border:'none', cursor:'pointer', flexShrink:0,
+                       background: geofenceConsent ? 'var(--sage)' : 'var(--mist)', position:'relative',
+                       transition:'background 0.2s' }}>
+              <span style={{ position:'absolute', top:3, left: geofenceConsent ? 21 : 3,
+                             width:20, height:20, borderRadius:999, background:'#fff',
+                             boxShadow:'0 1px 3px rgba(0,0,0,0.18)', transition:'left 0.2s' }}/>
+            </button>
+          </div>
+        </div>
         {/* Sign out */}
         <div style={{ marginBottom: 16 }}>
           <button onClick={logout} style={{
@@ -1095,40 +1249,377 @@ function SettingsGroup({ title, items }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  ROUTINES SCREEN — stub (full implementation pending)
+//  ROUTINES SCREEN
 // ═══════════════════════════════════════════════════════════════
 function RoutinesScreen() {
+  const [routines, setRoutines] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState('');
+
+  React.useEffect(() => {
+    setLoading(true);
+    setError('');
+    const token = localStorage.getItem('anchor_access_token');
+    const headers = token ? { Authorization: 'Bearer ' + token } : {};
+    fetch('http://localhost:8000/v1/routines?page=1', { headers })
+      .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
+        return r.json();
+      })
+      .then(data => { setRoutines(data); setLoading(false); })
+      .catch(err => { setError(err.message || 'Could not load routines.'); setLoading(false); });
+  }, []);
+
+  function fmtDate(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+    catch { return iso; }
+  }
+
   return (
     <>
       <Header back title="Academic Routine" subtitle="Your class schedule"/>
-      <div style={{ padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{
-          padding: '20px', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
-          borderRadius: 14, textAlign: 'center', color: 'var(--muted)',
-          fontFamily: 'var(--font-sans)', fontSize: 13,
-        }}>
-          Routine data is loading…
-        </div>
+      <div style={{ padding: '16px 20px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            Loading routines…
+          </div>
+        )}
+
+        {!loading && error && (
+          <div style={{ padding: '14px 16px', background: 'rgba(232,49,42,0.06)', border: '1px solid rgba(232,49,42,0.2)', borderRadius: 12 }}>
+            <div style={{ fontSize: 13, color: 'var(--red)', fontFamily: 'var(--font-sans)' }}>{error}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, fontFamily: 'var(--font-sans)' }}>
+              Check that the backend server is running on port 8000.
+            </div>
+          </div>
+        )}
+
+        {!loading && !error && routines.length === 0 && (
+          <div style={{ padding: '48px 16px', textAlign: 'center' }}>
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, color: 'var(--navy)', fontWeight: 500 }}>
+              No routines published yet
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>
+              Your admin hasn't published a class schedule yet. Check back later.
+            </div>
+          </div>
+        )}
+
+        {!loading && !error && routines.map(r => (
+          <div key={r.id} style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, overflow: 'hidden' }}>
+            <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid var(--mist)' }}>
+              <div style={{ fontFamily: 'var(--font-serif)', fontSize: 17, fontWeight: 500, color: 'var(--navy)', lineHeight: 1.2 }}>
+                {r.title}
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 5, fontSize: 11.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', flexWrap: 'wrap' }}>
+                {r.department && <span>Dept: <strong style={{ color: 'var(--ink-2)' }}>{r.department}</strong></span>}
+                {r.batch && <span>Batch: <strong style={{ color: 'var(--ink-2)' }}>{r.batch}</strong></span>}
+                {r.semester && <span>Semester: <strong style={{ color: 'var(--ink-2)' }}>{r.semester}</strong></span>}
+                {r.published_at && (
+                  <span className="mono" style={{ fontSize: 10.5 }}>Published {fmtDate(r.published_at)}</span>
+                )}
+              </div>
+            </div>
+
+            {Array.isArray(r.slots) && r.slots.length > 0 ? (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, fontFamily: 'var(--font-sans)' }}>
+                  <thead>
+                    <tr style={{ background: 'rgba(74,107,92,0.07)' }}>
+                      {['Day', 'Time', 'Course', 'Room', 'Teacher'].map(h => (
+                        <th key={h} style={{
+                          padding: '7px 12px', textAlign: 'left', fontWeight: 600,
+                          color: 'var(--graphite)', fontSize: 10.5, letterSpacing: '0.05em',
+                          textTransform: 'uppercase', borderBottom: '1px solid var(--mist)', whiteSpace: 'nowrap',
+                        }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {r.slots.map((slot, i) => (
+                      <tr key={i} style={{ borderBottom: i < r.slots.length - 1 ? '1px solid var(--mist)' : 'none' }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--ink-2)', whiteSpace: 'nowrap' }}>{slot.day || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'nowrap' }}>{slot.time || slot.start_time || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--navy)', fontWeight: 500 }}>{slot.course || slot.course_code || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--ink-2)' }}>{slot.room || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--ink-2)' }}>{slot.teacher || slot.instructor || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ padding: '14px 16px', fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontStyle: 'italic' }}>
+                No class slots defined for this routine.
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  DEPT RATING SCREEN — stub (full implementation pending)
+//  DEPT RATING SCREEN
 // ═══════════════════════════════════════════════════════════════
+function StarPicker({ value, onChange, label, optional }) {
+  const labels = ['', 'Poor', 'Fair', 'Good', 'Very good', 'Excellent'];
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--graphite)', fontFamily: 'var(--font-sans)', marginBottom: 6 }}>
+        {label}{optional && <span style={{ fontWeight: 400, color: 'var(--muted)' }}> (optional)</span>}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+        {[1, 2, 3, 4, 5].map(n => (
+          <button key={n} onClick={() => onChange(value === n ? 0 : n)} style={{
+            width: 34, height: 34, borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 18,
+            background: n <= value ? 'rgba(184,137,58,0.12)' : 'rgba(255,255,255,0.7)',
+            color: n <= value ? 'var(--gold)' : 'var(--mist-2)',
+            outline: n <= value ? '1px solid rgba(184,137,58,0.4)' : '1px solid var(--mist)',
+            transition: 'all 0.15s',
+          }}>★</button>
+        ))}
+        {value > 0 && (
+          <span style={{ marginLeft: 4, fontSize: 11.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>
+            {labels[value]}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DeptRatingScreen() {
+  const DEPTS = ['SWE', 'CSE', 'EEE', 'BBA', 'English', 'Law'];
+
+  const [selectedDept, setSelectedDept] = React.useState('SWE');
+  const [summary, setSummary] = React.useState(null);
+  const [summaryLoading, setSummaryLoading] = React.useState(true);
+  const [summaryError, setSummaryError] = React.useState('');
+
+  const [overall, setOverall] = React.useState(0);
+  const [teaching, setTeaching] = React.useState(0);
+  const [resources, setResources] = React.useState(0);
+  const [environment, setEnvironment] = React.useState(0);
+  const [feedback, setFeedback] = React.useState('');
+  const [anonymous, setAnonymous] = React.useState(false);
+  const [period, setPeriod] = React.useState('Spring-2026');
+  const [submitting, setSubmitting] = React.useState(false);
+  const [submitted, setSubmitted] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState('');
+  const [alreadyRated, setAlreadyRated] = React.useState(false);
+
+  const isLoggedIn = !!localStorage.getItem('anchor_access_token');
+
+  React.useEffect(() => {
+    setSummaryLoading(true);
+    setSummaryError('');
+    setSummary(null);
+    setSubmitted(false);
+    setSubmitError('');
+    setAlreadyRated(false);
+    setOverall(0); setTeaching(0); setResources(0); setEnvironment(0); setFeedback('');
+
+    fetch('http://localhost:8000/v1/departments/' + encodeURIComponent(selectedDept) + '/summary')
+      .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
+        return r.json();
+      })
+      .then(data => { setSummary(data); setSummaryLoading(false); })
+      .catch(err => { setSummaryError(err.message || 'Could not load summary.'); setSummaryLoading(false); });
+  }, [selectedDept]);
+
+  const handleSubmit = async () => {
+    if (overall === 0) { setSubmitError('Please select an overall rating.'); return; }
+    setSubmitting(true);
+    setSubmitError('');
+    setAlreadyRated(false);
+    try {
+      const token = localStorage.getItem('anchor_access_token');
+      const r = await fetch('http://localhost:8000/v1/departments/ratings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: 'Bearer ' + token } : {}),
+        },
+        body: JSON.stringify({
+          department: selectedDept,
+          period,
+          overall,
+          teaching_quality: teaching || undefined,
+          resources: resources || undefined,
+          environment: environment || undefined,
+          feedback: feedback.trim() || undefined,
+          anonymous,
+        }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 409) { setAlreadyRated(true); return; }
+        throw new Error(d.detail || 'Submission failed.');
+      }
+      setSubmitted(true);
+      fetch('http://localhost:8000/v1/departments/' + encodeURIComponent(selectedDept) + '/summary')
+        .then(res => res.ok ? res.json() : null)
+        .then(data => { if (data) setSummary(data); });
+    } catch (err) {
+      setSubmitError(err.message || 'Submission failed. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  function AvgBar({ val, label }) {
+    if (val == null) return null;
+    const pct = (val / 5) * 100;
+    return (
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, fontFamily: 'var(--font-sans)', marginBottom: 4 }}>
+          <span style={{ color: 'var(--ink-2)' }}>{label}</span>
+          <span className="mono" style={{ color: 'var(--navy)', fontSize: 12 }}>{val.toFixed(1)} / 5</span>
+        </div>
+        <div style={{ height: 5, background: 'var(--mist)', borderRadius: 999, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: pct + '%', background: 'var(--sage)', borderRadius: 999 }}/>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
-      <Header back title="Rate Your Department" subtitle="SWE · CSE · BBA"/>
-      <div style={{ padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{
-          padding: '20px', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
-          borderRadius: 14, textAlign: 'center', color: 'var(--muted)',
-          fontFamily: 'var(--font-sans)', fontSize: 13,
-        }}>
-          Department ratings are loading…
+      <Header back title="Rate Your Department" subtitle="Spring 2026"/>
+
+      <div style={{ padding: '12px 20px 0', display: 'flex', gap: 6, overflowX: 'auto' }}>
+        {DEPTS.map(d => (
+          <button key={d} onClick={() => setSelectedDept(d)} style={{
+            padding: '7px 13px', borderRadius: 999, whiteSpace: 'nowrap', fontSize: 12.5, fontWeight: 600,
+            background: d === selectedDept ? 'var(--navy)' : 'rgba(255,255,255,0.7)',
+            color: d === selectedDept ? '#F7F3EE' : 'var(--ink-2)',
+            border: '1px solid ' + (d === selectedDept ? 'var(--navy)' : 'var(--mist)'),
+            cursor: 'pointer', fontFamily: 'var(--font-sans)',
+          }}>{d}</button>
+        ))}
+      </div>
+
+      <div style={{ padding: '14px 20px 32px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+        {/* Summary card */}
+        <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--sage)', fontFamily: 'var(--font-sans)', textTransform: 'uppercase', marginBottom: 10 }}>
+            {selectedDept} · Community Ratings
+          </div>
+
+          {summaryLoading && (
+            <div style={{ textAlign: 'center', padding: '20px 0', fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>
+              Loading…
+            </div>
+          )}
+          {!summaryLoading && summaryError && (
+            <div style={{ fontSize: 12.5, color: 'var(--red)', fontFamily: 'var(--font-sans)' }}>{summaryError}</div>
+          )}
+          {!summaryLoading && !summaryError && summary && summary.total_count === 0 && (
+            <div style={{ fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontStyle: 'italic' }}>
+              No ratings yet for this department. Be the first!
+            </div>
+          )}
+          {!summaryLoading && !summaryError && summary && summary.total_count > 0 && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, marginBottom: 16 }}>
+                <div style={{ fontFamily: 'var(--font-serif)', fontSize: 52, fontWeight: 500, color: 'var(--navy)', lineHeight: 1 }}>
+                  {summary.avg_overall != null ? summary.avg_overall.toFixed(1) : '—'}
+                </div>
+                <div style={{ paddingBottom: 6 }}>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>out of 5</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--font-sans)', marginTop: 2 }}>
+                    {summary.total_count} {summary.total_count === 1 ? 'rating' : 'ratings'}
+                  </div>
+                </div>
+              </div>
+              <AvgBar val={summary.avg_teaching} label="Teaching Quality"/>
+              <AvgBar val={summary.avg_resources} label="Resources"/>
+              <AvgBar val={summary.avg_environment} label="Environment"/>
+            </>
+          )}
         </div>
+
+        {/* Rating form */}
+        {!isLoggedIn ? (
+          <div style={{ padding: '18px 16px', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, textAlign: 'center' }}>
+            <div style={{ fontSize: 13, color: 'var(--graphite)', fontFamily: 'var(--font-sans)' }}>
+              Sign in to submit a rating
+            </div>
+          </div>
+        ) : submitted ? (
+          <div style={{ padding: '24px 16px', background: 'rgba(74,107,92,0.07)', border: '1px solid rgba(74,107,92,0.25)', borderRadius: 14, textAlign: 'center' }}>
+            <div style={{ fontSize: 26, marginBottom: 8 }}>✓</div>
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 17, fontWeight: 500, color: 'var(--sage)' }}>Rating submitted</div>
+            <div style={{ marginTop: 5, fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>
+              Thank you for rating {selectedDept}.
+            </div>
+          </div>
+        ) : (
+          <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--graphite)', fontFamily: 'var(--font-sans)', textTransform: 'uppercase', marginBottom: 14 }}>
+              Submit Your Rating
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--graphite)', fontFamily: 'var(--font-sans)', marginBottom: 5 }}>
+                Semester / Period
+              </div>
+              <input value={period} onChange={e => setPeriod(e.target.value)} style={{
+                width: '100%', boxSizing: 'border-box', padding: '9px 12px',
+                border: '1px solid var(--mist)', borderRadius: 9, fontSize: 13,
+                fontFamily: 'var(--font-sans)', background: 'white', color: 'var(--ink-2)', outline: 'none',
+              }}/>
+            </div>
+
+            <StarPicker value={overall} onChange={setOverall} label="Overall rating"/>
+            <StarPicker value={teaching} onChange={setTeaching} label="Teaching quality" optional/>
+            <StarPicker value={resources} onChange={setResources} label="Resources & facilities" optional/>
+            <StarPicker value={environment} onChange={setEnvironment} label="Department environment" optional/>
+
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--graphite)', fontFamily: 'var(--font-sans)', marginBottom: 5 }}>
+                Feedback <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span>
+              </div>
+              <textarea value={feedback} onChange={e => setFeedback(e.target.value)} rows={3} placeholder="Share your experience…" style={{
+                width: '100%', boxSizing: 'border-box', padding: '9px 12px',
+                border: '1px solid var(--mist)', borderRadius: 9, fontSize: 12.5, resize: 'vertical',
+                fontFamily: 'var(--font-sans)', background: 'white', color: 'var(--ink-2)', outline: 'none',
+              }}/>
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 16 }}>
+              <input type="checkbox" checked={anonymous} onChange={e => setAnonymous(e.target.checked)}
+                style={{ accentColor: 'var(--sage)', width: 16, height: 16 }}/>
+              <span style={{ fontSize: 12.5, color: 'var(--graphite)', fontFamily: 'var(--font-sans)' }}>Submit anonymously</span>
+            </label>
+
+            {alreadyRated && (
+              <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(184,137,58,0.08)', border: '1px solid rgba(184,137,58,0.3)', borderRadius: 9, fontSize: 12.5, color: 'var(--ink-2)', fontFamily: 'var(--font-sans)' }}>
+                You've already rated {selectedDept} for {period}.
+              </div>
+            )}
+            {submitError && (
+              <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(232,49,42,0.06)', border: '1px solid rgba(232,49,42,0.2)', borderRadius: 9, fontSize: 12.5, color: 'var(--red)', fontFamily: 'var(--font-sans)' }}>
+                {submitError}
+              </div>
+            )}
+
+            <button onClick={handleSubmit} disabled={submitting} style={{
+              width: '100%', padding: '13px', borderRadius: 10, cursor: submitting ? 'not-allowed' : 'pointer',
+              background: submitting ? 'var(--mist)' : 'var(--sage)', color: submitting ? 'var(--muted)' : '#F7F3EE',
+              border: 'none', fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-sans)',
+              transition: 'all 0.2s',
+            }}>
+              {submitting ? 'Submitting…' : 'Submit Rating'}
+            </button>
+          </div>
+        )}
       </div>
     </>
   );

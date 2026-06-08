@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, update
+from sqlalchemy import select, or_, update, func
 from app.limiter import limiter
 
 from app.database import get_db
@@ -11,6 +12,7 @@ from app.deps import get_current_user, TokenData
 from app.config import get_settings
 from app.models.user import User, Role, AccountStatus
 from app.models.session import Session
+from app.models.filing import Filing
 from app.schemas.auth import (
     RegisterRequest, LoginRequest, TokenResponse, MFAPendingResponse,
     RefreshRequest, LogoutRequest, ForgotPasswordRequest, ResetPasswordRequest,
@@ -94,18 +96,27 @@ async def register(body: RegisterRequest, request: Request, db: AsyncSession = D
         existing_user = existing.scalars().first()
         if existing_user:
             if existing_user.status == AccountStatus.pending_verification:
-                # Resend OTP so they can complete verification without re-registering
+                # Update credentials in case the user retried with a different password,
+                # then resend OTP so they can complete the verification they started.
+                if await pwd_svc.check_pwned(body.password):
+                    raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password found in breach database")
+                existing_user.password_hash = pwd_svc.hash_password(body.password)
+                existing_user.full_name = body.full_name
                 code = ""
+                sent = False
                 if existing_user.email:
                     code = await otp_svc.generate_and_store(redis, existing_user.email, "registration")
-                    await email_svc.send_verification_email(existing_user.email, code)
+                    sent = await email_svc.send_verification_email(existing_user.email, code)
                 elif existing_user.phone:
                     code = await otp_svc.generate_and_store(redis, existing_user.phone, "registration")
-                    await sms_svc.send_otp_sms(existing_user.phone, code)
-                resp = {"message": "Account pending verification. A new code has been sent."}
-                if settings.environment in ("development", "testing") and code:
+                    sent = await sms_svc.send_otp_sms(existing_user.phone, code)
+                resp = {
+                    "message": "Account pending verification. A new code has been sent.",
+                    "pending_verification": True,
+                }
+                if not sent and settings.environment in ("development", "testing") and code:
                     resp["dev_otp"] = code
-                return resp
+                return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=resp)
             raise HTTPException(status.HTTP_409_CONFLICT, detail="Account already exists")
 
     # HIBP check
@@ -141,16 +152,17 @@ async def register(body: RegisterRequest, request: Request, db: AsyncSession = D
 
     # Send verification OTP
     code: str = ""
+    sent: bool = False
     if body.email:
         code = await otp_svc.generate_and_store(redis, body.email, "registration")
-        await email_svc.send_verification_email(body.email, code)
+        sent = await email_svc.send_verification_email(body.email, code)
     elif body.phone:
         code = await otp_svc.generate_and_store(redis, body.phone, "registration")
-        await sms_svc.send_otp_sms(body.phone, code)
+        sent = await sms_svc.send_otp_sms(body.phone, code)
 
     await audit_svc.log_event(db, "user_registered", user.id, get_ip(request))
     resp: dict = {"message": "Account created. Check your email/phone for a verification code."}
-    if settings.environment in ("development", "testing") and code:
+    if not sent and settings.environment in ("development", "testing") and code:
         resp["dev_otp"] = code
     return resp
 
@@ -408,15 +420,21 @@ async def resend_verification(body: ResendVerificationRequest, db: AsyncSession 
         select(User).where(or_(User.email == body.identifier, User.phone == body.identifier))
     )
     user = result.scalars().first()
+    settings = get_settings()
+    sent = True
+    code = ""
     if user and user.status == AccountStatus.pending_verification:
         if user.email and body.identifier == user.email:
             code = await otp_svc.generate_and_store(redis, user.email, "registration")
-            await email_svc.send_verification_email(user.email, code)
+            sent = await email_svc.send_verification_email(user.email, code)
         elif user.phone:
             code = await otp_svc.generate_and_store(redis, user.phone, "registration")
-            await sms_svc.send_otp_sms(user.phone, code)
+            sent = await sms_svc.send_otp_sms(user.phone, code)
 
-    return {"message": "If pending verification, a new code has been sent"}
+    resp = {"message": "If pending verification, a new code has been sent"}
+    if not sent and settings.environment in ("development", "testing") and code:
+        resp["dev_otp"] = code
+    return resp
 
 
 @router.post("/stepup")
@@ -441,4 +459,25 @@ async def me(db: AsyncSession = Depends(get_db), token: TokenData = Depends(get_
     user = result.scalars().first()
     if not user:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return user
+    total = await db.scalar(
+        select(func.count()).select_from(Filing).where(Filing.complainant_user_id == token.user_id)
+    )
+    resolved = await db.scalar(
+        select(func.count()).select_from(Filing).where(
+            Filing.complainant_user_id == token.user_id,
+            Filing.state == "resolved",
+        )
+    )
+    return UserInfo(
+        id=user.id,
+        full_name=user.full_name,
+        email=user.email,
+        phone=user.phone,
+        role=user.role,
+        tenant_id=user.tenant_id,
+        mfa_enabled=user.mfa_enabled,
+        email_verified=user.email_verified,
+        phone_verified=user.phone_verified,
+        total_filings=total or 0,
+        resolved_filings=resolved or 0,
+    )

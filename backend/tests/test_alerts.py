@@ -446,3 +446,56 @@ def test_generate_claim_token():
     import string
     valid_chars = set(string.ascii_uppercase + "234567")
     assert all(c in valid_chars for c in tok)
+
+
+# ─── GET /v1/alerts/me ────────────────────────────────────────────────────────
+
+@pytest.mark.anyio
+async def test_me_requires_auth(client, db_session, mock_redis):
+    r = await client.get("/v1/alerts/me")
+    assert r.status_code in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_me_empty_when_no_alerts(client, db_session, mock_redis, registered_user):
+    token = registered_user["tokens"]["access_token"]
+    r = await client.get("/v1/alerts/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+@pytest.mark.anyio
+async def test_me_returns_own_alert(client, db_session, mock_redis, registered_user):
+    token = registered_user["tokens"]["access_token"]
+    trigger = await client.post(
+        "/v1/alerts/trigger",
+        json={"lat": 23.8759, "lng": 90.3795, "gps_status": "ok"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert trigger.status_code == 200
+
+    r = await client.get("/v1/alerts/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["state"] == "active"
+    assert data[0]["event_id"] is not None
+    assert data[0]["lat"] == pytest.approx(23.8759)
+
+
+@pytest.mark.anyio
+async def test_me_does_not_return_other_users_alerts(client, db_session, mock_redis, registered_user, second_user):
+    user1_token = registered_user["tokens"]["access_token"]
+    user2_token = second_user["tokens"]["access_token"]
+
+    # User1 triggers an alert
+    await client.post(
+        "/v1/alerts/trigger",
+        json={"lat": 23.8759, "lng": 90.3795, "gps_status": "ok"},
+        headers={"Authorization": f"Bearer {user1_token}"},
+    )
+
+    # User2 should see empty list
+    r = await client.get("/v1/alerts/me", headers={"Authorization": f"Bearer {user2_token}"})
+    assert r.status_code == 200
+    assert r.json() == []

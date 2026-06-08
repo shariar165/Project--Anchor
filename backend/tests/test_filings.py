@@ -322,3 +322,32 @@ async def test_ai_draft_returns_501(client, db_session, mock_redis, registered_u
     fid = r.json()["id"]
     dr = await client.post(f"/v1/filings/{fid}/draft-with-ai", headers=_auth(registered_user["tokens"]))
     assert dr.status_code == 501
+
+
+# ── /me stats ─────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_me_stats_counts(client, db_session, mock_redis, registered_user):
+    await _seed(db_session)
+    headers = _auth(registered_user["tokens"])
+
+    # Create and submit one filing
+    r = await client.post("/v1/filings", json={"template_key": "academic_rank1", "language": "en"}, headers=headers)
+    assert r.status_code == 201
+    fid = r.json()["id"]
+    await client.patch(f"/v1/filings/{fid}", json={"body": "Some feedback text here."}, headers=headers)
+    await client.post(f"/v1/filings/{fid}/submit", headers=headers)
+
+    # Resolve it directly via DB
+    await db_session.execute(
+        __import__("sqlalchemy").update(Filing)
+        .where(Filing.id == __import__("uuid").UUID(fid))
+        .values(state=FilingState.resolved)
+    )
+    await db_session.commit()
+
+    me = await client.get("/auth/me", headers=headers)
+    assert me.status_code == 200
+    data = me.json()
+    assert data["total_filings"] == 1
+    assert data["resolved_filings"] == 1

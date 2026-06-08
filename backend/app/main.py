@@ -18,6 +18,13 @@ from app.routers import applications as applications_router
 from app.routers import feed as feed_router
 from app.routers import feed_admin as feed_admin_router
 from app.routers import filings as filings_router
+from app.routers import notices as notices_router
+from app.routers import zones as zones_router
+from app.routers import lawyers as lawyers_router
+from app.routers import routines as routines_router
+from app.routers import dept_ratings as dept_ratings_router
+from app.routers import admin_users as admin_users_router
+from app.routers import geofence as geofence_router
 
 
 @asynccontextmanager
@@ -79,6 +86,13 @@ def create_app() -> FastAPI:
     app.include_router(feed_router.router)
     app.include_router(feed_admin_router.router)
     app.include_router(filings_router.router)
+    app.include_router(notices_router.router)
+    app.include_router(zones_router.router)
+    app.include_router(lawyers_router.router)
+    app.include_router(routines_router.router)
+    app.include_router(dept_ratings_router.router)
+    app.include_router(admin_users_router.router)
+    app.include_router(geofence_router.router)
 
     # Serve uploaded feed attachments in dev
     from fastapi.staticfiles import StaticFiles

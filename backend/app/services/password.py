@@ -1,3 +1,4 @@
+import os
 import hashlib
 import hmac
 from argon2 import PasswordHasher
@@ -5,7 +6,15 @@ from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHas
 import httpx
 from app.config import get_settings
 
-_ph = PasswordHasher(memory_cost=65536, time_cost=3, parallelism=4)
+# Use low memory/time cost in test environments to prevent allocation failures
+# under parallel Argon2 hashing load. conftest.py sets ENVIRONMENT=testing before
+# any imports, so this branch is evaluated correctly at module load time.
+_testing = os.getenv("ENVIRONMENT") == "testing"
+_ph = PasswordHasher(
+    memory_cost=256 if _testing else 65536,
+    time_cost=1 if _testing else 3,
+    parallelism=1 if _testing else 4,
+)
 
 
 def _pepper(password: str) -> bytes:

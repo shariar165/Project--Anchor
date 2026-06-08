@@ -6,7 +6,7 @@ Access levels:
   admin     — everything above + false-alert (which triggers a 30-day ban)
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select, and_, func, desc
@@ -17,7 +17,7 @@ from app.deps import require_role, TokenData
 from app.limiter import limiter
 from app.models.alert import (
     AlertEvent, AlertNotification, AlertResponse, AlertEvidence,
-    Zone, AlertBan, AlertState, ZoneStatus,
+    Zone, AlertBan, AlertState, ZoneStatus, ResponseType,
 )
 from app.models.user import Role
 from app.redis import get_redis
@@ -102,6 +102,156 @@ async def list_alerts(
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+# ─── Alert stats / KPIs ──────────────────────────────────────────────────────
+
+@router.get("/alerts/stats")
+@limiter.limit("60/minute")
+async def get_alert_stats(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    """Aggregated KPI and analytics data for the admin alerts dashboard."""
+    now = _now()
+    cutoff_24h = now - timedelta(hours=24)
+    cutoff_30d = now - timedelta(days=30)
+
+    def _scope(q):
+        if token.role == Role.moderator and token.tenant_id:
+            return q.where(AlertEvent.tenant_id == token.tenant_id)
+        return q
+
+    # active_count
+    active_count = await db.scalar(
+        _scope(select(func.count()).select_from(AlertEvent).where(AlertEvent.state == AlertState.active))
+    ) or 0
+
+    # resolved_24h — any terminal state closed in the last 24 h
+    resolved_24h = await db.scalar(
+        _scope(
+            select(func.count()).select_from(AlertEvent).where(
+                and_(
+                    AlertEvent.closed_at >= cutoff_24h,
+                    AlertEvent.state.in_([AlertState.resolved, AlertState.closed, AlertState.false_alert]),
+                )
+            )
+        )
+    ) or 0
+
+    # false_alarms_30d
+    false_alarms_30d = await db.scalar(
+        _scope(
+            select(func.count()).select_from(AlertEvent).where(
+                and_(
+                    AlertEvent.state == AlertState.false_alert,
+                    AlertEvent.created_at >= cutoff_30d,
+                )
+            )
+        )
+    ) or 0
+
+    # avg_response_secs_24h — Python-side to stay dialect-agnostic (SQLite + PG)
+    resp_q = (
+        select(AlertEvent.created_at, AlertResponse.created_at.label("responded_at"))
+        .join(AlertResponse, AlertResponse.event_id == AlertEvent.id)
+        .where(
+            and_(
+                AlertResponse.response_type == ResponseType.responding,
+                AlertResponse.created_at >= cutoff_24h,
+            )
+        )
+    )
+    if token.role == Role.moderator and token.tenant_id:
+        resp_q = resp_q.where(AlertEvent.tenant_id == token.tenant_id)
+    resp_rows = (await db.execute(resp_q)).all()
+
+    avg_response_secs_24h = None
+    if resp_rows:
+        deltas = []
+        for ev_ts, resp_ts in resp_rows:
+            if ev_ts.tzinfo is None:
+                ev_ts = ev_ts.replace(tzinfo=timezone.utc)
+            if resp_ts.tzinfo is None:
+                resp_ts = resp_ts.replace(tzinfo=timezone.utc)
+            secs = (resp_ts - ev_ts).total_seconds()
+            if secs >= 0:
+                deltas.append(secs)
+        if deltas:
+            avg_response_secs_24h = round(sum(deltas) / len(deltas))
+
+    # by_tenant_30d — alert count per tenant in last 30 days
+    by_tenant_rows = (await db.execute(
+        _scope(
+            select(AlertEvent.tenant_id, func.count().label("cnt"))
+            .where(AlertEvent.created_at >= cutoff_30d)
+            .group_by(AlertEvent.tenant_id)
+        )
+    )).all()
+    by_tenant_30d = [
+        {"tenant_id": str(r.tenant_id) if r.tenant_id else None, "count": r.cnt}
+        for r in by_tenant_rows
+    ]
+
+    # by_zone_type_30d — join alerts → zones, group by zone type
+    by_zone_q = (
+        select(Zone.zone_type, func.count().label("cnt"))
+        .join(AlertEvent, AlertEvent.alert_zone_id == Zone.id)
+        .where(AlertEvent.created_at >= cutoff_30d)
+        .group_by(Zone.zone_type)
+    )
+    if token.role == Role.moderator and token.tenant_id:
+        by_zone_q = by_zone_q.where(AlertEvent.tenant_id == token.tenant_id)
+    by_zone_rows = (await db.execute(by_zone_q)).all()
+    by_zone_type_30d = [
+        {"zone_type": r.zone_type.value, "count": r.cnt}
+        for r in by_zone_rows
+    ]
+
+    # resolution_histogram_30d — Python-side bucketing, dialect-agnostic
+    hist_rows = (await db.execute(
+        _scope(
+            select(AlertEvent.created_at, AlertEvent.closed_at)
+            .where(
+                and_(
+                    AlertEvent.closed_at.isnot(None),
+                    AlertEvent.created_at >= cutoff_30d,
+                )
+            )
+        )
+    )).all()
+
+    BUCKETS = [
+        ("<2m",    0,    120),
+        ("2–5m",   120,  300),
+        ("5–10m",  300,  600),
+        ("10–30m", 600,  1800),
+        (">30m",   1800, None),
+    ]
+    counts = {b[0]: 0 for b in BUCKETS}
+    for ev_ts, closed_ts in hist_rows:
+        if ev_ts.tzinfo is None:
+            ev_ts = ev_ts.replace(tzinfo=timezone.utc)
+        if closed_ts.tzinfo is None:
+            closed_ts = closed_ts.replace(tzinfo=timezone.utc)
+        secs = max(0, (closed_ts - ev_ts).total_seconds())
+        for label, lo, hi in BUCKETS:
+            if hi is None or secs < hi:
+                counts[label] += 1
+                break
+
+    return {
+        "active_count": active_count,
+        "resolved_24h": resolved_24h,
+        "false_alarms_30d": false_alarms_30d,
+        "avg_response_secs_24h": avg_response_secs_24h,
+        "by_tenant_30d": by_tenant_30d,
+        "by_zone_type_30d": by_zone_type_30d,
+        "resolution_histogram_30d": [
+            {"bucket": label, "count": counts[label]} for label, _, _ in BUCKETS
+        ],
+    }
 
 
 # ─── Alert detail ────────────────────────────────────────────────────────────
@@ -378,3 +528,202 @@ async def list_zones(
         }
         for z in zones
     ]
+
+
+# ─── Create zone (super admin / admin) ───────────────────────────────────────
+
+from pydantic import BaseModel, field_validator
+
+class ZoneCreateBody(BaseModel):
+    zone_type: str
+    center_lat: float
+    center_lng: float
+    radius_m: int
+    label: str | None = None
+    description_public: str | None = None
+    expires_at: datetime | None = None
+    tenant_id: uuid.UUID | None = None
+
+    @field_validator("zone_type")
+    @classmethod
+    def _validate_zone_type(cls, v):
+        from app.models.alert import ZoneType
+        try:
+            ZoneType(v)
+        except ValueError:
+            raise ValueError(f"Invalid zone_type '{v}'. Must be one of: rape, murder, alert, university")
+        return v
+
+    @field_validator("radius_m")
+    @classmethod
+    def _validate_radius(cls, v):
+        if not (50 <= v <= 10000):
+            raise ValueError("radius_m must be between 50 and 10000")
+        return v
+
+    @field_validator("center_lat")
+    @classmethod
+    def _validate_lat(cls, v):
+        if not (-90 <= v <= 90):
+            raise ValueError("center_lat must be between -90 and 90")
+        return v
+
+    @field_validator("center_lng")
+    @classmethod
+    def _validate_lng(cls, v):
+        if not (-180 <= v <= 180):
+            raise ValueError("center_lng must be between -180 and 180")
+        return v
+
+
+@router.post("/zones", status_code=201)
+@limiter.limit("30/minute")
+async def create_zone(
+    body: ZoneCreateBody,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin")),
+):
+    """Create a new risk/safety zone. Admin only."""
+    from app.models.alert import ZoneType, ZoneStatus as ZS
+
+    zone = Zone(
+        zone_type=ZoneType(body.zone_type),
+        center_lat=body.center_lat,
+        center_lng=body.center_lng,
+        radius_m=body.radius_m,
+        label=body.label,
+        description_public=body.description_public,
+        expires_at=body.expires_at,
+        tenant_id=body.tenant_id,
+        status=ZS.active,
+    )
+    db.add(zone)
+    await audit_log(db, "zone_created_by_admin", token.user_id, get_ip(request), {
+        "zone_type": body.zone_type,
+        "label": body.label,
+        "center_lat": body.center_lat,
+        "center_lng": body.center_lng,
+        "radius_m": body.radius_m,
+    })
+    await db.commit()
+    await db.refresh(zone)
+    return {
+        "id": str(zone.id),
+        "zone_type": zone.zone_type.value,
+        "center_lat": zone.center_lat,
+        "center_lng": zone.center_lng,
+        "radius_m": zone.radius_m,
+        "status": zone.status.value,
+        "label": zone.label,
+        "description_public": zone.description_public,
+        "tenant_id": str(zone.tenant_id) if zone.tenant_id else None,
+        "expires_at": zone.expires_at.isoformat() if zone.expires_at else None,
+        "created_at": zone.created_at.isoformat(),
+    }
+
+
+# ─── Update zone ──────────────────────────────────────────────────────────────
+
+class ZonePatchBody(BaseModel):
+    label: str | None = None
+    description_public: str | None = None
+    radius_m: int | None = None
+    status: str | None = None
+    expires_at: datetime | None = None
+
+    @field_validator("radius_m")
+    @classmethod
+    def _validate_radius(cls, v):
+        if v is not None and not (50 <= v <= 10000):
+            raise ValueError("radius_m must be between 50 and 10000")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, v):
+        if v is not None:
+            from app.models.alert import ZoneStatus as ZS
+            try:
+                ZS(v)
+            except ValueError:
+                raise ValueError(f"Invalid status '{v}'. Must be: active or archived")
+        return v
+
+
+@router.patch("/zones/{zone_id}")
+@limiter.limit("30/minute")
+async def update_zone(
+    zone_id: uuid.UUID,
+    body: ZonePatchBody,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin")),
+):
+    """Update zone metadata. Admin only."""
+    from app.models.alert import ZoneStatus as ZS
+
+    result = await db.execute(select(Zone).where(Zone.id == zone_id))
+    zone = result.scalars().first()
+    if not zone:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Zone not found")
+
+    if body.label is not None:
+        zone.label = body.label
+    if body.description_public is not None:
+        zone.description_public = body.description_public
+    if body.radius_m is not None:
+        zone.radius_m = body.radius_m
+    if body.status is not None:
+        zone.status = ZS(body.status)
+    if body.expires_at is not None:
+        zone.expires_at = body.expires_at
+
+    await audit_log(db, "zone_updated_by_admin", token.user_id, get_ip(request), {
+        "zone_id": str(zone_id),
+        "changes": body.model_dump(exclude_none=True),
+    })
+    await db.commit()
+    await db.refresh(zone)
+    return {
+        "id": str(zone.id),
+        "zone_type": zone.zone_type.value,
+        "center_lat": zone.center_lat,
+        "center_lng": zone.center_lng,
+        "radius_m": zone.radius_m,
+        "status": zone.status.value,
+        "label": zone.label,
+        "description_public": zone.description_public,
+        "tenant_id": str(zone.tenant_id) if zone.tenant_id else None,
+        "expires_at": zone.expires_at.isoformat() if zone.expires_at else None,
+        "created_at": zone.created_at.isoformat(),
+    }
+
+
+# ─── Archive zone ─────────────────────────────────────────────────────────────
+
+@router.delete("/zones/{zone_id}", status_code=200)
+@limiter.limit("30/minute")
+async def archive_zone(
+    zone_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin")),
+):
+    """Archive (soft-delete) a zone. Admin only."""
+    result = await db.execute(select(Zone).where(Zone.id == zone_id))
+    zone = result.scalars().first()
+    if not zone:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Zone not found")
+
+    if zone.status == ZoneStatus.archived:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Zone is already archived")
+
+    zone.status = ZoneStatus.archived
+    await audit_log(db, "zone_archived_by_admin", token.user_id, get_ip(request), {
+        "zone_id": str(zone_id),
+        "zone_type": zone.zone_type.value,
+        "label": zone.label,
+    })
+    await db.commit()
+    return {"message": "Zone archived", "zone_id": str(zone_id)}

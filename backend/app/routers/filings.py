@@ -13,11 +13,12 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.deps import get_current_user, require_stepup, TokenData
+from app.deps import get_current_user, require_role, require_stepup, TokenData
 from app.limiter import limiter
 from app.models.filing import Filing, FilingAttachment, FilingState, FilingTemplate
 from app.redis import get_redis
 from app.schemas.filings import (
+    AdminFilingReviewRequest,
     AnonymousLookupRequest, AnonymousLookupResponse,
     ClassroomReportAgg, ClassroomReportCreate,
     ExplainResponse, FilingCreate, FilingListItem,
@@ -34,6 +35,53 @@ ALLOWED_CONTENT_TYPES = {
     "application/pdf", "image/png", "image/jpeg", "image/jpg",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+
+
+# ── Admin filing management ───────────────────────────────────────────────────
+
+@router.get("/v1/admin/filings", response_model=list[FilingListItem])
+async def admin_list_filings(
+    category: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    template_key: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    return await filing_svc.list_filings_admin(
+        db, token.tenant_id, category=category, state=state, template_key=template_key, page=page
+    )
+
+
+@router.get("/v1/admin/filings/{filing_id}", response_model=FilingResponse)
+async def admin_get_filing(
+    filing_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    filing = await filing_svc.get_filing_by_id_any_owner(db, filing_id, token.tenant_id)
+    if filing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Filing not found")
+    return filing
+
+
+@router.post("/v1/admin/filings/{filing_id}/review", response_model=FilingResponse)
+async def admin_review_filing(
+    filing_id: uuid.UUID,
+    body: AdminFilingReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    filing = await filing_svc.get_filing_by_id_any_owner(db, filing_id, token.tenant_id)
+    if filing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Filing not found")
+    try:
+        filing = await filing_svc.admin_review_filing(
+            db, filing, token.user_id, token.role, body.action, body.public_note, body.internal_note
+        )
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return filing
 
 
 # ── Templates ─────────────────────────────────────────────────────────────────

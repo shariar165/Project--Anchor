@@ -6,6 +6,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # ── Requests ──────────────────────────────────────────────────────────────────
 
+class AdminFilingReviewRequest(BaseModel):
+    action: Literal["mark_under_review", "resolve", "dismiss", "escalate", "request_more_info"]
+    public_note: str | None = None
+    internal_note: str | None = None
+
+
 class FilingCreate(BaseModel):
     template_key: str
     language: Literal["en", "bn"] = "en"

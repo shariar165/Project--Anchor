@@ -53,9 +53,10 @@ async def get_current_user(
 
 def require_role(*roles: str):
     async def _dep(token: TokenData = Depends(get_current_user)):
-        if token.role not in roles:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-        return token
+        # super_admin has platform-wide access and bypasses all role gates
+        if token.role == "super_admin" or token.role in roles:
+            return token
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     return _dep
 
 

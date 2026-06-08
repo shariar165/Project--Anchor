@@ -326,3 +326,96 @@ async def test_list_zones_invalid_type(client: AsyncClient, admin_user, db_sessi
 async def test_user_cannot_list_zones(client: AsyncClient, registered_user, db_session, mock_redis):
     resp = await client.get("/v1/admin/zones", headers=_auth(registered_user["tokens"]))
     assert resp.status_code == 403
+
+
+# ─── Stats endpoint ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_stats_requires_auth(client: AsyncClient, db_session, mock_redis):
+    resp = await client.get("/v1/admin/alerts/stats")
+    assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_stats_requires_admin_role(client: AsyncClient, registered_user, db_session, mock_redis):
+    resp = await client.get("/v1/admin/alerts/stats", headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_stats_empty_db(client: AsyncClient, admin_user, db_session, mock_redis):
+    resp = await client.get("/v1/admin/alerts/stats", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["active_count"] == 0
+    assert data["resolved_24h"] == 0
+    assert data["false_alarms_30d"] == 0
+    assert data["avg_response_secs_24h"] is None
+    assert data["by_tenant_30d"] == []
+    assert data["by_zone_type_30d"] == []
+    assert len(data["resolution_histogram_30d"]) == 5
+    assert all(b["count"] == 0 for b in data["resolution_histogram_30d"])
+
+
+@pytest.mark.asyncio
+async def test_stats_active_count(client: AsyncClient, registered_user, admin_user, db_session, mock_redis):
+    await _trigger(client, registered_user["tokens"])
+    resp = await client.get("/v1/admin/alerts/stats", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200
+    assert resp.json()["active_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stats_resolved_24h(client: AsyncClient, registered_user, admin_user, db_session, mock_redis):
+    event_id = await _trigger(client, registered_user["tokens"])
+    await client.post(f"/v1/admin/alerts/{event_id}/resolve", headers=_auth(admin_user["tokens"]))
+
+    resp = await client.get("/v1/admin/alerts/stats", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200
+    assert resp.json()["resolved_24h"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stats_false_alarms_30d(client: AsyncClient, registered_user, admin_user, db_session, mock_redis):
+    event_id = await _trigger(client, registered_user["tokens"])
+    await client.post(f"/v1/admin/alerts/{event_id}/false", headers=_auth(admin_user["tokens"]))
+
+    resp = await client.get("/v1/admin/alerts/stats", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200
+    assert resp.json()["false_alarms_30d"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stats_histogram_buckets(client: AsyncClient, registered_user, admin_user, db_session, mock_redis):
+    event_id = await _trigger(client, registered_user["tokens"])
+    await client.post(f"/v1/admin/alerts/{event_id}/resolve", headers=_auth(admin_user["tokens"]))
+
+    resp = await client.get("/v1/admin/alerts/stats", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200
+    hist = resp.json()["resolution_histogram_30d"]
+    assert len(hist) == 5
+    buckets = [b["bucket"] for b in hist]
+    assert buckets == ["<2m", "2–5m", "5–10m", "10–30m", ">30m"]
+    # Just-resolved alert (sub-second) lands in "<2m"
+    assert hist[0]["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stats_by_zone_type(client: AsyncClient, registered_user, admin_user, db_session, mock_redis):
+    await _trigger(client, registered_user["tokens"])
+    resp = await client.get("/v1/admin/alerts/stats", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200
+    by_zone = resp.json()["by_zone_type_30d"]
+    # Trigger creates an "alert" zone, so we expect one entry
+    assert len(by_zone) == 1
+    assert by_zone[0]["zone_type"] == "alert"
+    assert by_zone[0]["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stats_moderator_can_access(client: AsyncClient, registered_user, moderator_user, db_session, mock_redis):
+    await _trigger(client, registered_user["tokens"])
+    resp = await client.get("/v1/admin/alerts/stats", headers=_auth(moderator_user["tokens"]))
+    assert resp.status_code == 200
+    # Moderator sees stats (possibly scoped to their tenant)
+    assert "active_count" in resp.json()

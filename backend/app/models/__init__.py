@@ -30,6 +30,11 @@ from app.models.filing import (
     SubjectResponse, ClassroomReport,
     FilingCategory, FilingAnonymityMode, FilingState, ClassroomIssueType,
 )
+from app.models.notice import Notice, NoticeScope, NoticeStatus
+from app.models.lawyer import Lawyer
+from app.models.routine import AcademicRoutine, RoutineStatus
+from app.models.dept_rating import DepartmentRating
+from app.models.tenant_geofence import TenantGeofence
 
 __all__ = [
     "Base", "TimestampMixin",
@@ -60,4 +65,14 @@ __all__ = [
     "FilingTemplate", "Filing", "FilingAttachment", "FilingReview",
     "SubjectResponse", "ClassroomReport",
     "FilingCategory", "FilingAnonymityMode", "FilingState", "ClassroomIssueType",
+    # Notices
+    "Notice", "NoticeScope", "NoticeStatus",
+    # Lawyers
+    "Lawyer",
+    # Academic Routines
+    "AcademicRoutine", "RoutineStatus",
+    # Department Ratings
+    "DepartmentRating",
+    # Tenant Geofence
+    "TenantGeofence",
 ]

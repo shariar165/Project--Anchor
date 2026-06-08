@@ -38,12 +38,12 @@ function HomeScreen() {
   const campusTiles = [
     { k: 'complaint', label: 'File', sub: 'Complaint · Report · Grievance', Icon: IconFile, route: 'new-filing' },
     { k: 'application', label: 'Apply formally', sub: 'AI-drafted · 13 templates', Icon: IconDoc, route: 'applications' },
-    { k: 'routine',   label: 'Academic routine', sub: 'Today · 4 classes',  Icon: IconClock },
+    { k: 'routine',   label: 'Academic routine', sub: 'Today · 4 classes',  Icon: IconClock,  route: 'routines' },
     { k: 'notices',   label: 'University notices', sub: '3 new this week',   Icon: IconNews, route: 'notices' },
     { k: 'my-filings', label: 'My filings', sub: 'Track complaints & reports', Icon: IconFile, route: 'filings' },
     { k: 'classroom', label: 'Report classroom', sub: 'AC · Projector · Net', Icon: IconBuilding, route: 'classroom-report' },
-    { k: 'feed',      label: 'Campus verified',sub: 'Notices & rumours',     Icon: IconNews, route: 'feed' },
-    { k: 'rate',      label: 'Rate department', sub: 'SWE · CSE · BBA',     Icon: IconStar },
+    { k: 'feed',      label: 'Publish news',   sub: 'Notices & rumours',     Icon: IconNews, route: 'feed-publish' },
+    { k: 'rate',      label: 'Rate department', sub: 'SWE · CSE · BBA',     Icon: IconStar,   route: 'dept-rating' },
   ];
 
   const countryTiles = [
@@ -51,7 +51,7 @@ function HomeScreen() {
     { k: 'lawyer',  label: 'Find a lawyer',    sub: 'End-to-end encrypted', Icon: IconScale,  route: 'lawyers' },
     { k: 'zones',   label: 'Red zone map',     sub: 'Dhaka · live overlay',  Icon: IconMap,    route: 'map' },
     { k: 'rights',  label: 'Know your rights', sub: 'BD Penal Code · DV Act', Icon: IconBook, route: 'rights' },
-    { k: 'feed',    label: 'Verified news', sub: 'Human-moderated',     Icon: IconNews,   route: 'feed' },
+    { k: 'feed',    label: 'Publish news',  sub: 'Human-moderated',     Icon: IconNews,   route: 'feed-publish' },
     { k: 'officer', label: 'Officer scorecard',sub: 'Public accountability', Icon: IconBadge },
   ];
   const tiles = mode === 'campus' ? campusTiles : countryTiles;
@@ -224,10 +224,16 @@ function HomeScreen() {
       <div style={{ padding: '16px 20px 28px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
           <div className="eyebrow">{mode === 'campus' ? 'Campus verified' : 'Verified news'}</div>
-          <button onClick={() => go('feed')} style={{
-            background: 'transparent', border: 'none', cursor: 'pointer',
-            color: 'var(--navy)', fontSize: 12, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
-          }}>Open →</button>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <button onClick={() => go('news-feed')} style={{
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              color: 'var(--muted)', fontSize: 11.5, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+            }}>Newspaper →</button>
+            <button onClick={() => go('feed')} style={{
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              color: 'var(--navy)', fontSize: 12, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+            }}>Open →</button>
+          </div>
         </div>
         {(feedPosts.length
           ? feedPosts
@@ -730,6 +736,14 @@ async function alertApiPost(path, body, token) {
   return res.json();
 }
 
+async function alertApiGet(path, token) {
+  const headers = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(API_BASE + path, { headers });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 function AlertScreen() {
   const { back, go, auth } = useApp();
   const [phase, setPhase] = _useS('during');
@@ -743,7 +757,7 @@ function AlertScreen() {
   const [sending, setSending] = _useS(false);
   const startRef = _useR(null);
   const rafRef = _useR(null);
-  const token = auth?.access_token;
+  const token = localStorage.getItem('anchor_access_token');
 
   const startHold = () => {
     if (activated || showConfirm) return;
@@ -772,9 +786,22 @@ function AlertScreen() {
   const handleConfirmSend = async () => {
     setSending(true);
     try {
-      const data = await alertApiPost('/v1/alerts/trigger', {
-        gps_status: 'unavailable',
-      }, token);
+      let gpsPayload = { gps_status: 'unavailable' };
+      if (navigator.geolocation) {
+        try {
+          const pos = await new Promise((resolve, reject) =>
+            navigator.geolocation.getCurrentPosition(resolve, reject,
+              { timeout: 5000, maximumAge: 30000, enableHighAccuracy: true })
+          );
+          gpsPayload = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            gps_accuracy_m: pos.coords.accuracy ? Math.round(pos.coords.accuracy) : null,
+            gps_status: 'ok',
+          };
+        } catch (_) { /* GPS denied or timed out — proceed without coordinates */ }
+      }
+      const data = await alertApiPost('/v1/alerts/trigger', gpsPayload, token);
       setAlertEventId(data.event_id);
       setActivated(true);
     } catch (e) {
@@ -1158,6 +1185,14 @@ function AlertBefore({ token }) {
   const [form, setForm] = _useS({ name: '', phone: '', relationship: '' });
   const [saving, setSaving] = _useS(false);
   const [saved, setSaved] = _useS(false);
+  const [zones, setZones] = _useS([]);
+
+  React.useEffect(() => {
+    fetch('http://localhost:8000/v1/zones')
+      .then(r => r.json())
+      .then(d => setZones(Array.isArray(d) ? d.filter(z => z.status === 'active') : []))
+      .catch(() => {});
+  }, []);
 
   const handleAddContact = () => {
     if (!form.name || !form.phone) return;
@@ -1185,28 +1220,32 @@ function AlertBefore({ token }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* Risk zone map */}
+      {/* Risk zone list — live from backend */}
       <div className="card" style={{ background: 'rgba(255,255,255,0.7)' }}>
         <div className="eyebrow" style={{ marginBottom: 8 }}>Around you</div>
-        <div style={{
-          position: 'relative', height: 130, borderRadius: 12, overflow: 'hidden',
-          background: 'linear-gradient(135deg, #E8E2D6, #D8D0BE)',
-          border: '1px solid var(--mist)',
-        }}>
-          <svg width="100%" height="100%" viewBox="0 0 300 130" preserveAspectRatio="none">
-            <path d="M0 80 Q50 60 100 75 T200 70 T300 85 L300 130 L0 130 Z" fill="rgba(11,29,53,0.06)"/>
-            <path d="M0 100 Q60 90 120 100 T240 95 T300 105 L300 130 L0 130 Z" fill="rgba(11,29,53,0.1)"/>
-          </svg>
-          <div className="zone-circle zone-red" style={{ left: '30%', top: '60%', width: 60, height: 60 }}/>
-          <div className="zone-circle zone-black" style={{ left: '65%', top: '50%', width: 50, height: 50 }}/>
-          <div style={{
-            position: 'absolute', left: '50%', top: '70%', transform: 'translate(-50%,-50%)',
-            width: 14, height: 14, borderRadius: 999, background: 'var(--navy)',
-            border: '3px solid #fff', boxShadow: '0 2px 8px rgba(11,29,53,0.3)',
-          }}/>
-        </div>
-        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--ink-2)' }}>
-          <strong>2 risk zones</strong> within 800m. Avoid Dhanmondi-3 after 9pm.
+        {zones.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--ink-2)', padding: '8px 0' }}>
+            No active risk zones reported nearby.
+          </div>
+        ) : zones.slice(0, 3).map((z, i) => (
+          <div key={z.id || i} style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{
+                width: 8, height: 8, borderRadius: 999, flexShrink: 0,
+                background: z.zone_type === 'red_zone' || z.zone_type === 'rape' || z.zone_type === 'murder'
+                  ? 'var(--red)' : 'var(--ember)',
+              }}/>
+              <span style={{ fontSize: 13, color: 'var(--navy)', fontWeight: 500 }}>
+                {z.description_public || z.zone_type}
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 16, marginTop: 2 }}>
+              {z.radius_m ? z.radius_m + 'm radius · ' : ''}{z.status}
+            </div>
+          </div>
+        ))}
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--ink-2)' }}>
+          <strong>{zones.length} risk zone{zones.length !== 1 ? 's' : ''}</strong> active in your area.
         </div>
       </div>
 
@@ -1306,14 +1345,23 @@ function AlertAfter({ eventId, token, go }) {
   const [blobRef, setBlobRef] = _useS('');
   const [uploading, setUploading] = _useS(false);
   const [uploaded, setUploaded] = _useS(false);
+  const [history, setHistory] = _useS([]);
   const mediaTypes = ['photo', 'video', 'audio', 'document'];
+
+  React.useEffect(() => {
+    if (!token) return;
+    alertApiGet('/v1/alerts/me', token)
+      .then(d => setHistory(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, [token]);
 
   const handleUpload = async () => {
     if (!eventId || !blobRef) return;
     setUploading(true);
     try {
-      // SHA-256 placeholder for demo (real app computes hash client-side)
-      const hash = Array.from({ length: 64 }, () => '0').join('');
+      const enc = new TextEncoder();
+      const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(blobRef));
+      const hash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
       await alertApiPost(`/v1/alerts/${eventId}/evidence`, {
         encrypted_blob_ref: blobRef,
         sha256_hash: hash,
@@ -1398,23 +1446,28 @@ function AlertAfter({ eventId, token, go }) {
         <IconFile size={16}/> Convert to formal complaint or FIR
       </button>
 
-      {/* Previous alerts history */}
+      {/* Previous alerts history — live from backend */}
       <div>
-        <div className="eyebrow" style={{ marginBottom: 8 }}>Previous alerts · 2</div>
-        {[
-          { d: 'May 18, 2026 · 22:47', loc: 'Dhanmondi-27', resp: 'Resolved · responder reached in 7 min' },
-          { d: 'Mar 02, 2026 · 19:12', loc: 'Mirpur-10',     resp: 'Closed · false trigger' },
-        ].map((a, i) => (
-          <div key={i} style={{
+        <div className="eyebrow" style={{ marginBottom: 8 }}>Previous alerts · {history.length}</div>
+        {history.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 0' }}>No previous alerts.</div>
+        ) : history.map((a, i) => (
+          <div key={a.event_id || i} style={{
             padding: '12px 14px', background: 'rgba(255,255,255,0.6)',
             border: '1px solid var(--mist)', borderRadius: 12, marginBottom: 8,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span className="serif" style={{ fontSize: 14, fontWeight: 500, color: 'var(--navy)' }}>{a.loc}</span>
-              <span className="pill pill-resolved">Closed</span>
+              <span className="mono" style={{ fontSize: 12, color: 'var(--navy)' }}>
+                {a.event_id ? a.event_id.slice(0, 8) + '…' : '—'}
+              </span>
+              <span className="pill">{a.state}</span>
             </div>
-            <div className="mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 4 }}>{a.d}</div>
-            <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 4 }}>{a.resp}</div>
+            <div className="mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 4 }}>
+              {a.created_at ? new Date(a.created_at).toLocaleString('en-BD') : '—'}
+            </div>
+            {a.closed_by && (
+              <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 4 }}>Closed by: {a.closed_by}</div>
+            )}
           </div>
         ))}
       </div>
@@ -1744,14 +1797,34 @@ function NewsArt({ variant }) {
 //  FeedRowMini — compact preview for Home
 // ═══════════════════════════════════════════════════════════════
 function FeedRowMini({ item, onOpen }) {
+  const { auth } = useApp();
   const isApi = !!item.post_number;
   const kicker   = isApi ? (item.category || '').replace(/_/g, ' ').toUpperCase() : item.kicker;
   const headline = isApi ? item.title : item.headline;
-  const corr     = isApi ? (item.signal_counts?.corroborate || 0) : item.corr;
-  const chal     = isApi ? (item.signal_counts?.challenge   || 0) : item.chal;
   const when     = isApi
     ? new Date(item.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
     : item.byline?.when;
+
+  const [counts, setCounts] = React.useState({
+    corroborate: isApi ? (item.signal_counts?.corroborate || 0) : (item.corr || 0),
+    challenge:   isApi ? (item.signal_counts?.challenge   || 0) : (item.chal || 0),
+    user_signal: isApi ? (item.signal_counts?.user_signal || null) : null,
+  });
+  const [busy, setBusy] = React.useState(false);
+
+  async function signal(type) {
+    if (!isApi || busy || !auth?.token) return;
+    setBusy(true);
+    try {
+      const data = await apiFetch(`/v1/feed/${item.id}/${type}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+      });
+      if (data?.counts) setCounts(data.counts);
+    } catch (_) {}
+    setBusy(false);
+  }
+
+  const userSig = counts.user_signal;
 
   return (
     <div style={{ padding: '14px 0', borderTop: '1px solid var(--mist)', display: 'flex', gap: 12 }}>
@@ -1761,13 +1834,29 @@ function FeedRowMini({ item, onOpen }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="news-kicker" style={{ marginBottom: 3, fontSize: 9 }}>{kicker}</div>
         <div className="serif" style={{ fontSize: 14, fontWeight: 500, lineHeight: 1.15, color: 'var(--navy)' }}>{headline}</div>
-        <div style={{ marginTop: 6, display: 'flex', gap: 10, alignItems: 'center', fontSize: 10.5, color: 'var(--muted)' }}>
-          <span style={{ color: 'var(--sage-2)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-            <IconCheck size={10} sw={2.4}/> {corr}
-          </span>
-          <span style={{ color: 'var(--ember)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-            <IconX size={10} sw={2.4}/> {chal}
-          </span>
+        <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', fontSize: 10.5, color: 'var(--muted)' }}>
+          <button
+            onClick={e => { e.stopPropagation(); signal('corroborate'); }}
+            disabled={!isApi || !auth?.token || busy}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 3,
+              background: userSig === 'corroborate' ? 'var(--sage)' : 'rgba(74,107,92,0.1)',
+              color: userSig === 'corroborate' ? 'white' : 'var(--sage-2)',
+              border: 'none', borderRadius: 999, padding: '2px 8px',
+              fontSize: 10.5, fontWeight: 600, cursor: isApi && auth?.token ? 'pointer' : 'default',
+            }}
+          ><IconCheck size={9} sw={2.4}/> {counts.corroborate}</button>
+          <button
+            onClick={e => { e.stopPropagation(); signal('challenge'); }}
+            disabled={!isApi || !auth?.token || busy}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 3,
+              background: userSig === 'challenge' ? 'var(--ember)' : 'rgba(196,69,54,0.08)',
+              color: userSig === 'challenge' ? 'white' : 'var(--ember)',
+              border: 'none', borderRadius: 999, padding: '2px 8px',
+              fontSize: 10.5, fontWeight: 600, cursor: isApi && auth?.token ? 'pointer' : 'default',
+            }}
+          ><IconX size={9} sw={2.4}/> {counts.challenge}</button>
           <span style={{ marginLeft: 'auto' }}>{when}</span>
           {onOpen && (
             <button

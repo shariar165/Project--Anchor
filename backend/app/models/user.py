@@ -11,6 +11,7 @@ class Role(str, PyEnum):
     user = "user"
     moderator = "moderator"
     admin = "admin"
+    super_admin = "super_admin"
 
 
 class AccountStatus(str, PyEnum):

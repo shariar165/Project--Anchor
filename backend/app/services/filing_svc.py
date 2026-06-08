@@ -222,6 +222,77 @@ async def list_filings(
     return filings
 
 
+async def list_filings_admin(
+    db: AsyncSession,
+    tenant_id: uuid.UUID | None,
+    category: str | None = None,
+    state: str | None = None,
+    template_key: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> list[Filing]:
+    """List all filings for admin — not scoped to a specific complainant."""
+    q = select(Filing)
+    if tenant_id:
+        q = q.where(Filing.tenant_id == tenant_id)
+    if category:
+        q = q.where(Filing.category == category)
+    if state:
+        q = q.where(Filing.state == state)
+    if template_key:
+        q = q.join(FilingTemplate, Filing.template_id == FilingTemplate.id)
+        q = q.where(FilingTemplate.key == template_key)
+    q = q.order_by(Filing.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(q)
+    filings = list(result.scalars().all())
+    for f in filings:
+        await db.refresh(f, ["template"])
+    return filings
+
+
+async def admin_review_filing(
+    db: AsyncSession,
+    filing: Filing,
+    reviewer_id: uuid.UUID,
+    reviewer_role: str,
+    action: str,
+    public_note: str | None,
+    internal_note: str | None,
+) -> Filing:
+    """Admin review action: transition state and record a review entry."""
+    state_map = {
+        "mark_under_review": FilingState.under_review,
+        "resolve": FilingState.resolved,
+        "dismiss": FilingState.dismissed,
+        "escalate": FilingState.routed,
+    }
+    new_state = state_map.get(action)
+    now = _now()
+    if new_state:
+        filing.state = new_state
+        filing.state_entered_at = now
+        if action == "escalate":
+            filing.escalation_level = filing.escalation_level + 1
+        if action in ("resolve", "dismiss"):
+            filing.finalized_at = now
+            if public_note:
+                filing.final_outcome_note = public_note
+
+    review = FilingReview(
+        filing_id=filing.id,
+        reviewer_id=reviewer_id,
+        reviewer_role=reviewer_role,
+        action=action,
+        public_note=public_note,
+        internal_note=internal_note,
+    )
+    db.add(review)
+    await db.commit()
+    await db.refresh(filing)
+    await db.refresh(filing, ["template", "attachments", "reviews", "subject_responses"])
+    return filing
+
+
 async def update_filing(
     db: AsyncSession, filing: Filing, data: FilingUpdate
 ) -> Filing:

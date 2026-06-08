@@ -14,13 +14,59 @@ async function apiPost(path, body) {
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || 'Request failed');
+  if (!res.ok) {
+    const err = new Error(data.detail || data.message || 'Request failed');
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
 function saveTokens(access_token, refresh_token) {
   localStorage.setItem('anchor_access_token', access_token);
   localStorage.setItem('anchor_refresh_token', refresh_token);
+}
+
+// ── Firebase Web Push (fill in config to enable push notifications) ──────────
+// Public keys — safe to commit. Get from Firebase Console → Project Settings → Web app.
+const FIREBASE_CONFIG = {
+  apiKey:            'AIzaSyBqQtlcZ536HFiNVEFGuURfeeQa37UtVeM',
+  authDomain:        'project-anchor-76170.firebaseapp.com',
+  projectId:         'project-anchor-76170',
+  storageBucket:     'project-anchor-76170.firebasestorage.app',
+  messagingSenderId: '915588225145',
+  appId:             '1:915588225145:web:1a7bb87daa31a1c4fb5ca8',
+};
+// Get from Firebase Console → Project Settings → Cloud Messaging → Web Push certificates (VAPID key)
+const FIREBASE_VAPID_KEY = 'YOUR_VAPID_KEY_HERE'; // FILL IN to activate web push
+
+async function registerFCMToken() {
+  if (typeof firebase === 'undefined') return;
+  if (!FIREBASE_VAPID_KEY || FIREBASE_VAPID_KEY === 'YOUR_VAPID_KEY_HERE') return;
+  if (!('serviceWorker' in navigator) || !('Notification' in window)) return;
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    const messaging = firebase.messaging();
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return;
+    const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+    const fcmToken = await messaging.getToken({ vapidKey: FIREBASE_VAPID_KEY, serviceWorkerRegistration: swReg });
+    if (!fcmToken) return;
+    let deviceId = localStorage.getItem('anchor_device_id');
+    if (!deviceId) {
+      deviceId = 'web-' + Math.random().toString(36).slice(2, 18);
+      localStorage.setItem('anchor_device_id', deviceId);
+    }
+    await fetch(AUTH_API + '/v1/users/me/fcm-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAccessToken() },
+      body: JSON.stringify({ fcm_token: fcmToken, device_id: deviceId, platform: 'web' }),
+    });
+    console.info('[FCM] Token registered');
+  } catch (err) {
+    console.warn('[FCM] Registration failed:', err);
+  }
 }
 function getAccessToken() {
   return localStorage.getItem('anchor_access_token');
@@ -207,9 +253,24 @@ function LoginScreen() {
         tenant_id: me.tenant_id ? String(me.tenant_id) : null,
         mfa:       me.mfa_enabled,
       });
+      registerFCMToken();
       go('home');
     } catch (err) {
-      setError(err.message);
+      if (err.status === 403 && err.message === 'Email/phone not verified') {
+        // Account exists but OTP was never completed — trigger a resend and go verify
+        const id = identifier.trim();
+        const isEmail = id.includes('@');
+        try {
+          await apiPost('/auth/resend-verification', { identifier: id });
+        } catch (_) {}
+        setAuthPending({
+          authStep: isEmail ? 'verify_email' : 'verify_phone',
+          pendingIdentifier: id,
+        });
+        go(isEmail ? 'verify-email' : 'verify-otp', { identifier: id, name: '' });
+      } else {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -313,6 +374,14 @@ function LoginScreen() {
             color: 'var(--red)', fontSize: 12.5, fontFamily: 'var(--font-sans)',
           }}>
             {error}
+            {error === 'Invalid credentials' && (
+              <div style={{ marginTop: 6, color: 'var(--ink-2)', fontSize: 12 }}>
+                Haven't verified your account yet?{' '}
+                <button onClick={() => go('register')} style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--navy)', fontWeight: 600, fontSize: 12, fontFamily: 'var(--font-sans)', padding: 0 }}>
+                  Register again →
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -514,8 +583,12 @@ function RegisterFormScreen({ params }) {
     if (Object.keys(e).length > 0) { setErrs(e); return; }
     setErrs({});
     setLoading(true);
+    const normalizedPhone = phone.replace(/\s/g, '').replace(/^\+?880/, '0');
+    const verifyViaEmail = isStudent || Boolean(userEmail.trim());
+    const verifyIdentifier = verifyViaEmail
+      ? (isStudent ? uniEmail.trim() : userEmail.trim())
+      : normalizedPhone;
     try {
-      const normalizedPhone = phone.replace(/\s/g, '').replace(/^\+?880/, '0');
       const payload = {
         full_name:    name.trim(),
         email:        isStudent ? uniEmail.trim() : (userEmail.trim() || undefined),
@@ -529,11 +602,6 @@ function RegisterFormScreen({ params }) {
 
       const data = await apiPost('/auth/register', payload);
 
-      const verifyViaEmail = isStudent || Boolean(userEmail.trim());
-      const verifyIdentifier = verifyViaEmail
-        ? (isStudent ? uniEmail.trim() : userEmail.trim())
-        : normalizedPhone;
-
       setAuthPending({
         authStep: verifyViaEmail ? 'verify_email' : 'verify_phone',
         pendingIdentifier: verifyIdentifier,
@@ -544,7 +612,22 @@ function RegisterFormScreen({ params }) {
         devCode: data.dev_otp || null,
       });
     } catch (err) {
-      setErrs({ submit: err.message });
+      if (err.status === 409 && err.data && err.data.pending_verification) {
+        // Account exists but unverified — backend resent OTP, redirect to verify
+        setAuthPending({
+          authStep: verifyViaEmail ? 'verify_email' : 'verify_phone',
+          pendingIdentifier: verifyIdentifier,
+        });
+        go(verifyViaEmail ? 'verify-email' : 'verify-otp', {
+          identifier: verifyIdentifier,
+          name: name.trim(),
+          devCode: (err.data && err.data.dev_otp) || null,
+        });
+      } else if (err.status === 409) {
+        setErrs({ submit: 'An account with this email or phone already exists.', showLogin: true });
+      } else {
+        setErrs({ submit: err.message });
+      }
     } finally {
       setLoading(false);
     }
@@ -610,6 +693,17 @@ function RegisterFormScreen({ params }) {
             color: 'var(--red)', fontSize: 12.5, fontFamily: 'var(--font-sans)',
           }}>
             {errs.submit}
+            {errs.showLogin && (
+              <button
+                onClick={() => go('login')}
+                style={{
+                  display: 'block', marginTop: 8, color: 'var(--navy)',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 600, padding: 0,
+                }}>
+                Log in instead →
+              </button>
+            )}
           </div>
         )}
 
@@ -662,6 +756,7 @@ function VerifyEmailScreen({ params }) {
         tenant_id: me.tenant_id ? String(me.tenant_id) : null,
         mfa:       me.mfa_enabled,
       });
+      registerFCMToken();
       go('home');
     } catch (err) {
       setError(err.message);
@@ -672,6 +767,8 @@ function VerifyEmailScreen({ params }) {
   };
 
   const handleResend = async () => {
+    setCode('');
+    setError('');
     const data = await apiPost('/auth/resend-verification', { identifier: email });
     return data.dev_otp || null;
   };
@@ -765,6 +862,7 @@ function VerifyOTPScreen({ params }) {
         tenant_id: me.tenant_id ? String(me.tenant_id) : null,
         mfa:       me.mfa_enabled,
       });
+      registerFCMToken();
       go('home');
     } catch (err) {
       setError(err.message);
@@ -775,6 +873,8 @@ function VerifyOTPScreen({ params }) {
   };
 
   const handleResend = async () => {
+    setCode('');
+    setError('');
     const data = await apiPost('/auth/resend-verification', { identifier: phone });
     return data.dev_otp || null;
   };
@@ -946,6 +1046,7 @@ function MFAVerifyScreen() {
       tenant_id: null,
       mfa: true,
     });
+    registerFCMToken();
     go('home');
   };
 

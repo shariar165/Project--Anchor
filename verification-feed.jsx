@@ -121,138 +121,185 @@ function StepUpModal({ onDone, onCancel }) {
   );
 }
 
-// ─── Feed post card ───────────────────────────────────────────────────────────
-
-function FeedPostCard({ post, onTap }) {
-  const cat = CATEGORIES.find(c => c.k === post.category) || CATEGORIES[0];
-  const sc = post.signal_counts || {};
-  return (
-    <div onClick={onTap} className="card" style={{
-      margin: '0 16px 12px', cursor: 'pointer', padding: '14px 16px',
-      borderRadius: 14, background: 'rgba(255,255,255,0.7)',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-        <span style={{ fontSize: 11, color: 'var(--muted)' }}>{cat.icon} {cat.label.toUpperCase()}</span>
-        <FeedStatePill state={post.state} />
-        {post.admin_confirmed && (
-          <span style={{ fontSize: 10, color: 'var(--gold)', fontWeight: 600 }}>✓ Confirmed</span>
-        )}
-      </div>
-      <div className="serif" style={{ fontSize: 15, fontWeight: 600, color: 'var(--navy)', marginBottom: 8, lineHeight: 1.4 }}>
-        {post.title}
-      </div>
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-        <span style={{ fontSize: 11.5, color: 'var(--sage)', fontWeight: 600 }}>
-          ✓ {sc.corroborate || 0}
-        </span>
-        <span style={{ fontSize: 11.5, color: 'var(--ember)', fontWeight: 600 }}>
-          ✗ {sc.challenge || 0}
-        </span>
-        <span style={{ fontSize: 10.5, color: 'var(--muted)', marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>
-          {post.post_number}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-// ─── Verification Feed Screen ─────────────────────────────────────────────────
+// ─── Verification Feed Screen — newspaper layout ─────────────────────────────
 
 function VerificationFeedScreen() {
-  const { go, mode, auth } = useApp();
+  const { go, back, mode, auth } = useApp();
   const canSeeCampus = mode === 'campus' && !!auth?.user?.tenant_id;
   const [scope, setScope] = React.useState(canSeeCampus ? 'campus' : 'national');
-  const [category, setCategory] = React.useState(null);
-  const [sort, setSort] = React.useState('recent');
+  const [tab, setTab]     = React.useState('top'); // top | latest | trusted
   const [posts, setPosts] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState('');
+  const [error, setError]     = React.useState('');
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
 
-  React.useEffect(() => {
-    loadPosts();
-  }, [scope, category, sort]);
+  React.useEffect(() => { loadPosts(); }, [scope, tab]);
 
   async function loadPosts() {
     setLoading(true); setError('');
     try {
-      let url = `/v1/feed?scope=${scope}&sort=${sort}&page=1&page_size=30`;
-      if (category) url += `&category=${category}`;
-      const data = await vfFetch(url);
-      setPosts(Array.isArray(data) ? data : (data?.items ?? []));
-    } catch (e) {
-      setError(e.message);
-    }
+      const sort = tab === 'latest' ? 'recent' : 'corroborate';
+      const data = await vfFetch(`/v1/feed?scope=${scope}&sort=${sort}&page=1&page_size=30`);
+      let items = Array.isArray(data) ? data : (data?.items ?? []);
+      if (tab === 'trusted') items = items.filter(p => p.admin_confirmed);
+      setPosts(items);
+    } catch (e) { setError(e.message); }
     setLoading(false);
   }
 
+  const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  const issueNum = posts.length > 0 ? String(posts[0].post_number || 1).padStart(3, '0') : '001';
+  const hero = posts[0] || null;
+  const rest = posts.slice(1);
+  const editionLabel = scope === 'campus' ? 'Campus edition · Daffodil' : 'National edition · Bangladesh';
+
   return (
-    <>
-      <Header title="Verification Feed" back/>
-      {/* Masthead */}
-      <div style={{ padding: '14px 20px 0', borderBottom: '1px solid var(--mist)' }}>
-        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontWeight: 600, color: 'var(--navy)', letterSpacing: '-0.5px' }}>
-          The Anchor <em>Verified</em>
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-          {scope === 'campus' ? 'Campus edition · Daffodil' : 'National edition · Bangladesh'}
-        </div>
-        {/* Scope tabs */}
-        <div className="tabbar" style={{ borderBottom: 'none', paddingBottom: 0 }}>
-          <button className={scope === 'national' ? 'on' : ''} onClick={() => setScope('national')}>National</button>
-          {canSeeCampus && (
-            <button className={scope === 'campus' ? 'on' : ''} onClick={() => setScope('campus')}>Campus · DIU</button>
-          )}
-        </div>
-      </div>
+    <div style={{ background: 'var(--cream)', minHeight: '100%' }}>
 
-      {/* Category filter */}
-      <div style={{ display: 'flex', gap: 6, padding: '10px 16px', overflowX: 'auto' }}>
-        <button onClick={() => setCategory(null)} style={{
-          padding: '4px 12px', borderRadius: 999, fontSize: 11, fontWeight: 600,
-          background: !category ? accent : 'transparent',
-          color: !category ? 'white' : 'var(--muted)',
-          border: `1px solid ${!category ? accent : 'var(--mist)'}`,
-          whiteSpace: 'nowrap',
-        }}>All</button>
-        {CATEGORIES.map(c => (
-          <button key={c.k} onClick={() => setCategory(c.k)} style={{
-            padding: '4px 12px', borderRadius: 999, fontSize: 11, fontWeight: 600,
-            background: category === c.k ? accent : 'transparent',
-            color: category === c.k ? 'white' : 'var(--muted)',
-            border: `1px solid ${category === c.k ? accent : 'var(--mist)'}`,
-            whiteSpace: 'nowrap',
-          }}>{c.icon} {c.label}</button>
-        ))}
-      </div>
-
-      {/* Sort */}
-      <div style={{ display: 'flex', gap: 8, padding: '0 16px 10px' }}>
-        {[['recent','Recent'],['corroborate','Most Corroborated']].map(([k,l]) => (
-          <button key={k} onClick={() => setSort(k)} style={{
-            fontSize: 11, padding: '3px 10px', borderRadius: 999,
-            fontWeight: 600, border: `1px solid ${sort===k ? accent : 'var(--mist)'}`,
-            color: sort===k ? accent : 'var(--muted)', background: 'transparent',
-          }}>{l}</button>
-        ))}
-      </div>
-
-      {/* List */}
-      <div style={{ paddingBottom: 80 }}>
-        {loading && <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13 }}>Loading…</div>}
-        {error && <div style={{ textAlign: 'center', padding: 20, color: 'var(--red)', fontSize: 13 }}>{error}</div>}
-        {!loading && posts.length === 0 && (
-          <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13 }}>
-            No posts yet. Be the first to publish.
+      {/* ── Masthead ── */}
+      <div style={{ padding: '12px 16px 0', borderBottom: '2px solid var(--navy)' }}>
+        {/* Top row: back + title + issue */}
+        <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 2 }}>
+          <button onClick={back} style={{ background: 'none', border: 'none', padding: '0 10px 0 0', cursor: 'pointer', color: 'var(--navy)', fontSize: 18, lineHeight: 1 }}>←</button>
+          <div style={{ flex: 1, fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 700, color: 'var(--navy)', letterSpacing: '-0.5px', lineHeight: 1 }}>
+            The Anchor <em>Verified</em>
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--muted)', textAlign: 'right', lineHeight: 1.4 }}>
+            VOL. 1 · {issueNum}
+          </div>
+        </div>
+        {/* Sub-row: edition + date + moderated */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--muted)', marginBottom: 10, lineHeight: 1.5 }}>
+          <span>{editionLabel} · {today}</span>
+          <span style={{ whiteSpace: 'nowrap', marginLeft: 8 }}>Human-moderated</span>
+        </div>
+        {/* Scope toggles (campus users only) */}
+        {canSeeCampus && (
+          <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+            {[['national','National'],['campus','Campus · DIU']].map(([s,l]) => (
+              <button key={s} onClick={() => setScope(s)} style={{
+                fontSize: 10, padding: '2px 10px', borderRadius: 999, fontWeight: 600,
+                background: scope === s ? 'var(--navy)' : 'transparent',
+                color: scope === s ? 'white' : 'var(--muted)',
+                border: `1px solid ${scope === s ? 'var(--navy)' : 'var(--mist)'}`,
+                cursor: 'pointer',
+              }}>{l}</button>
+            ))}
           </div>
         )}
-        {posts.map(p => (
-          <FeedPostCard key={p.id} post={p} onTap={() => go('feed-post', { id: p.id })} />
-        ))}
+        {/* Tab bar */}
+        <div style={{ display: 'flex', gap: 6, paddingBottom: 10 }}>
+          {[['top','Top stories'],['latest','Latest'],['trusted','Trusted only']].map(([k,l]) => (
+            <button key={k} onClick={() => setTab(k)} style={{
+              fontSize: 12, padding: '6px 14px', borderRadius: 999,
+              background: tab === k ? 'var(--navy)' : 'transparent',
+              color: tab === k ? 'white' : 'var(--muted)',
+              border: `1px solid ${tab === k ? 'var(--navy)' : 'var(--mist)'}`,
+              fontWeight: tab === k ? 700 : 500, cursor: 'pointer',
+            }}>{l}</button>
+          ))}
+        </div>
       </div>
 
-      {/* Publish FAB */}
-    </>
+      {/* ── Loading / Error / Empty ── */}
+      {loading && <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13 }}>Loading…</div>}
+      {error   && <div style={{ textAlign: 'center', padding: 20, color: 'var(--red)',   fontSize: 13 }}>{error}</div>}
+      {!loading && !error && posts.length === 0 && (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13 }}>No stories yet.</div>
+      )}
+
+      {/* ── Breaking strip ── */}
+      {hero && (
+        <div style={{ background: 'var(--navy)', padding: '7px 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700, color: accent, letterSpacing: 1, textTransform: 'uppercase' }}>
+            Anchor Verified · {scope === 'campus' ? 'Campus Edition' : 'National'}
+          </span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'rgba(255,255,255,0.45)', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+            {new Date(hero.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+          </span>
+        </div>
+      )}
+
+      {/* ── Hero post ── */}
+      {hero && (
+        <div onClick={() => go('feed-post', { id: hero.id })} style={{ cursor: 'pointer', borderBottom: '1px solid var(--mist)' }}>
+          {/* Hero illustration */}
+          <div style={{ width: '100%', height: 210, position: 'relative', overflow: 'hidden', background: 'var(--navy)' }}>
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <NewsArt variant="d"/>
+            </div>
+            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(247,243,238,0.93)', padding: '5px 14px', borderTop: '1px solid var(--mist)' }}>
+              <span style={{ fontSize: 10, color: 'var(--muted)', fontStyle: 'italic' }}>
+                <strong style={{ fontStyle: 'normal', color: 'var(--navy)' }}>Photo —</strong> community report, cross-checked against official sources
+              </span>
+            </div>
+          </div>
+          {/* Article text */}
+          <div style={{ padding: '14px 16px 16px' }}>
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 12, fontStyle: 'italic', color: accent, marginBottom: 4 }}>
+              {scope === 'campus' ? 'Campus' : 'National'} · {(hero.category || 'top_story').replace(/_/g, ' ')}:
+            </div>
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 25, fontWeight: 700, color: 'var(--navy)', lineHeight: 1.15, marginBottom: 8, letterSpacing: '-0.3px' }}>
+              {hero.title}
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--muted)', marginBottom: 10, letterSpacing: 0.3 }}>
+              by <strong style={{ color: 'var(--navy)', textTransform: 'uppercase', fontSize: 9.5 }}>Anchor Verifiers</strong>
+            </div>
+            {hero.body && (
+              <div style={{ fontSize: 13.5, color: 'var(--ink)', lineHeight: 1.7, overflow: 'hidden' }}>
+                <span style={{
+                  float: 'left', fontFamily: 'var(--font-serif)', fontSize: 46,
+                  fontWeight: 700, lineHeight: 0.82, marginRight: 5, marginTop: 7,
+                  color: 'var(--navy)',
+                }}>
+                  {hero.body.charAt(0).toUpperCase()}
+                </span>
+                {hero.body.slice(1, 220)}{hero.body.length > 220 ? '…' : ''}
+              </div>
+            )}
+            <div style={{ clear: 'both', marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--mist)', display: 'flex', gap: 14, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: 'var(--sage)', fontWeight: 700 }}>✓ {hero.signal_counts?.corroborate || 0} corroborate</span>
+              <span style={{ fontSize: 11, color: 'var(--ember)', fontWeight: 700 }}>✗ {hero.signal_counts?.challenge || 0} challenge</span>
+              {hero.admin_confirmed && <span style={{ fontSize: 10, color: 'var(--gold)', fontWeight: 700, marginLeft: 'auto' }}>✓ Confirmed</span>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Secondary posts ── */}
+      <div style={{ paddingBottom: 80 }}>
+        {rest.map((p, i) => {
+          const sc  = p.signal_counts || {};
+          const cat = CATEGORIES.find(c => c.k === p.category) || CATEGORIES[0];
+          return (
+            <div key={p.id} onClick={() => go('feed-post', { id: p.id })} style={{
+              padding: '14px 16px', borderBottom: '1px solid var(--mist)',
+              cursor: 'pointer', display: 'flex', gap: 12, alignItems: 'flex-start',
+            }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 9, color: 'var(--muted)', fontWeight: 700, letterSpacing: 0.9, marginBottom: 4, textTransform: 'uppercase' }}>
+                  {cat.icon} {cat.label}
+                  {p.admin_confirmed && <span style={{ color: 'var(--gold)', marginLeft: 6 }}>✓ Confirmed</span>}
+                </div>
+                <div style={{ fontFamily: 'var(--font-serif)', fontSize: 15, fontWeight: 600, color: 'var(--navy)', lineHeight: 1.3, marginBottom: 6 }}>
+                  {p.title}
+                </div>
+                <div style={{ display: 'flex', gap: 10, fontSize: 10.5, alignItems: 'center' }}>
+                  <span style={{ color: 'var(--sage)', fontWeight: 600 }}>✓ {sc.corroborate || 0}</span>
+                  <span style={{ color: 'var(--ember)', fontWeight: 600 }}>✗ {sc.challenge || 0}</span>
+                  <span style={{ color: 'var(--muted)', marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 10 }}>
+                    {new Date(p.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                  </span>
+                </div>
+              </div>
+              <div style={{ width: 68, height: 68, borderRadius: 8, overflow: 'hidden', flexShrink: 0, background: 'var(--navy)' }}>
+                <NewsArt variant={['a','b','c','d'][i % 4]}/>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
