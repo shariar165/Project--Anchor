@@ -28,6 +28,7 @@ from app.routers import admin_users as admin_users_router
 from app.routers import geofence as geofence_router
 from app.routers import campus_zones as campus_zones_router
 from app.routers import super_zones as super_zones_router
+from app.routers import admin_timetable as admin_timetable_router
 
 
 @asynccontextmanager
@@ -99,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(routines_router.router)
     app.include_router(dept_ratings_router.router)
     app.include_router(admin_users_router.router)
+    app.include_router(admin_timetable_router.router)
     app.include_router(geofence_router.router)
     # Campus zones (admin polygon CRUD) — must be included before zones_router to avoid /{id} conflict
     app.include_router(campus_zones_router.router)

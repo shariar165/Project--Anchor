@@ -29,3 +29,7 @@ fpdf2>=2.8.1
 # Verification Feed
 sse-starlette>=1.6.5
 aiofiles>=23.0
+
+# Timetable Generator
+ortools>=9.10
+openpyxl>=3.1

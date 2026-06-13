@@ -35,6 +35,13 @@ from app.models.lawyer import Lawyer
 from app.models.routine import AcademicRoutine, RoutineStatus
 from app.models.dept_rating import DepartmentRating
 from app.models.tenant_geofence import TenantGeofence
+from app.models.timetable import (
+    TimetableTerm, TimetableBatch, TimetableSection, TimetableLabGroup,
+    TimetableRoom, TimetableCourse, TimetableFacultyProfile,
+    TimetableStudentEnrollment, TimetableCourseOffering,
+    TimetableTeacherEligibility, TimetableScheduleConfig,
+    TimetableConstraint, TimetableSolveJob, TimetableEntry,
+)
 
 __all__ = [
     "Base", "TimestampMixin",
@@ -75,4 +82,10 @@ __all__ = [
     "DepartmentRating",
     # Tenant Geofence
     "TenantGeofence",
+    # Timetable Generator
+    "TimetableTerm", "TimetableBatch", "TimetableSection", "TimetableLabGroup",
+    "TimetableRoom", "TimetableCourse", "TimetableFacultyProfile",
+    "TimetableStudentEnrollment", "TimetableCourseOffering",
+    "TimetableTeacherEligibility", "TimetableScheduleConfig",
+    "TimetableConstraint", "TimetableSolveJob", "TimetableEntry",
 ]
