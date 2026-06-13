@@ -1,19 +1,12 @@
 // Service worker for FCM background push notifications.
 // Must be served from the root of the web server (same origin as the app).
-// FILL IN: Replace placeholder values with your actual Firebase project config.
-// Get them from: Firebase Console → Project Settings → Your Apps → Web app
+// Config is loaded from firebase-sw-env.js (gitignored; copy firebase-sw-env.example.js → firebase-sw-env.js).
 
 importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js');
+importScripts('/firebase-sw-env.js');
 
-firebase.initializeApp({
-  apiKey: "AIzaSyBqQtlcZ536HFiNVEFGuURfeeQa37UtVeM",
-  authDomain: "project-anchor-76170.firebaseapp.com",
-  projectId: "project-anchor-76170",
-  storageBucket: "project-anchor-76170.firebasestorage.app",
-  messagingSenderId: "915588225145",
-  appId: "1:915588225145:web:1a7bb87daa31a1c4fb5ca8",
-});
+firebase.initializeApp(FIREBASE_SW_CONFIG);
 
 const messaging = firebase.messaging();
 

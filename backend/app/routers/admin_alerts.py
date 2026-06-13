@@ -538,7 +538,7 @@ class ZoneCreateBody(BaseModel):
     zone_type: str
     center_lat: float
     center_lng: float
-    radius_m: int
+    radius_m: int | None = None
     label: str | None = None
     description_public: str | None = None
     expires_at: datetime | None = None
@@ -551,14 +551,14 @@ class ZoneCreateBody(BaseModel):
         try:
             ZoneType(v)
         except ValueError:
-            raise ValueError(f"Invalid zone_type '{v}'. Must be one of: rape, murder, alert, university")
+            raise ValueError(f"Invalid zone_type '{v}'. Must be one of: rape, murder, alert, university, red, purple, black")
         return v
 
     @field_validator("radius_m")
     @classmethod
     def _validate_radius(cls, v):
-        if not (50 <= v <= 10000):
-            raise ValueError("radius_m must be between 50 and 10000")
+        if v is not None and not (50 <= v <= 50000):
+            raise ValueError("radius_m must be between 50 and 50000")
         return v
 
     @field_validator("center_lat")
@@ -591,7 +591,7 @@ async def create_zone(
         zone_type=ZoneType(body.zone_type),
         center_lat=body.center_lat,
         center_lng=body.center_lng,
-        radius_m=body.radius_m,
+        radius_m=body.radius_m if body.radius_m else 300,
         label=body.label,
         description_public=body.description_public,
         expires_at=body.expires_at,

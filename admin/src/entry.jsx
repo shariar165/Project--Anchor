@@ -139,13 +139,6 @@ function LoginScreen({ mode = 'uni', onGo, onLogin }) {
     setError('');
     setLoading(true);
     try {
-      if (email === 'teamaivion@gmail.com' && pwd === 'AiVion@Anchor2026!') {
-        const demoUser = { id: 'super_aivion', full_name: 'AiVion Team', email: 'teamaivion@gmail.com', role: 'super_admin', portal: mode };
-        AnchorAPI.setStoredUser(demoUser);
-        onLogin(demoUser);
-        onGo(homeRoute);
-        return;
-      }
       const data = await AnchorAPI.apiPost('/auth/login', { identifier: email, password: pwd });
       if (data.mfa_required) {
         setMfaToken(data.mfa_token);

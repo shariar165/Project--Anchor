@@ -11,7 +11,7 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 SMALL_MODEL = "qwen3:1.7b"
-MAIN_MODEL = "qwen3:8b"
+MAIN_MODEL = "qwen3:1.7b"
 
 
 def _ollama_base() -> str:

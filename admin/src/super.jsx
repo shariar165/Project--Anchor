@@ -1541,6 +1541,12 @@ function SuperUsers() {
 // ─── Red Zone Map ─────────────────────────────────────────────────────────────
 
 const ZONE_COLORS = {
+  // New manually-managed types
+  red:        '#ef4444',
+  purple:     '#a855f7',
+  black:      '#374151',
+  campus:     '#22c55e',
+  // Legacy auto-created types (read-only in UI)
   university: '#1FA663',
   rape:       '#0B0B0B',
   murder:     '#7B2CBF',
@@ -1548,11 +1554,19 @@ const ZONE_COLORS = {
 };
 
 const ZONE_TYPE_LABELS = {
+  red:        'Red Zone (General danger)',
+  purple:     'Purple Zone (Murder reports)',
+  black:      'Black Zone (Assault reports)',
+  campus:     'Campus Zone (Safe area)',
+  // Legacy
   university: 'University Zone',
-  rape:       'Safety Advisory (Sexual)',
-  murder:     'Safety Advisory (Violent)',
+  rape:       'Advisory (Sexual)',
+  murder:     'Advisory (Violent)',
   alert:      'Active Alert Zone',
 };
+
+// Zone types that super admin can create manually
+const MANAGEABLE_TYPES = ['red', 'purple', 'black'];
 
 function SuperRedZones({ onGo }) {
   const [zones, setZones] = useState([]);
@@ -1560,30 +1574,44 @@ function SuperRedZones({ onGo }) {
   const [loadError, setLoadError] = useState(null);
   const [mapError, setMapError] = useState(null);
   const [statusFilter, setStatusFilter] = useState('active');
-  const [typeFilters, setTypeFilters] = useState({ rape: true, murder: true, alert: true, university: true });
+  const [typeFilters, setTypeFilters] = useState({ red: true, purple: true, black: true });
 
-  // 'list' = zone roster, 'form' = create/edit — both inside the right panel, no overlay
+  // 'list' | 'form'
   const [panelMode, setPanelMode] = useState('list');
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ zone_type: 'alert', center_lat: '', center_lng: '', radius_m: 300, label: '', description_public: '', expires_at: '' });
+  const [form, setForm] = useState({
+    zone_type: 'red',
+    shape_type: 'circle',
+    center_lat: '',
+    center_lng: '',
+    radius_m: 300,
+    polygon_coords: null,
+    name: '',
+    description_public: '',
+    expires_at: '',
+  });
   const [formError, setFormError] = useState(null);
   const [saving, setSaving] = useState(false);
 
   const [confirmArchive, setConfirmArchive] = useState(null);
   const [archiving, setArchiving] = useState(false);
 
-  const [clickMode, setClickMode] = useState(false);
-  const clickModeRef = useRef(false);
+  // drawingMode: null | 'circle_pick' | 'polygon'
+  const [drawingMode, setDrawingMode] = useState(null);
+  const [drawingVertices, setDrawingVertices] = useState([]);
+  const drawingModeRef = useRef(null);
+  const drawingVerticesRef = useRef([]);
 
   const mapDivRef = useRef(null);
   const leafletMapRef = useRef(null);
-  const circleLayersRef = useRef({});
+  const zoneLayersRef = useRef({});
+  const drawingLayerRef = useRef(null); // live polyline while drawing polygon
 
   function load() {
     setLoading(true);
     setLoadError(null);
-    AnchorAPI.apiGet('/v1/admin/zones?limit=200')
-      .then(data => { setZones(data); setLoading(false); })
+    AnchorAPI.apiGet('/v1/super-admin/zones?include_archived=true&limit=300')
+      .then(data => { setZones(Array.isArray(data) ? data : []); setLoading(false); })
       .catch(err => {
         const msg = err.message || 'Failed to load zones';
         setLoadError(msg.includes('Session expired') ? 'Session expired — please sign in again.' : msg);
@@ -1593,81 +1621,144 @@ function SuperRedZones({ onGo }) {
 
   useEffect(() => { load(); }, []);
 
-  useEffect(() => { clickModeRef.current = clickMode; }, [clickMode]);
+  useEffect(() => { drawingModeRef.current = drawingMode; }, [drawingMode]);
+  useEffect(() => { drawingVerticesRef.current = drawingVertices; }, [drawingVertices]);
 
-  // Init Leaflet once — guard against CDN not loading
+  function _clearDrawingLayer() {
+    if (drawingLayerRef.current && leafletMapRef.current) {
+      try { drawingLayerRef.current.remove(); } catch (_) {}
+      drawingLayerRef.current = null;
+    }
+  }
+
+  // Init Leaflet once
   useEffect(() => {
     if (!mapDivRef.current || leafletMapRef.current) return;
-    if (!window.L) {
-      setMapError('Map library failed to load. Please refresh the page.');
-      return;
-    }
+    if (!window.L) { setMapError('Map library failed to load. Please refresh the page.'); return; }
     try {
       const map = window.L.map(mapDivRef.current, { zoomControl: true }).setView([23.7450, 90.3718], 12);
       window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 19,
+        attribution: '© OpenStreetMap contributors', maxZoom: 19,
       }).addTo(map);
       leafletMapRef.current = map;
 
       map.on('click', (e) => {
-        if (!clickModeRef.current) return;
-        setClickMode(false);
-        setForm(f => ({
-          ...f,
-          center_lat: String(e.latlng.lat.toFixed(6)),
-          center_lng: String(e.latlng.lng.toFixed(6)),
-        }));
-        setEditing(null);
-        setFormError(null);
-        setPanelMode('form');
+        const mode = drawingModeRef.current;
+        if (!mode) return;
+
+        if (mode === 'circle_pick') {
+          setDrawingMode(null);
+          setForm(f => ({
+            ...f,
+            center_lat: String(e.latlng.lat.toFixed(6)),
+            center_lng: String(e.latlng.lng.toFixed(6)),
+          }));
+          setEditing(null);
+          setFormError(null);
+          setPanelMode('form');
+          return;
+        }
+
+        if (mode === 'polygon') {
+          const newVerts = [...drawingVerticesRef.current, [e.latlng.lat, e.latlng.lng]];
+          setDrawingVertices(newVerts);
+          drawingVerticesRef.current = newVerts;
+
+          _clearDrawingLayer();
+          if (newVerts.length >= 2) {
+            const layer = window.L.polygon(newVerts, {
+              color: '#a855f7', fillColor: '#a855f7', fillOpacity: 0.12,
+              weight: 2, dashArray: '6 4',
+            }).addTo(map);
+            drawingLayerRef.current = layer;
+          }
+        }
       });
     } catch (err) {
       setMapError('Map failed to initialise: ' + (err.message || 'unknown error'));
     }
-
     return () => {
       if (leafletMapRef.current) { leafletMapRef.current.remove(); leafletMapRef.current = null; }
-      circleLayersRef.current = {};
+      zoneLayersRef.current = {};
     };
   }, []);
 
-  // Redraw circles whenever zones list changes
+  // Redraw zones whenever list changes
   useEffect(() => {
     const map = leafletMapRef.current;
     if (!map || !window.L) return;
-    Object.values(circleLayersRef.current).forEach(c => c.remove());
-    circleLayersRef.current = {};
+    Object.values(zoneLayersRef.current).forEach(l => { try { l.remove(); } catch (_) {} });
+    zoneLayersRef.current = {};
 
     zones.forEach(zone => {
       const color = ZONE_COLORS[zone.zone_type] || '#E8312A';
       const isArchived = zone.status === 'archived';
-      const circle = window.L.circle([zone.center_lat, zone.center_lng], {
-        radius: zone.radius_m,
+      const opts = {
         color,
         fillColor: color,
-        fillOpacity: isArchived ? 0.06 : 0.15,
+        fillOpacity: isArchived ? 0.06 : 0.18,
         weight: isArchived ? 1 : 2,
         dashArray: isArchived ? '5 5' : null,
-      });
-      const popupLabel = zone.label || ZONE_TYPE_LABELS[zone.zone_type] || zone.zone_type;
-      circle.bindPopup(`<strong>${popupLabel}</strong><br/>${zone.zone_type} · ${zone.radius_m}m · ${zone.status}`);
-      circle.on('click', (ev) => {
-        window.L.DomEvent.stopPropagation(ev);
-        openEdit(zone);
-      });
-      circle.addTo(map);
-      circleLayersRef.current[zone.id] = circle;
+      };
+      const popupLabel = zone.name || ZONE_TYPE_LABELS[zone.zone_type] || zone.zone_type;
+      const shapeType = zone.shape_type || 'circle';
+      let layer;
+
+      if (shapeType === 'polygon' && Array.isArray(zone.polygon_coords) && zone.polygon_coords.length >= 3) {
+        layer = window.L.polygon(zone.polygon_coords, opts);
+        layer.bindPopup(`<strong>${popupLabel}</strong><br/>${zone.zone_type} · polygon · ${zone.status}`);
+      } else {
+        layer = window.L.circle([zone.center_lat, zone.center_lng], { radius: zone.radius_m || 300, ...opts });
+        layer.bindPopup(`<strong>${popupLabel}</strong><br/>${zone.zone_type} · ${zone.radius_m || 300}m · ${zone.status}`);
+      }
+
+      layer.on('click', (ev) => { window.L.DomEvent.stopPropagation(ev); openEdit(zone); });
+      layer.addTo(map);
+      zoneLayersRef.current[zone.id] = layer;
     });
   }, [zones]);
+
+  function startNewZone(shapeType) {
+    setForm(f => ({ ...f, shape_type: shapeType, center_lat: '', center_lng: '', polygon_coords: null, name: '' }));
+    setEditing(null);
+    setFormError(null);
+    if (shapeType === 'circle') {
+      setDrawingMode('circle_pick');
+    } else {
+      setDrawingVertices([]);
+      drawingVerticesRef.current = [];
+      _clearDrawingLayer();
+      setDrawingMode('polygon');
+    }
+  }
+
+  function finishPolygon() {
+    const verts = drawingVerticesRef.current;
+    if (verts.length < 3) { return; }
+    _clearDrawingLayer();
+    setDrawingMode(null);
+    setForm(f => ({ ...f, polygon_coords: verts, shape_type: 'polygon' }));
+    setEditing(null);
+    setFormError(null);
+    setPanelMode('form');
+  }
+
+  function cancelDrawing() {
+    _clearDrawingLayer();
+    setDrawingMode(null);
+    setDrawingVertices([]);
+    drawingVerticesRef.current = [];
+  }
 
   function openEdit(zone) {
     setForm({
       zone_type: zone.zone_type,
-      center_lat: String(zone.center_lat),
-      center_lng: String(zone.center_lng),
-      radius_m: zone.radius_m,
-      label: zone.label || '',
+      shape_type: zone.shape_type || 'circle',
+      center_lat: String(zone.center_lat || ''),
+      center_lng: String(zone.center_lng || ''),
+      radius_m: zone.radius_m || 300,
+      polygon_coords: zone.polygon_coords || null,
+      name: zone.name || '',
       description_public: zone.description_public || '',
       expires_at: zone.expires_at ? zone.expires_at.slice(0, 10) : '',
     });
@@ -1680,66 +1771,83 @@ function SuperRedZones({ onGo }) {
     setPanelMode('list');
     setEditing(null);
     setFormError(null);
-    setClickMode(false);
+    cancelDrawing();
   }
 
   async function handleSave(e) {
     e.preventDefault();
-    const lat = parseFloat(form.center_lat);
-    const lng = parseFloat(form.center_lng);
-    const radius = parseInt(form.radius_m, 10);
-    if (!editing) {
+    setFormError(null);
+
+    if (editing) {
+      // Edit: only allow name, description, expires_at; for circle also radius_m
+      const patch = {
+        name: form.name || null,
+        description: form.description_public || null,
+        expires_at: form.expires_at ? new Date(form.expires_at + 'T00:00:00Z').toISOString() : null,
+      };
+      if ((editing.shape_type || 'circle') === 'circle') {
+        const r = parseInt(form.radius_m, 10);
+        if (isNaN(r) || r < 50 || r > 50000) { setFormError('Radius must be between 50 and 50 000 m'); return; }
+        patch.radius_m = r;
+      }
+      setSaving(true);
+      try {
+        await AnchorAPI.apiPatch(`/v1/super-admin/zones/${editing.id}`, patch);
+        closeForm(); load();
+      } catch (err) { setFormError(err.message || 'Save failed'); }
+      finally { setSaving(false); }
+      return;
+    }
+
+    // Create new zone
+    const body = {
+      zone_type: form.zone_type,
+      shape_type: form.shape_type,
+      name: form.name || null,
+      description: form.description_public || null,
+      expires_at: form.expires_at ? new Date(form.expires_at + 'T00:00:00Z').toISOString() : null,
+    };
+
+    if (form.shape_type === 'polygon') {
+      const coords = form.polygon_coords;
+      if (!coords || coords.length < 3) { setFormError('Draw at least 3 points on the map first.'); return; }
+      body.polygon_coords = coords;
+    } else {
+      const lat = parseFloat(form.center_lat);
+      const lng = parseFloat(form.center_lng);
+      const r = parseInt(form.radius_m, 10);
       if (isNaN(lat) || lat < -90 || lat > 90) { setFormError('Latitude must be between -90 and 90'); return; }
       if (isNaN(lng) || lng < -180 || lng > 180) { setFormError('Longitude must be between -180 and 180'); return; }
+      if (isNaN(r) || r < 50 || r > 50000) { setFormError('Radius must be between 50 and 50 000 m'); return; }
+      body.center_lat = lat;
+      body.center_lng = lng;
+      body.radius_m = r;
     }
-    if (isNaN(radius) || radius < 50 || radius > 10000) { setFormError('Radius must be between 50 and 10 000 m'); return; }
 
     setSaving(true);
-    setFormError(null);
     try {
-      if (editing) {
-        await AnchorAPI.apiPatch(`/v1/admin/zones/${editing.id}`, {
-          label: form.label || null,
-          description_public: form.description_public || null,
-          radius_m: radius,
-          expires_at: form.expires_at ? new Date(form.expires_at + 'T00:00:00Z').toISOString() : null,
-        });
-      } else {
-        await AnchorAPI.apiPostAuth('/v1/admin/zones', {
-          zone_type: form.zone_type,
-          center_lat: lat,
-          center_lng: lng,
-          radius_m: radius,
-          label: form.label || null,
-          description_public: form.description_public || null,
-          expires_at: form.expires_at ? new Date(form.expires_at + 'T00:00:00Z').toISOString() : null,
-        });
-      }
-      closeForm();
-      load();
-    } catch (err) {
-      setFormError(err.message || 'Save failed — please try again');
-    } finally {
-      setSaving(false);
-    }
+      await AnchorAPI.apiPostAuth('/v1/super-admin/zones', body);
+      closeForm(); load();
+    } catch (err) { setFormError(err.message || 'Save failed — please try again'); }
+    finally { setSaving(false); }
   }
 
   async function handleArchive() {
     if (!confirmArchive) return;
     setArchiving(true);
     try {
-      await AnchorAPI.apiDelete(`/v1/admin/zones/${confirmArchive.id}`);
-    } catch (_) {
-      // swallow — reload reflects reality
-    } finally {
+      await AnchorAPI.apiDelete(`/v1/super-admin/zones/${confirmArchive.id}`);
+    } catch (_) {}
+    finally {
       setArchiving(false);
+      setConfirmArchive(null);
       load();
     }
   }
 
   const filteredZones = zones.filter(z => {
     if (statusFilter !== 'all' && z.status !== statusFilter) return false;
-    if (!typeFilters[z.zone_type]) return false;
+    if (typeFilters[z.zone_type] === false) return false;
     return true;
   });
 
@@ -1749,17 +1857,29 @@ function SuperRedZones({ onGo }) {
       <>
         <div className="px-4 py-3 hair-b flex items-center justify-between shrink-0">
           <div>
-            <div className="text-[13px] font-semibold text-[var(--graphite)]">Red Zone Map</div>
+            <div className="text-[13px] font-semibold text-[var(--graphite)]">Zone Map</div>
             <div className="text-[10px] text-[var(--muted)] mt-0.5">Super Admin · Platform-wide</div>
           </div>
-          <button
-            onClick={() => setClickMode(true)}
-            className="px-2.5 py-1 text-[12px] font-medium rounded-sm flex items-center gap-1.5 text-white"
-            style={{ background: 'var(--ember)' }}
-          >
-            <Icon name="plus" size={12} />
-            New
-          </button>
+          <div className="flex gap-1.5">
+            <button
+              onClick={() => startNewZone('circle')}
+              title="New circle zone"
+              className="px-2 py-1 text-[11px] font-medium rounded-sm flex items-center gap-1 text-white"
+              style={{ background: 'var(--ember)' }}
+            >
+              <Icon name="circle" size={11} />
+              Circle
+            </button>
+            <button
+              onClick={() => startNewZone('polygon')}
+              title="New polygon zone"
+              className="px-2 py-1 text-[11px] font-medium rounded-sm flex items-center gap-1 text-white"
+              style={{ background: '#6d28d9' }}
+            >
+              <Icon name="pentagon" size={11} />
+              Polygon
+            </button>
+          </div>
         </div>
 
         {loadError && (
@@ -1786,19 +1906,22 @@ function SuperRedZones({ onGo }) {
             </button>
           ))}
           <div className="ml-auto flex gap-2 items-center">
-            {Object.entries(typeFilters).map(([type, on]) => (
-              <button
-                key={type}
-                onClick={() => setTypeFilters(f => ({ ...f, [type]: !f[type] }))}
-                title={ZONE_TYPE_LABELS[type]}
-                className="w-3 h-3 rounded-full border-2"
-                style={{
-                  borderColor: ZONE_COLORS[type],
-                  background: on ? ZONE_COLORS[type] : 'transparent',
-                  opacity: on ? 1 : 0.3,
-                }}
-              />
-            ))}
+            {MANAGEABLE_TYPES.map(type => {
+              const on = typeFilters[type] !== false;
+              return (
+                <button
+                  key={type}
+                  onClick={() => setTypeFilters(f => ({ ...f, [type]: !on }))}
+                  title={ZONE_TYPE_LABELS[type]}
+                  className="w-3 h-3 rounded-full border-2"
+                  style={{
+                    borderColor: ZONE_COLORS[type],
+                    background: on ? ZONE_COLORS[type] : 'transparent',
+                    opacity: on ? 1 : 0.3,
+                  }}
+                />
+              );
+            })}
           </div>
         </div>
 
@@ -1814,7 +1937,7 @@ function SuperRedZones({ onGo }) {
               <Icon name="map-pin-off" size={26} className="mb-2 text-[var(--muted)]" />
               <p className="text-[12px] text-[var(--muted)]">No zones match this filter.</p>
               <button
-                onClick={() => setClickMode(true)}
+                onClick={() => startNewZone('circle')}
                 className="mt-3 text-[12px] underline"
                 style={{ color: 'var(--ember)' }}
               >
@@ -1831,29 +1954,34 @@ function SuperRedZones({ onGo }) {
               <div className="flex items-start gap-2.5">
                 <span
                   className="mt-1 w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{ background: ZONE_COLORS[zone.zone_type] }}
+                  style={{ background: ZONE_COLORS[zone.zone_type] || '#E8312A' }}
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-[12px] font-semibold text-[var(--graphite)] truncate">
-                      {zone.label || ZONE_TYPE_LABELS[zone.zone_type]}
+                      {zone.name || ZONE_TYPE_LABELS[zone.zone_type] || zone.zone_type}
                     </span>
                     {zone.status === 'archived' && (
-                      <span
-                        className="text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0"
-                        style={{ background: 'var(--mist)', color: 'var(--muted)' }}
-                      >
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0" style={{ background: 'var(--mist)', color: 'var(--muted)' }}>
                         archived
                       </span>
                     )}
                   </div>
-                  <div className="flex gap-1.5 mt-0.5 flex-wrap">
+                  <div className="flex gap-1.5 mt-0.5 flex-wrap items-center">
                     <span className="text-[11px] text-[var(--muted)]">{zone.zone_type}</span>
                     <span className="text-[11px] text-[var(--muted)]">·</span>
-                    <span className="text-[11px] text-[var(--muted)]">{zone.radius_m}m</span>
+                    <span className="text-[10px] px-1 py-0.5 rounded" style={{ background: 'var(--mist)', color: 'var(--muted)' }}>
+                      {zone.shape_type || 'circle'}
+                    </span>
+                    {(zone.shape_type || 'circle') === 'circle' && (
+                      <>
+                        <span className="text-[11px] text-[var(--muted)]">·</span>
+                        <span className="text-[11px] text-[var(--muted)]">{zone.radius_m || 300}m</span>
+                      </>
+                    )}
                     <span className="text-[11px] text-[var(--muted)]">·</span>
                     <span className="text-[11px] text-[var(--muted)] font-mono">
-                      {parseFloat(zone.center_lat).toFixed(4)}, {parseFloat(zone.center_lng).toFixed(4)}
+                      {parseFloat(zone.center_lat || 0).toFixed(4)}, {parseFloat(zone.center_lng || 0).toFixed(4)}
                     </span>
                   </div>
                 </div>
@@ -1868,6 +1996,9 @@ function SuperRedZones({ onGo }) {
 
   // ── Form panel ────────────────────────────────────────────────────────────
   function renderForm() {
+    const shapeType = editing ? (editing.shape_type || 'circle') : form.shape_type;
+    const accentColor = ZONE_COLORS[form.zone_type] || '#ef4444';
+
     return (
       <div className="flex flex-col h-full">
         <div className="px-4 py-3 hair-b flex items-center gap-2 shrink-0">
@@ -1901,10 +2032,11 @@ function SuperRedZones({ onGo }) {
 
           <form id="zone-form" onSubmit={handleSave} className="space-y-4">
 
+            {/* Zone type — manageable types only */}
             <div>
               <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-2">Zone Type</label>
-              <div className="grid grid-cols-2 gap-1.5">
-                {Object.entries(ZONE_TYPE_LABELS).map(([type, lbl]) => {
+              <div className="flex flex-col gap-1.5">
+                {MANAGEABLE_TYPES.map(type => {
                   const active = form.zone_type === type;
                   const color = ZONE_COLORS[type];
                   return (
@@ -1916,14 +2048,14 @@ function SuperRedZones({ onGo }) {
                       className="px-2.5 py-2 rounded-sm border text-left text-[11px] flex items-center gap-2 transition-all"
                       style={
                         active
-                          ? { borderColor: color, background: color + '18', color: color === '#0B0B0B' ? '#1a1a1a' : color, fontWeight: 600 }
+                          ? { borderColor: color, background: color + '18', color, fontWeight: 600 }
                           : editing
                             ? { borderColor: 'var(--mist)', color: 'var(--muted)', opacity: 0.5, cursor: 'not-allowed' }
                             : { borderColor: 'var(--mist)', color: 'var(--graphite)' }
                       }
                     >
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                      <span className="leading-tight">{lbl}</span>
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
+                      <span className="leading-tight">{ZONE_TYPE_LABELS[type]}</span>
                     </button>
                   );
                 })}
@@ -1931,72 +2063,136 @@ function SuperRedZones({ onGo }) {
               {editing && <p className="text-[11px] mt-1" style={{ color: 'var(--muted)' }}>Type is fixed after creation.</p>}
             </div>
 
+            {/* Shape type — locked after creation */}
+            {!editing && (
+              <div>
+                <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">Shape</label>
+                <div className="flex gap-2">
+                  {['circle', 'polygon'].map(s => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setForm(f => ({ ...f, shape_type: s, polygon_coords: null, center_lat: '', center_lng: '' }))}
+                      className="flex-1 py-1.5 rounded-sm border text-[11px] font-medium capitalize transition-all"
+                      style={
+                        form.shape_type === s
+                          ? { borderColor: accentColor, background: accentColor + '15', color: accentColor }
+                          : { borderColor: 'var(--mist)', color: 'var(--muted)' }
+                      }
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Location — depends on shape_type */}
             {!editing ? (
               <div>
                 <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">Location</label>
-                <div className="grid grid-cols-2 gap-2 mb-1">
-                  <input
-                    type="number" step="any" value={form.center_lat}
-                    onChange={e => setForm(f => ({ ...f, center_lat: e.target.value }))}
-                    required placeholder="Latitude"
-                    className="w-full px-2.5 py-2 hair border rounded-sm bg-white text-[12px]"
-                  />
-                  <input
-                    type="number" step="any" value={form.center_lng}
-                    onChange={e => setForm(f => ({ ...f, center_lng: e.target.value }))}
-                    required placeholder="Longitude"
-                    className="w-full px-2.5 py-2 hair border rounded-sm bg-white text-[12px]"
-                  />
-                </div>
-                <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                  Or{' '}
-                  <button
-                    type="button"
-                    onClick={() => { closeForm(); setClickMode(true); }}
-                    className="underline"
-                    style={{ color: 'var(--ember)' }}
-                  >
-                    click the map
-                  </button>
-                  {' '}to pin a location.
-                </p>
+                {shapeType === 'polygon' ? (
+                  form.polygon_coords && form.polygon_coords.length >= 3 ? (
+                    <div className="px-2.5 py-2 rounded-sm text-[12px] flex items-center gap-2" style={{ background: 'var(--mist)' }}>
+                      <Icon name="check-circle" size={13} style={{ color: '#22c55e' }} />
+                      <span className="text-[var(--graphite)]">{form.polygon_coords.length} vertices drawn</span>
+                      <button
+                        type="button"
+                        onClick={() => { setForm(f => ({ ...f, polygon_coords: null })); startNewZone('polygon'); }}
+                        className="ml-auto text-[11px] underline"
+                        style={{ color: 'var(--ember)' }}
+                      >
+                        Redraw
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="px-2.5 py-2 rounded-sm text-[12px]" style={{ background: 'var(--mist)', color: 'var(--muted)' }}>
+                      Click on the map to add vertices, then click "Finish polygon".
+                      {drawingMode !== 'polygon' && (
+                        <button
+                          type="button"
+                          onClick={() => startNewZone('polygon')}
+                          className="block mt-1 underline"
+                          style={{ color: 'var(--ember)' }}
+                        >
+                          Start drawing
+                        </button>
+                      )}
+                    </div>
+                  )
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 gap-2 mb-1">
+                      <input
+                        type="number" step="any" value={form.center_lat}
+                        onChange={e => setForm(f => ({ ...f, center_lat: e.target.value }))}
+                        required placeholder="Latitude"
+                        className="w-full px-2.5 py-2 hair border rounded-sm bg-white text-[12px]"
+                      />
+                      <input
+                        type="number" step="any" value={form.center_lng}
+                        onChange={e => setForm(f => ({ ...f, center_lng: e.target.value }))}
+                        required placeholder="Longitude"
+                        className="w-full px-2.5 py-2 hair border rounded-sm bg-white text-[12px]"
+                      />
+                    </div>
+                    <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                      Or{' '}
+                      <button
+                        type="button"
+                        onClick={() => { closeForm(); startNewZone('circle'); }}
+                        className="underline"
+                        style={{ color: 'var(--ember)' }}
+                      >
+                        click the map
+                      </button>
+                      {' '}to pin a location.
+                    </p>
+                  </>
+                )}
               </div>
             ) : (
               <div>
                 <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">Location (fixed)</label>
                 <div className="px-2.5 py-2 rounded-sm text-[12px] font-mono" style={{ background: 'var(--mist)', color: 'var(--graphite)' }}>
-                  {parseFloat(form.center_lat).toFixed(5)}, {parseFloat(form.center_lng).toFixed(5)}
+                  {shapeType === 'polygon'
+                    ? `Polygon · ${(editing.polygon_coords || []).length} vertices`
+                    : `${parseFloat(form.center_lat || 0).toFixed(5)}, ${parseFloat(form.center_lng || 0).toFixed(5)}`
+                  }
+                </div>
+              </div>
+            )}
+
+            {/* Radius — circle only */}
+            {shapeType === 'circle' && (
+              <div>
+                <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">
+                  Radius — <span className="font-mono">{form.radius_m} m</span>
+                </label>
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="range" min={50} max={5000} step={50}
+                    value={form.radius_m}
+                    onChange={e => setForm(f => ({ ...f, radius_m: parseInt(e.target.value, 10) }))}
+                    className="flex-1"
+                  />
+                  <input
+                    type="number" min={50} max={50000}
+                    value={form.radius_m}
+                    onChange={e => setForm(f => ({ ...f, radius_m: Math.max(50, parseInt(e.target.value, 10) || 50) }))}
+                    className="w-20 px-2 py-1.5 hair border rounded-sm bg-white text-[12px] text-right"
+                  />
                 </div>
               </div>
             )}
 
             <div>
               <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">
-                Radius — <span className="font-mono">{form.radius_m} m</span>
-              </label>
-              <div className="flex gap-2 items-center">
-                <input
-                  type="range" min={50} max={5000} step={50}
-                  value={form.radius_m}
-                  onChange={e => setForm(f => ({ ...f, radius_m: parseInt(e.target.value, 10) }))}
-                  className="flex-1"
-                />
-                <input
-                  type="number" min={50} max={10000}
-                  value={form.radius_m}
-                  onChange={e => setForm(f => ({ ...f, radius_m: Math.max(50, parseInt(e.target.value, 10) || 50) }))}
-                  className="w-20 px-2 py-1.5 hair border rounded-sm bg-white text-[12px] text-right"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">
-                Label <span className="text-[var(--muted)] normal-case font-normal">(optional)</span>
+                Name <span className="text-[var(--muted)] normal-case font-normal">(optional)</span>
               </label>
               <input
-                value={form.label}
-                onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+                value={form.name}
+                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                 placeholder={ZONE_TYPE_LABELS[form.zone_type]}
                 className="w-full px-2.5 py-2 hair border rounded-sm bg-white text-[12px]"
               />
@@ -2028,7 +2224,6 @@ function SuperRedZones({ onGo }) {
             </div>
           </form>
 
-          {/* Archive danger section — only shown when editing an active zone */}
           {editing && editing.status === 'active' && (
             <div className="pt-2 mt-2 border-t hair">
               <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--ember)' }}>Danger zone</p>
@@ -2069,44 +2264,62 @@ function SuperRedZones({ onGo }) {
   return (
     <div className="flex gap-4" style={{ height: 'calc(100vh - 84px)', minHeight: 500 }}>
 
-      {/* ── Leaflet map (left, fills remaining space) ── */}
-      <div className="flex-1 rounded-sm overflow-hidden border hair relative" style={{ minWidth: 0 }}>
+      {/* ── Leaflet map ── */}
+      <div className="flex-1 rounded-sm overflow-hidden border hair relative" style={{ minWidth: 0, height: '100%' }}>
         {mapError ? (
-          <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center" style={{ background: 'var(--mist)' }}>
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center', background: 'var(--mist)' }}>
             <Icon name="map-off" size={32} className="mb-3 text-[var(--muted)]" />
             <p className="text-[13px] text-[var(--graphite)]">{mapError}</p>
           </div>
         ) : (
           <>
-            {clickMode && (
+            {/* Circle pick banner */}
+            {drawingMode === 'circle_pick' && (
               <div
                 className="absolute top-3 z-[1000] px-3 py-1.5 rounded text-[12px] font-medium flex items-center gap-2"
-                style={{
-                  left: '50%', transform: 'translateX(-50%)',
-                  background: 'var(--ember)', color: 'white',
-                  boxShadow: 'var(--shadow)', pointerEvents: 'all',
-                }}
+                style={{ left: '50%', transform: 'translateX(-50%)', background: 'var(--ember)', color: 'white', boxShadow: 'var(--shadow)', pointerEvents: 'all' }}
               >
                 <Icon name="map-pin" size={13} />
-                Click map to place zone
-                <button
-                  onClick={() => setClickMode(false)}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, opacity: 0.8, display: 'flex' }}
-                >
+                Click map to place zone centre
+                <button onClick={cancelDrawing} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, opacity: 0.8, display: 'flex' }}>
+                  <Icon name="x" size={12} />
+                </button>
+              </div>
+            )}
+            {/* Polygon drawing banner */}
+            {drawingMode === 'polygon' && (
+              <div
+                className="absolute top-3 z-[1000] px-3 py-1.5 rounded text-[12px] font-medium flex items-center gap-2"
+                style={{ left: '50%', transform: 'translateX(-50%)', background: '#6d28d9', color: 'white', boxShadow: 'var(--shadow)', pointerEvents: 'all' }}
+              >
+                <Icon name="pentagon" size={13} />
+                {drawingVertices.length < 3
+                  ? `Click to add vertices (${drawingVertices.length}/3 minimum)`
+                  : `${drawingVertices.length} vertices — click Finish or keep adding`
+                }
+                {drawingVertices.length >= 3 && (
+                  <button
+                    onClick={finishPolygon}
+                    className="ml-2 px-2 py-0.5 rounded text-[11px] font-semibold"
+                    style={{ background: 'white', color: '#6d28d9' }}
+                  >
+                    Finish
+                  </button>
+                )}
+                <button onClick={cancelDrawing} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, opacity: 0.8, display: 'flex' }}>
                   <Icon name="x" size={12} />
                 </button>
               </div>
             )}
             <div
               ref={mapDivRef}
-              className="w-full h-full"
-              style={{ cursor: clickMode ? 'crosshair' : undefined }}
+              style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, cursor: drawingMode ? 'crosshair' : undefined }}
             />
           </>
         )}
       </div>
 
-      {/* ── Right panel: list or form, no overlay ── */}
+      {/* ── Right panel ── */}
       <div
         className="flex flex-col rounded-sm border hair bg-[var(--paper)] overflow-hidden"
         style={{ width: 340, flexShrink: 0 }}
@@ -2121,7 +2334,7 @@ function SuperRedZones({ onGo }) {
         onConfirm={handleArchive}
         title="Archive this zone?"
         body={confirmArchive
-          ? `"${confirmArchive.label || ZONE_TYPE_LABELS[confirmArchive.zone_type]}" will be removed from the public map immediately. The record is preserved in audit history.`
+          ? `"${confirmArchive.name || ZONE_TYPE_LABELS[confirmArchive.zone_type]}" will be removed from the public map immediately. The record is preserved in audit history.`
           : ''}
         confirmWord="ARCHIVE"
         confirmLabel={archiving ? 'Archiving…' : 'Archive zone'}

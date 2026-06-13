@@ -28,18 +28,16 @@ function saveTokens(access_token, refresh_token) {
   localStorage.setItem('anchor_refresh_token', refresh_token);
 }
 
-// ── Firebase Web Push (fill in config to enable push notifications) ──────────
-// Public keys — safe to commit. Get from Firebase Console → Project Settings → Web app.
+// ── Firebase Web Push — config loaded from env.js (window.ENV) ───────────────
 const FIREBASE_CONFIG = {
-  apiKey:            'AIzaSyBqQtlcZ536HFiNVEFGuURfeeQa37UtVeM',
-  authDomain:        'project-anchor-76170.firebaseapp.com',
-  projectId:         'project-anchor-76170',
-  storageBucket:     'project-anchor-76170.firebasestorage.app',
-  messagingSenderId: '915588225145',
-  appId:             '1:915588225145:web:1a7bb87daa31a1c4fb5ca8',
+  apiKey:            window.ENV?.FIREBASE_API_KEY,
+  authDomain:        window.ENV?.FIREBASE_AUTH_DOMAIN,
+  projectId:         window.ENV?.FIREBASE_PROJECT_ID,
+  storageBucket:     window.ENV?.FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: window.ENV?.FIREBASE_MESSAGING_SENDER_ID,
+  appId:             window.ENV?.FIREBASE_APP_ID,
 };
-// Get from Firebase Console → Project Settings → Cloud Messaging → Web Push certificates (VAPID key)
-const FIREBASE_VAPID_KEY = 'YOUR_VAPID_KEY_HERE'; // FILL IN to activate web push
+const FIREBASE_VAPID_KEY = window.ENV?.FIREBASE_VAPID_KEY;
 
 async function registerFCMToken() {
   if (typeof firebase === 'undefined') return;

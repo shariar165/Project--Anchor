@@ -68,10 +68,17 @@ const AnchorAPI = (() => {
       const ok = await _tryRefresh();
       if (ok) return _fetch(buildReq, true);
       clearAuth();
+      window.location.reload();
       throw new Error('Session expired — please log in again');
     }
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Request failed');
+    if (!res.ok) {
+      const detail = data.detail;
+      const msg = Array.isArray(detail)
+        ? detail.map(e => e.msg || JSON.stringify(e)).join('; ')
+        : (typeof detail === 'string' ? detail : 'Request failed');
+      throw new Error(msg);
+    }
     return data;
   }
 
@@ -82,7 +89,13 @@ const AnchorAPI = (() => {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Request failed');
+    if (!res.ok) {
+      const detail = data.detail;
+      const msg = Array.isArray(detail)
+        ? detail.map(e => e.msg || JSON.stringify(e)).join('; ')
+        : (typeof detail === 'string' ? detail : 'Request failed');
+      throw new Error(msg);
+    }
     return data;
   }
 

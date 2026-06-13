@@ -24,7 +24,11 @@ function App() {
   const [role, setRole] = useState('Department Head');
   const [dark, setDark] = useDark();
   const [t, setTweak] = useTweaks(TWEAK_DEFAULS);
-  const [auth, setAuth] = useState(() => AnchorAPI.getStoredUser());
+  const [auth, setAuth] = useState(() => {
+    const user = AnchorAPI.getStoredUser();
+    if (user && !AnchorAPI.getAccessToken()) { AnchorAPI.clearAuth(); return null; }
+    return user;
+  });
 
   const onLogin = useCallback((user) => setAuth(user), []);
   const onLogout = useCallback(() => {

@@ -35,6 +35,7 @@ def _get_client():
     return _client
 
 
+
 def get_collection(namespace: str = "national"):
     client = _get_client()
     if client is None:
@@ -42,10 +43,8 @@ def get_collection(namespace: str = "national"):
     key = f"anchor_{namespace}"
     if key not in _collections:
         try:
-            col = client.get_or_create_collection(
-                name=key,
-                metadata={"hnsw:space": "cosine"},
-            )
+            kwargs: dict = {"name": key, "metadata": {"hnsw:space": "cosine"}}
+            col = client.get_or_create_collection(**kwargs)
             _collections[key] = col
         except Exception as e:
             logger.error("Collection error: %s", e)

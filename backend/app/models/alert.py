@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from sqlalchemy import (
     String, DateTime, Enum, ForeignKey, LargeBinary,
-    Integer, Boolean, Float, Text, Uuid, func,
+    Integer, Boolean, Float, Text, Uuid, func, JSON,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
@@ -64,10 +64,16 @@ class FCMPlatform(str, PyEnum):
 
 
 class ZoneType(str, PyEnum):
+    # Legacy types (auto-created by alert system — do not use in admin forms)
     rape       = "rape"
     murder     = "murder"
     alert      = "alert"
     university = "university"
+    # New manually-managed types
+    campus     = "campus"   # University admin creates campus boundary polygons
+    purple     = "purple"   # Super admin: areas with murder incidents
+    black      = "black"    # Super admin: areas with rape/assault incidents
+    red        = "red"      # Super admin: general danger zones
 
 
 class ZoneStatus(str, PyEnum):
@@ -104,11 +110,20 @@ class Zone(Base):
     zone_type: Mapped[ZoneType] = mapped_column(
         Enum(ZoneType, name="zonetype"), nullable=False,
     )
+    # Human-readable name (new zones); legacy zones fall back to label
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # 'circle' (default, backward compat) or 'polygon'
+    shape_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="circle", server_default="circle",
+    )
+    # For polygons: [[lat, lng], ...] stored as JSON; null for circles
+    polygon_coords: Mapped[list | None] = mapped_column(JSON, nullable=True)
     center_lat: Mapped[float] = mapped_column(Float, nullable=False)
     center_lng: Mapped[float] = mapped_column(Float, nullable=False)
-    radius_m: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Required for circles; null for polygons
+    radius_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
     description_public: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Logical reference to alert_events.event_id — no FK in model to avoid circular dep
+    # Logical reference to alert_events.event_id — no FK to avoid circular dep
     related_alert_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     status: Mapped[ZoneStatus] = mapped_column(
         Enum(ZoneStatus, name="zonestatus"), nullable=False, default=ZoneStatus.active,
@@ -118,6 +133,11 @@ class Zone(Base):
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("tenants.id"), nullable=True, index=True,
     )
+    # Who created this zone (nullable for legacy alert-created zones)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    created_by_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # For future per-university campus zone scoping
+    university_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

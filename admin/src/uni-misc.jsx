@@ -224,169 +224,488 @@ function UniNotices({ onGo }) {
   );
 }
 
-// ---- Campus Geofence (university side — alert console moved to Super Admin) ----
-function UniGeofence({ onGo }) {
-  const [vertices, setVertices] = useState([]);
-  const [drawMode, setDrawMode] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [recentAlerts, setRecentAlerts] = useState([]);
-  const [geoInfo, setGeoInfo] = useState(null);
+// ---- Campus Zone Management (Leaflet polygon CRUD via /v1/admin/campus-zones) ----
+function UniCampusZones({ onGo }) {
+  const [zones, setZones] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [mapError, setMapError] = useState(null);
 
+  // ‘list’ | ‘draw’ | ‘form’
+  const [panelMode, setPanelMode] = useState(‘list’);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ name: ‘’, description: ‘’ });
+  const [formError, setFormError] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const [confirmArchive, setConfirmArchive] = useState(null);
+  const [archiving, setArchiving] = useState(false);
+
+  // Drawing state
+  const [drawingVertices, setDrawingVertices] = useState([]);
+  const drawingVerticesRef = useRef([]);
+  const isDrawingRef = useRef(false);
+
+  const mapDivRef = useRef(null);
+  const leafletMapRef = useRef(null);
+  const zoneLayersRef = useRef({});
+  const draftLayerRef = useRef(null);
+
+  const CAMPUS_COLOR = ‘#22c55e’;
+
+  function load() {
+    setLoading(true);
+    setLoadError(null);
+    AnchorAPI.apiGet(‘/v1/admin/campus-zones?include_archived=false’)
+      .then(data => { setZones(Array.isArray(data) ? data : []); setLoading(false); })
+      .catch(err => {
+        const msg = err.message || ‘Failed to load campus zones’;
+        setLoadError(msg.includes(‘Session expired’) ? ‘Session expired — please sign in again.’ : msg);
+        setLoading(false);
+      });
+  }
+
+  useEffect(() => { load(); }, []);
+
+  function _clearDraftLayer() {
+    if (draftLayerRef.current && leafletMapRef.current) {
+      try { draftLayerRef.current.remove(); } catch (_) {}
+      draftLayerRef.current = null;
+    }
+  }
+
+  // Init Leaflet once
   useEffect(() => {
-    AnchorAPI.apiGet(‘/v1/admin/geofence’)
-      .then(r => {
-        if (Array.isArray(r.vertices) && r.vertices.length >= 3) {
-          setVertices(r.vertices);
-          setGeoInfo({ updated_at: r.updated_at, vertex_count: r.vertices.length });
+    if (!mapDivRef.current || leafletMapRef.current) return;
+    if (!window.L) { setMapError(‘Map library failed to load. Please refresh.’); return; }
+    try {
+      const map = window.L.map(mapDivRef.current, { zoomControl: true }).setView([23.7450, 90.3718], 14);
+      window.L.tileLayer(‘https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png’, {
+        attribution: ‘© OpenStreetMap contributors’, maxZoom: 19,
+      }).addTo(map);
+      leafletMapRef.current = map;
+
+      map.on(‘click’, (e) => {
+        if (!isDrawingRef.current) return;
+        const newVerts = [...drawingVerticesRef.current, [e.latlng.lat, e.latlng.lng]];
+        drawingVerticesRef.current = newVerts;
+        setDrawingVertices([...newVerts]);
+
+        _clearDraftLayer();
+        if (newVerts.length >= 2) {
+          const layer = window.L.polygon(newVerts, {
+            color: CAMPUS_COLOR, fillColor: CAMPUS_COLOR, fillOpacity: 0.15,
+            weight: 2, dashArray: ‘6 4’,
+          }).addTo(map);
+          draftLayerRef.current = layer;
         }
-      }).catch(() => {});
-    AnchorAPI.apiGet(‘/v1/admin/alerts?state=active&limit=5’)
-      .then(r => setRecentAlerts(r.items ?? []))
-      .catch(() => {});
+      });
+    } catch (err) {
+      setMapError(‘Map failed to initialise: ‘ + (err.message || ‘unknown error’));
+    }
+    return () => {
+      if (leafletMapRef.current) { leafletMapRef.current.remove(); leafletMapRef.current = null; }
+      zoneLayersRef.current = {};
+    };
   }, []);
 
-  const handleSvgClick = (e) => {
-    if (!drawMode) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * 400);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * 200);
-    setVertices(v => [...v, [x, y]]);
-  };
+  // Redraw all campus zones when list changes
+  useEffect(() => {
+    const map = leafletMapRef.current;
+    if (!map || !window.L) return;
+    Object.values(zoneLayersRef.current).forEach(l => { try { l.remove(); } catch (_) {} });
+    zoneLayersRef.current = {};
 
-  const handleSave = async () => {
-    if (vertices.length < 3) return;
-    setSaving(true);
-    try {
-      await AnchorAPI.apiPost(‘/v1/admin/geofence’, { vertices });
-      setSaved(true);
-      setGeoInfo({ updated_at: new Date().toISOString(), vertex_count: vertices.length });
-      setTimeout(() => setSaved(false), 3000);
-    } catch (e) {
-      console.error(‘[Geofence] Save failed:’, e);
-    } finally {
-      setSaving(false);
+    zones.forEach(zone => {
+      if (!Array.isArray(zone.polygon_coords) || zone.polygon_coords.length < 3) return;
+      const layer = window.L.polygon(zone.polygon_coords, {
+        color: CAMPUS_COLOR, fillColor: CAMPUS_COLOR, fillOpacity: 0.18, weight: 2,
+      });
+      layer.bindPopup(`<strong>${zone.name || ‘Campus Zone’}</strong><br/>${zone.polygon_coords.length} vertices`);
+      layer.on(‘click’, (ev) => { window.L.DomEvent.stopPropagation(ev); openEdit(zone); });
+      layer.addTo(map);
+      zoneLayersRef.current[zone.id] = layer;
+    });
+  }, [zones]);
+
+  function startDraw() {
+    setDrawingVertices([]);
+    drawingVerticesRef.current = [];
+    _clearDraftLayer();
+    isDrawingRef.current = true;
+    setPanelMode(‘draw’);
+    setFormError(null);
+  }
+
+  function undoVertex() {
+    const newVerts = drawingVerticesRef.current.slice(0, -1);
+    drawingVerticesRef.current = newVerts;
+    setDrawingVertices([...newVerts]);
+    _clearDraftLayer();
+    const map = leafletMapRef.current;
+    if (newVerts.length >= 2 && map && window.L) {
+      const layer = window.L.polygon(newVerts, {
+        color: CAMPUS_COLOR, fillColor: CAMPUS_COLOR, fillOpacity: 0.15,
+        weight: 2, dashArray: ‘6 4’,
+      }).addTo(map);
+      draftLayerRef.current = layer;
     }
-  };
+  }
 
-  const polyPoints = vertices.map(([x, y]) => `${x},${y}`).join(‘ ‘);
+  function finishDraw() {
+    const verts = drawingVerticesRef.current;
+    if (verts.length < 3) { setFormError(‘Draw at least 3 points on the map to create a polygon.’); return; }
+    isDrawingRef.current = false;
+    setEditing(null);
+    setForm({ name: ‘’, description: ‘’ });
+    setFormError(null);
+    setPanelMode(‘form’);
+  }
 
+  function cancelDraw() {
+    isDrawingRef.current = false;
+    _clearDraftLayer();
+    setDrawingVertices([]);
+    drawingVerticesRef.current = [];
+    setPanelMode(‘list’);
+    setFormError(null);
+  }
+
+  function openEdit(zone) {
+    setEditing(zone);
+    setForm({ name: zone.name || ‘’, description: zone.description || ‘’ });
+    setFormError(null);
+    setPanelMode(‘form’);
+  }
+
+  function closeForm() {
+    setPanelMode(‘list’);
+    setEditing(null);
+    setFormError(null);
+    if (!editing) {
+      // coming from draw mode — clean up draft
+      _clearDraftLayer();
+      isDrawingRef.current = false;
+      setDrawingVertices([]);
+      drawingVerticesRef.current = [];
+    }
+  }
+
+  async function handleSave(e) {
+    e.preventDefault();
+    setFormError(null);
+
+    if (editing) {
+      const patch = { name: form.name || null, description: form.description || null };
+      setSaving(true);
+      try {
+        await AnchorAPI.apiPatch(`/v1/admin/campus-zones/${editing.id}`, patch);
+        closeForm(); load();
+      } catch (err) { setFormError(err.message || ‘Save failed’); }
+      finally { setSaving(false); }
+      return;
+    }
+
+    // Create — use vertices from drawingVerticesRef
+    const verts = drawingVerticesRef.current;
+    if (!verts || verts.length < 3) { setFormError(‘Draw at least 3 points on the map first.’); return; }
+
+    setSaving(true);
+    const center_lat = verts.reduce((s, v) => s + v[0], 0) / verts.length;
+    const center_lng = verts.reduce((s, v) => s + v[1], 0) / verts.length;
+    try {
+      await AnchorAPI.apiPostAuth(‘/v1/admin/campus-zones’, {
+        name: form.name?.trim() || ‘Campus Zone’,
+        description: form.description || null,
+        polygon_coords: verts,
+        zone_type: ‘campus’,
+        shape_type: ‘polygon’,
+        center_lat,
+        center_lng,
+      });
+      _clearDraftLayer();
+      drawingVerticesRef.current = [];
+      setDrawingVertices([]);
+      closeForm();
+      load();
+    } catch (err) { setFormError(err.message || ‘Save failed — please try again’); }
+    finally { setSaving(false); }
+  }
+
+  async function handleArchive() {
+    if (!confirmArchive) return;
+    setArchiving(true);
+    try {
+      await AnchorAPI.apiDelete(`/v1/admin/campus-zones/${confirmArchive.id}`);
+    } catch (_) {}
+    finally {
+      setArchiving(false);
+      setConfirmArchive(null);
+      load();
+    }
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <>
       <PageHeader
-        title="Campus geofence"
-        bn="ক্যাম্পাস সীমানা"
-        description="Draw your university’s safety boundary. Active alerts inside this zone are routed to the Super Admin operations team."
+        title="Campus zones"
+        bn="ক্যাম্পাস এলাকা"
+        description="Draw polygon zones on your campus map. Students see these as green safe-area overlays."
         actions={
-          <>
-            <GhostButton icon={drawMode ? ‘pencil-off’ : ‘pencil’} size="sm" onClick={() => setDrawMode(m => !m)}>
-              {drawMode ? ‘Done drawing’ : ‘Draw boundary’}
-            </GhostButton>
-            {vertices.length > 0 && (
-              <GhostButton icon="undo-2" size="sm" onClick={() => setVertices(v => v.slice(0, -1))}>Undo</GhostButton>
-            )}
-            <PrimaryButton
-              icon="save"
-              mode="sage"
-              size="sm"
-              onClick={handleSave}
-              disabled={saving || vertices.length < 3}
-            >
-              {saving ? ‘Saving…’ : saved ? ‘Saved ✓’ : ‘Save geofence’}
+          panelMode === ‘list’ ? (
+            <PrimaryButton icon="plus" mode="sage" size="sm" onClick={startDraw}>
+              New zone
             </PrimaryButton>
-          </>
+          ) : panelMode === ‘draw’ ? (
+            <>
+              <GhostButton icon="undo-2" size="sm" onClick={undoVertex} disabled={drawingVertices.length === 0}>Undo</GhostButton>
+              <GhostButton size="sm" icon="x" onClick={cancelDraw}>Cancel</GhostButton>
+              <PrimaryButton
+                icon="check" mode="sage" size="sm"
+                onClick={finishDraw}
+                disabled={drawingVertices.length < 3}
+              >
+                Finish ({drawingVertices.length} pts)
+              </PrimaryButton>
+            </>
+          ) : (
+            <GhostButton size="sm" icon="x" onClick={closeForm}>Cancel</GhostButton>
+          )
         }
       />
 
-      <AuditNote tone="navy" icon="shield-check">
-        Campus alerts are operated by the AiVion Trust &amp; Safety team. Your role is to maintain the geofence boundary — alerts that fire inside this area are routed to platform operators in real time.
-      </AuditNote>
+      {loadError && (
+        <div className="mb-4 px-3 py-2 rounded-sm text-[12.5px] flex items-center gap-2" style={{ background: ‘rgba(232,49,42,0.08)’, color: ‘var(--red)’, border: ‘1px solid rgba(232,49,42,0.2)’ }}>
+          <Icon name="circle-alert" size={13} className="shrink-0" />
+          {loadError}
+          <button onClick={load} className="ml-auto underline text-[12px]">Retry</button>
+        </div>
+      )}
 
-      <div className="grid gap-5 mt-5" style={{ gridTemplateColumns: ‘1fr 320px’ }}>
-        <Card noPad>
-          <div className="p-4 hair-b flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Icon name="map-pin" size={14} />
-              <span className="font-medium text-[13.5px]">Boundary editor</span>
-              {drawMode
-                ? <span className="text-[12px]" style={{ color: ‘var(--sage)’ }}>Click canvas to place vertices</span>
-                : <span className="text-[12px] text-[var(--muted)]">Click "Draw boundary" to start placing vertices</span>
-              }
+      {formError && (
+        <div className="mb-4 px-3 py-2 rounded-sm text-[12.5px] flex items-center gap-2" style={{ background: ‘rgba(232,49,42,0.08)’, color: ‘var(--red)’, border: ‘1px solid rgba(232,49,42,0.2)’ }}>
+          <Icon name="circle-alert" size={13} className="shrink-0" />
+          {formError}
+        </div>
+      )}
+
+      <div className="flex gap-5 mt-4" style={{ height: ‘calc(100vh - 180px)’, minHeight: 480 }}>
+
+        {/* ── Leaflet map ── */}
+        <div className="flex-1 rounded-sm overflow-hidden border hair relative" style={{ minWidth: 0, height: ‘100%’ }}>
+          {mapError ? (
+            <div style={{ position: ‘absolute’, inset: 0, display: ‘flex’, flexDirection: ‘column’, alignItems: ‘center’, justifyContent: ‘center’, padding: 24, textAlign: ‘center’, background: ‘var(--mist)’ }}>
+              <Icon name="map-off" size={32} className="mb-3 text-[var(--muted)]" />
+              <p className="text-[13px] text-[var(--graphite)]">{mapError}</p>
             </div>
-            <GhostButton size="sm" icon="trash-2" onClick={() => setVertices([])}>Clear</GhostButton>
-          </div>
-
-          <div style={{ padding: ‘16px’ }}>
-            <svg
-              viewBox="0 0 400 200"
-              style={{
-                width: ‘100%’, height: ‘auto’, background: ‘#F5F5F2’,
-                borderRadius: 4, cursor: drawMode ? ‘crosshair’ : ‘default’,
-                border: ‘1px solid var(--hair)’,
-              }}
-              onClick={handleSvgClick}
-            >
-              <defs>
-                <pattern id="gfgrid" width="40" height="40" patternUnits="userSpaceOnUse">
-                  <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#E8E8E4" strokeWidth="0.5" />
-                </pattern>
-              </defs>
-              <rect width="400" height="200" fill="url(#gfgrid)" />
-              <text x="200" y="106" textAnchor="middle" fontSize="9" fill="#BDBDB8" fontFamily="JetBrains Mono">Campus boundary canvas · 400 × 200</text>
-              {vertices.length >= 2 && (
-                <polygon points={polyPoints} fill="rgba(74,107,92,0.1)" stroke="#4A6B5C" strokeWidth="1.5" strokeDasharray="4 3" />
-              )}
-              {vertices.map(([x, y], i) => (
-                <circle key={i} cx={x} cy={y} r={4} fill="#4A6B5C" stroke="white" strokeWidth="1.5" style={{ cursor: ‘grab’ }} />
-              ))}
-            </svg>
-          </div>
-
-          <div className="p-3 hair-t flex items-center justify-between text-[12px] text-[var(--muted)]">
-            <span><span className="font-mono text-[var(--ink)]">{vertices.length}</span> vertices</span>
-            {geoInfo?.updated_at && (
-              <span>Last saved <span className="font-mono">{geoInfo.updated_at.slice(0, 10)}</span></span>
-            )}
-          </div>
-        </Card>
-
-        <div className="flex flex-col gap-4">
-          <Card>
-            <SectionLabel>Geofence status</SectionLabel>
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between text-[12.5px]">
-                <span className="text-[var(--muted)]">Status</span>
-                <StatusPill status={vertices.length >= 3 ? ‘Active’ : ‘Submitted’} />
-              </div>
-              <div className="flex items-center justify-between text-[12.5px]">
-                <span className="text-[var(--muted)]">Vertices</span>
-                <span className="font-mono">{vertices.length}</span>
-              </div>
-              {geoInfo?.updated_at && (
-                <div className="flex items-center justify-between text-[12.5px]">
-                  <span className="text-[var(--muted)]">Last saved</span>
-                  <span className="font-mono">{geoInfo.updated_at.slice(0, 10)}</span>
+          ) : (
+            <>
+              {panelMode === ‘draw’ && (
+                <div
+                  className="absolute top-3 z-[1000] px-3 py-1.5 rounded text-[12px] font-medium flex items-center gap-2"
+                  style={{ left: ‘50%’, transform: ‘translateX(-50%)’, background: ‘#16a34a’, color: ‘white’, boxShadow: ‘var(--shadow)’, pointerEvents: ‘all’ }}
+                >
+                  <Icon name="map-pin" size={13} />
+                  {drawingVertices.length < 3
+                    ? `Click to add vertices (${drawingVertices.length}/3 minimum)`
+                    : `${drawingVertices.length} vertices — click "Finish" when done`
+                  }
                 </div>
               )}
-            </div>
-          </Card>
+              <div
+                ref={mapDivRef}
+                style={{ position: ‘absolute’, top: 0, left: 0, right: 0, bottom: 0, cursor: panelMode === ‘draw’ ? ‘crosshair’ : undefined }}
+              />
+            </>
+          )}
+        </div>
 
-          <Card>
-            <SectionLabel>Recent alerts inside zone</SectionLabel>
-            {recentAlerts.length === 0 ? (
-              <div className="text-[12px] text-[var(--muted)] text-center py-2">No active alerts</div>
-            ) : recentAlerts.map(ev => (
-              <div key={ev.event_id} className="flex justify-between items-center text-[12.5px] py-1.5 hair-b last:border-0">
-                <span className="font-mono text-[var(--muted)]">{ev.event_id.slice(0, 8)}…</span>
-                <span style={{ color: ev.state === ‘active’ ? ‘var(--ember)’ : ‘var(--sage)’ }}>{ev.state}</span>
+        {/* ── Side panel ── */}
+        <div
+          className="flex flex-col rounded-sm border hair bg-[var(--paper)] overflow-hidden"
+          style={{ width: 320, flexShrink: 0 }}
+        >
+          {/* List mode */}
+          {panelMode === ‘list’ && (
+            <>
+              <div className="px-4 py-3 hair-b shrink-0">
+                <div className="text-[13px] font-semibold text-[var(--graphite)]">Campus zones</div>
+                <div className="text-[10px] text-[var(--muted)] mt-0.5">{zones.length} active zone{zones.length !== 1 ? ‘s’ : ‘’}</div>
               </div>
-            ))}
-          </Card>
+              <div className="flex-1 overflow-y-auto scrollbar-none">
+                {loading && (
+                  <div className="flex items-center justify-center py-10 gap-2 text-[var(--muted)] text-[13px]">
+                    <Icon name="loader-circle" size={15} />
+                    Loading…
+                  </div>
+                )}
+                {!loading && zones.length === 0 && !loadError && (
+                  <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
+                    <Icon name="map-pin-off" size={28} className="mb-2 text-[var(--muted)]" />
+                    <p className="text-[12px] text-[var(--muted)]">No campus zones yet.</p>
+                    <button
+                      onClick={startDraw}
+                      className="mt-3 text-[12px] underline"
+                      style={{ color: ‘var(--sage)’ }}
+                    >
+                      Click Create to draw the first one.
+                    </button>
+                  </div>
+                )}
+                {!loading && zones.map(zone => (
+                  <div
+                    key={zone.id}
+                    className="px-4 py-3 hair-b last:border-0 hover:bg-[var(--mist)]/20 group cursor-pointer"
+                    onClick={() => openEdit(zone)}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <span className="mt-1 w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: CAMPUS_COLOR }} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[12px] font-semibold text-[var(--graphite)] truncate">
+                          {zone.name || ‘Unnamed zone’}
+                        </div>
+                        <div className="flex gap-1.5 mt-0.5 text-[11px] text-[var(--muted)]">
+                          <span>Polygon</span>
+                          <span>·</span>
+                          <span>{(zone.polygon_coords || []).length} vertices</span>
+                          {zone.created_at && (
+                            <>
+                              <span>·</span>
+                              <span>{zone.created_at.slice(0, 10)}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <Icon name="chevron-right" size={14} className="text-[var(--mist)] group-hover:text-[var(--muted)] shrink-0 mt-0.5" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* Draw mode hint */}
+          {panelMode === ‘draw’ && (
+            <div className="flex flex-col items-center justify-center flex-1 p-6 text-center">
+              <Icon name="map-pin" size={30} className="mb-3" style={{ color: CAMPUS_COLOR }} />
+              <p className="text-[13px] font-semibold text-[var(--graphite)] mb-1">Drawing polygon</p>
+              <p className="text-[12px] text-[var(--muted)]">Click on the map to place vertices. Need at least 3 to finish.</p>
+              <div className="mt-3 font-mono text-[24px] font-bold" style={{ color: CAMPUS_COLOR }}>
+                {drawingVertices.length}
+              </div>
+              <div className="text-[11px] text-[var(--muted)]">vertices placed</div>
+            </div>
+          )}
+
+          {/* Form mode */}
+          {panelMode === ‘form’ && (
+            <div className="flex flex-col h-full">
+              <div className="px-4 py-3 hair-b flex items-center gap-2 shrink-0">
+                <button
+                  onClick={closeForm}
+                  className="flex items-center gap-1 text-[12px] text-[var(--muted)] hover:text-[var(--graphite)] transition-colors"
+                >
+                  <Icon name="chevron-left" size={14} />
+                  Zones
+                </button>
+                <span className="text-[var(--mist)]">/</span>
+                <span className="text-[13px] font-semibold text-[var(--graphite)]">
+                  {editing ? ‘Edit Zone’ : ‘New Zone’}
+                </span>
+              </div>
+
+              <div className="flex-1 overflow-y-auto scrollbar-none px-4 py-4">
+                {!editing && (
+                  <AuditNote tone="sage" icon="check-circle" className="mb-4">
+                    {drawingVerticesRef.current.length} vertices captured. Name this zone and save.
+                  </AuditNote>
+                )}
+
+                <form id="campus-zone-form" onSubmit={handleSave} className="space-y-4">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">
+                      Zone name <span className="text-[var(--muted)] normal-case font-normal">(optional)</span>
+                    </label>
+                    <input
+                      value={form.name}
+                      onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                      placeholder="e.g. Main Campus, Library Block, Sports Ground"
+                      className="w-full px-2.5 py-2 hair border rounded-sm bg-white text-[12px]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">
+                      Description <span className="text-[var(--muted)] normal-case font-normal">(optional)</span>
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={form.description}
+                      onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                      placeholder="Shown in the zone popup on the student map."
+                      className="w-full px-2.5 py-2 hair border rounded-sm bg-white text-[12px] resize-none"
+                    />
+                  </div>
+                  {editing && (
+                    <div>
+                      <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">Polygon</label>
+                      <div className="px-2.5 py-2 rounded-sm text-[12px] font-mono" style={{ background: ‘var(--mist)’, color: ‘var(--graphite)’ }}>
+                        {(editing.polygon_coords || []).length} vertices (shape fixed)
+                      </div>
+                    </div>
+                  )}
+                </form>
+
+                {editing && (
+                  <div className="pt-4 mt-4 border-t hair">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmArchive(editing)}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-sm border text-[12px] transition-colors"
+                      style={{ borderColor: ‘var(--ember)’, color: ‘var(--ember)’, background: ‘var(--ember-tint)’ }}
+                    >
+                      <Icon name="trash-2" size={13} />
+                      Delete this zone
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-4 py-3 hair-t flex gap-2 shrink-0">
+                <PrimaryButton
+                  as="button"
+                  type="submit"
+                  form="campus-zone-form"
+                  mode="sage"
+                  icon={editing ? ‘save’ : ‘map-pin’}
+                  disabled={saving}
+                  className="flex-1 justify-center"
+                >
+                  {saving ? ‘Saving…’ : editing ? ‘Save changes’ : ‘Create zone’}
+                </PrimaryButton>
+                <GhostButton type="button" onClick={closeForm}>Cancel</GhostButton>
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      <ConfirmModal
+        open={!!confirmArchive}
+        onClose={() => setConfirmArchive(null)}
+        onConfirm={handleArchive}
+        title="Delete this zone?"
+        body={confirmArchive ? `"${confirmArchive.name || ‘This zone’}" will be removed from the student map immediately.` : ‘’}
+        confirmWord="DELETE"
+        confirmLabel={archiving ? ‘Deleting…’ : ‘Delete zone’}
+        tone="red"
+      />
     </>
   );
 }
+
+// Keep old name as alias so existing routes still work
+const UniGeofence = UniCampusZones;
 
 // ---- Classroom reports ----
 function UniClassrooms({ onGo }) {
@@ -1116,4 +1435,4 @@ function StubScreen({ title, description, items=[], icon='construction', bn }) {
   );
 }
 
-Object.assign(window, { UniNotices, UniGeofence, UniClassrooms, UniTeacherGrievances, UniDeptGrievances, UniHostel, StubScreen, UniFeedCard, UniVerificationFeed });
+Object.assign(window, { UniNotices, UniCampusZones, UniGeofence, UniClassrooms, UniTeacherGrievances, UniDeptGrievances, UniHostel, StubScreen, UniFeedCard, UniVerificationFeed });

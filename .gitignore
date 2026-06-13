@@ -14,5 +14,10 @@ backend/data/
 *.log
 *.err
 
+# Frontend env config (contains real keys — copy from *.example.js)
+env.js
+firebase-sw-env.js
+.env
+
 # Claude Code local settings (machine-specific permissions)
 .claude/settings.local.json

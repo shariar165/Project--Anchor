@@ -325,12 +325,22 @@ function CaseDetailScreen({ params }) {
 // ═══════════════════════════════════════════════════════════════
 
 const ZONE_COLORS = {
+  campus:     '#22c55e',
+  red:        '#ef4444',
+  purple:     '#a855f7',
+  black:      '#374151',
+  // legacy
   university: '#1FA663',
   rape:       '#0B0B0B',
   murder:     '#7B2CBF',
   alert:      '#E8312A',
 };
 const ZONE_TYPE_LABELS = {
+  campus:     'Campus (Safe Area)',
+  red:        'Danger Zone',
+  purple:     'Murder Report Area',
+  black:      'Assault Report Area',
+  // legacy
   university: 'Campus Zone',
   rape:       'Safety Advisory',
   murder:     'Safety Advisory',
@@ -347,43 +357,66 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
 }
 
 
+const RADIUS_OPTIONS = [
+  { label: '5 km',  value: 5 },
+  { label: '10 km', value: 10 },
+  { label: '25 km', value: 25 },
+  { label: 'All',   value: null },
+];
+
+// Zone type legend entries (student-facing types)
+const LEGEND_ENTRIES = [
+  ['campus',   'Campus (Safe)',     '#22c55e'],
+  ['red',      'Danger Zone',       '#ef4444'],
+  ['purple',   'Murder Report',     '#a855f7'],
+  ['black',    'Assault Report',    '#374151'],
+];
+
 function MapScreen() {
   const mapContainerRef = React.useRef(null);
   const leafletMapRef   = React.useRef(null);
   const zoneLayersRef   = React.useRef([]);
   const userMarkerRef   = React.useRef(null);
+  const userLocRef      = React.useRef({ lat: 23.7450, lng: 90.3718 });
 
-  const [filter,      setFilter]      = React.useState('all');
-  const [typeFilters, setTypeFilters] = React.useState({ rape:true, murder:true, alert:true, university:true });
-  const [userLoc,     setUserLoc]     = React.useState({ lat:23.7450, lng:90.3718 });
+  const [radiusKm,    setRadiusKm]    = React.useState(10);
+  const [userLoc,     setUserLoc]     = React.useState({ lat: 23.7450, lng: 90.3718 });
   const [locStatus,   setLocStatus]   = React.useState('default');
   const [nearbyZones, setNearbyZones] = React.useState([]);
-  const [zones,        setZones]        = React.useState([]);
+  const [zones,        setZones]       = React.useState([]);
   const [zonesLoading, setZonesLoading] = React.useState(true);
   const [zonesError,   setZonesError]   = React.useState(null);
+  const [lastRefresh,  setLastRefresh]  = React.useState(null);
 
-  const fetchZones = React.useCallback(() => {
-    fetch('http://localhost:8000/v1/zones')
+  function fetchZones(lat, lng, km) {
+    setZonesLoading(true);
+    setZonesError(null);
+    let url;
+    if (km && lat != null) {
+      url = `http://localhost:8000/v1/zones/nearby?lat=${lat}&lng=${lng}&radius_km=${km}`;
+    } else if (km == null && lat != null) {
+      // "All" mode — get all active zones
+      url = 'http://localhost:8000/v1/zones';
+    } else {
+      url = 'http://localhost:8000/v1/zones';
+    }
+    fetch(url)
       .then(r => { if (!r.ok) throw new Error('Server error ' + r.status); return r.json(); })
-      .then(d => { setZones(Array.isArray(d) ? d : []); setZonesError(null); })
+      .then(d => {
+        setZones(Array.isArray(d) ? d : []);
+        setZonesError(null);
+        setLastRefresh(new Date());
+      })
       .catch(e => setZonesError(e.message || 'Could not reach server'))
       .finally(() => setZonesLoading(false));
-  }, []);
+  }
 
-  // Fetch zones on mount, then poll every 30 s so new admin-created zones appear automatically
-  React.useEffect(() => {
-    fetchZones();
-    const id = setInterval(fetchZones, 30000);
-    return () => clearInterval(id);
-  }, [fetchZones]);
-
-  // Init Leaflet map once on mount
+  // Init Leaflet map once
   React.useEffect(() => {
     if (leafletMapRef.current) return;
-    const map = L.map(mapContainerRef.current, { center:[23.7450, 90.3718], zoom:13 });
+    const map = L.map(mapContainerRef.current, { center: [23.7450, 90.3718], zoom: 13 });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      detectRetina: true,
+      maxZoom: 19, detectRetina: true,
       attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map);
     leafletMapRef.current = map;
@@ -393,169 +426,178 @@ function MapScreen() {
       navigator.geolocation.getCurrentPosition(
         pos => {
           const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          userLocRef.current = loc;
           setUserLoc(loc);
           map.setView([loc.lat, loc.lng], 14);
           setLocStatus('found');
+          fetchZones(loc.lat, loc.lng, 10);
         },
-        () => setLocStatus('denied'),
-        { timeout: 8000 }
+        () => {
+          setLocStatus('denied');
+          fetchZones(userLocRef.current.lat, userLocRef.current.lng, null);
+        },
+        { timeout: 8000, enableHighAccuracy: true }
       );
+    } else {
+      fetchZones(23.7450, 90.3718, null);
     }
+
     return () => {
       if (leafletMapRef.current) { leafletMapRef.current.remove(); leafletMapRef.current = null; }
     };
   }, []);
 
-  // Re-render zones whenever filter, type toggles, or user location changes
+  // Re-render zones on the map whenever zones list changes
   React.useEffect(() => {
     const map = leafletMapRef.current;
     if (!map) return;
 
-    zoneLayersRef.current.forEach(l => map.removeLayer(l));
+    zoneLayersRef.current.forEach(l => { try { map.removeLayer(l); } catch (_) {} });
     zoneLayersRef.current = [];
 
-    const STATUS_LABEL = { active:'Active', under_investigation:'Under investigation', resolved:'Resolved' };
-
-    const visible = zones.filter(z =>
-      z.status !== 'archived' &&
-      typeFilters[z.zone_type] &&
-      (filter === 'all' || z.status === filter)
-    );
-
-    visible.forEach(z => {
-      const color       = ZONE_COLORS[z.zone_type];
-      const fillOpacity = z.status === 'resolved' ? 0.1 : 0.25;
-      const dashArray   = z.status === 'under_investigation' ? '6 6' : null;
-
+    zones.forEach(z => {
+      const color = ZONE_COLORS[z.zone_type] || '#E8312A';
+      const opts = {
+        color, fillColor: color,
+        fillOpacity: z.zone_type === 'campus' ? 0.12 : 0.22,
+        weight: 2,
+      };
       let layer;
-      if (z.shape_type === 'polygon' && z.polygon_geojson) {
-        layer = L.geoJSON(z.polygon_geojson, {
-          style: { color, fillColor: color, fillOpacity: 0.15, weight: 2 },
-        });
+      if ((z.shape_type || 'circle') === 'polygon' && Array.isArray(z.polygon_coords) && z.polygon_coords.length >= 3) {
+        layer = L.polygon(z.polygon_coords, opts);
       } else {
-        layer = L.circle([z.center_lat, z.center_lng], {
-          radius: z.radius_m, color, fillColor: color, fillOpacity, weight: 2, dashArray,
-        });
+        layer = L.circle([z.center_lat, z.center_lng], { radius: z.radius_m || 300, ...opts });
       }
 
-      const dist    = z.center_lat ? haversineDistance(userLoc.lat, userLoc.lng, z.center_lat, z.center_lng) : null;
-      const distTxt = dist ? (dist < 1000 ? Math.round(dist) + 'm away' : (dist / 1000).toFixed(1) + 'km away') : '';
+      const displayName = z.name || z.label || ZONE_TYPE_LABELS[z.zone_type] || z.zone_type;
+      const dist = z.center_lat
+        ? haversineDistance(userLocRef.current.lat, userLocRef.current.lng, z.center_lat, z.center_lng)
+        : null;
+      const distTxt = dist != null
+        ? (dist < 1000 ? Math.round(dist) + 'm away' : (dist / 1000).toFixed(1) + 'km away')
+        : '';
 
       layer.bindPopup(
-        '<div class="anchor-popup">' +
-        '<div class="anchor-popup-type" style="color:' + color + '">' + ZONE_TYPE_LABELS[z.zone_type] + '</div>' +
-        '<div class="anchor-popup-label">' + z.label + '</div>' +
-        '<div class="anchor-popup-meta">' + z.created_at + (distTxt ? ' · ' + distTxt : '') + '</div>' +
-        '<div class="anchor-popup-desc">' + z.description_public + '</div>' +
-        '<div class="anchor-popup-status">' + (STATUS_LABEL[z.status] || z.status) + '</div>' +
+        '<div style="font-family:Inter Tight,sans-serif;min-width:160px">' +
+        '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:' + color + ';margin-bottom:2px">' + (ZONE_TYPE_LABELS[z.zone_type] || z.zone_type) + '</div>' +
+        '<div style="font-size:13px;font-weight:600;color:#0B1D35;margin-bottom:4px">' + displayName + '</div>' +
+        (distTxt ? '<div style="font-size:11px;color:#6B7280">' + distTxt + '</div>' : '') +
+        (z.description_public ? '<div style="font-size:11px;color:#374151;margin-top:4px">' + z.description_public + '</div>' : '') +
         '</div>'
       );
-
       layer.addTo(map);
       zoneLayersRef.current.push(layer);
     });
 
-    // Update nearby list (circle zones only, sorted by distance)
+    // Update "nearby" list
     const nearby = zones
-      .filter(z => z.status !== 'archived' && z.center_lat && typeFilters[z.zone_type] && (filter === 'all' || z.status === filter))
-      .map(z => ({ ...z, dist: haversineDistance(userLoc.lat, userLoc.lng, z.center_lat, z.center_lng) }))
+      .filter(z => z.center_lat != null)
+      .map(z => ({ ...z, dist: haversineDistance(userLocRef.current.lat, userLocRef.current.lng, z.center_lat, z.center_lng) }))
       .sort((a, b) => a.dist - b.dist)
-      .slice(0, 5);
+      .slice(0, 6);
     setNearbyZones(nearby);
-  }, [filter, JSON.stringify(typeFilters), userLoc.lat, userLoc.lng, JSON.stringify(zones)]);
+  }, [JSON.stringify(zones)]);
 
   // User location marker
   React.useEffect(() => {
     const map = leafletMapRef.current;
     if (!map) return;
-    if (userMarkerRef.current) map.removeLayer(userMarkerRef.current);
+    if (userMarkerRef.current) { try { map.removeLayer(userMarkerRef.current); } catch (_) {} }
     const icon = L.divIcon({
       html: '<div style="width:14px;height:14px;border-radius:50%;background:#0B1D35;border:3px solid #fff;box-shadow:0 2px 8px rgba(11,29,53,0.4)"></div>',
       iconSize: [14, 14], iconAnchor: [7, 7], className: '',
     });
-    userMarkerRef.current = L.marker([userLoc.lat, userLoc.lng], { icon })
-      .bindPopup('You are here')
-      .addTo(map);
+    userMarkerRef.current = L.marker([userLoc.lat, userLoc.lng], { icon }).bindPopup('You are here').addTo(map);
   }, [userLoc.lat, userLoc.lng]);
 
-  const activeCount = zones.filter(z => z.status === 'active').length;
+  function handleRefresh() {
+    const loc = userLocRef.current;
+    fetchZones(loc.lat, loc.lng, radiusKm);
+  }
+
+  function handleRadiusChange(km) {
+    setRadiusKm(km);
+    const loc = userLocRef.current;
+    fetchZones(loc.lat, loc.lng, km);
+  }
+
+  const activeCount = zones.filter(z => z.status === 'active' || !z.status).length;
   const locHint = {
     locating: 'Locating you…',
-    found:    'Using your location',
-    denied:   'Showing Dhaka default',
+    found:    'Using GPS location',
+    denied:   'GPS unavailable — showing all zones',
     default:  'Dhaka, Bangladesh',
   }[locStatus];
+
+  const lastRefreshTxt = lastRefresh
+    ? lastRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
 
   return (
     <>
       <Header back/>
 
       {/* Title */}
-      <div style={{ padding: '4px 20px 12px' }}>
-        <div className="eyebrow">Red Zone Map · Dhaka</div>
+      <div style={{ padding: '4px 20px 10px' }}>
+        <div className="eyebrow">Zone Map · Dhaka</div>
         <h1 className="h-display" style={{ fontSize: 24, margin: '4px 0 0', lineHeight: 1.1 }}>
-          {zonesLoading ? '…' : activeCount} active zones
+          {zonesLoading ? '…' : activeCount} zones
         </h1>
         <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)', fontStyle: 'italic', fontFamily: 'var(--font-serif)' }}>
           {locHint}
+          {lastRefreshTxt && <span style={{ marginLeft: 8, fontStyle: 'normal' }}>· Updated {lastRefreshTxt}</span>}
         </div>
       </div>
 
-      {/* Error banner — shown when zone fetch fails */}
+      {/* Error banner */}
       {zonesError && (
         <div style={{ margin: '0 20px 10px', padding: '8px 12px', borderRadius: 10,
           background: '#FEE2E2', color: '#991B1B', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ flex: 1 }}>⚠ {zonesError}</span>
-          <button onClick={fetchZones} style={{ marginLeft: 'auto', textDecoration: 'underline',
-            background: 'none', border: 'none', cursor: 'pointer', color: '#991B1B', fontSize: 12 }}>
-            Retry
-          </button>
+          <button onClick={handleRefresh} style={{ marginLeft: 'auto', textDecoration: 'underline',
+            background: 'none', border: 'none', cursor: 'pointer', color: '#991B1B', fontSize: 12 }}>Retry</button>
         </div>
       )}
 
-      {/* Status filter tabs */}
-      <div style={{ padding: '0 20px 10px', display: 'flex', gap: 6, overflowX: 'auto' }} className="no-scrollbar">
-        {[['all','All'],['active','Active'],['under_investigation','Investigating'],['resolved','Resolved']].map(([k, l]) => (
-          <button key={k} onClick={() => setFilter(k)} style={{
-            padding: '7px 12px', borderRadius: 999, whiteSpace: 'nowrap', cursor: 'pointer',
-            background: filter === k ? 'var(--navy)' : 'rgba(255,255,255,0.7)',
-            color:      filter === k ? '#F7F3EE'    : 'var(--ink-2)',
-            border: '1px solid ' + (filter === k ? 'var(--navy)' : 'var(--mist)'),
+      {/* Radius selector + refresh */}
+      <div style={{ padding: '0 20px 10px', display: 'flex', gap: 6, alignItems: 'center', overflowX: 'auto' }} className="no-scrollbar">
+        <span style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', marginRight: 2 }}>Radius:</span>
+        {RADIUS_OPTIONS.map(({ label, value }) => (
+          <button key={label} onClick={() => handleRadiusChange(value)} style={{
+            padding: '6px 11px', borderRadius: 999, whiteSpace: 'nowrap', cursor: 'pointer',
+            background: radiusKm === value ? 'var(--navy)' : 'rgba(255,255,255,0.7)',
+            color:      radiusKm === value ? '#F7F3EE'    : 'var(--ink-2)',
+            border: '1px solid ' + (radiusKm === value ? 'var(--navy)' : 'var(--mist)'),
             fontSize: 11.5, fontWeight: 500,
-          }}>{l}</button>
+          }}>{label}</button>
         ))}
-        <button onClick={fetchZones} style={{
-          padding: '7px 10px', borderRadius: 999, whiteSpace: 'nowrap', cursor: 'pointer',
+        <button onClick={handleRefresh} disabled={zonesLoading} style={{
+          padding: '6px 10px', borderRadius: 999, whiteSpace: 'nowrap', cursor: 'pointer',
           background: 'rgba(255,255,255,0.7)', color: 'var(--ink-2)',
           border: '1px solid var(--mist)', fontSize: 11.5, fontWeight: 500,
-          marginLeft: 'auto', flexShrink: 0,
-        }} title="Refresh zones">⟳</button>
+          marginLeft: 'auto', flexShrink: 0, opacity: zonesLoading ? 0.5 : 1,
+        }} title="Refresh zones">{zonesLoading ? '…' : '⟳'}</button>
       </div>
 
       {/* Map */}
       <div style={{ padding: '0 20px 14px' }}>
         <div style={{ borderRadius: 16, overflow: 'hidden', border: '1px solid var(--mist)' }}>
-          <div ref={mapContainerRef} style={{ height: 360 }}/>
+          <div ref={mapContainerRef} style={{ height: 340 }}/>
         </div>
       </div>
 
-      {/* Zone type toggles / legend */}
+      {/* Color legend */}
       <div style={{ padding: '0 20px 14px' }}>
         <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--muted)', marginBottom: 8 }}>
-          Zone types
+          Legend
         </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {[['rape','Sexual Assault','#0B0B0B'],['murder','Homicide','#7B2CBF'],['alert','Alert','#E8312A'],['university','Campus','#1FA663']].map(([type, label, color]) => (
-            <button key={type} onClick={() => setTypeFilters(f => ({ ...f, [type]: !f[type] }))} style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '6px 10px', borderRadius: 8, cursor: 'pointer',
-              background: typeFilters[type] ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.4)',
-              border: '1.5px solid ' + (typeFilters[type] ? color : 'var(--mist)'),
-              opacity: typeFilters[type] ? 1 : 0.5,
-            }}>
-              <span style={{ width: 10, height: 10, borderRadius: 999, background: color, display: 'block' }}/>
-              <span style={{ fontSize: 11.5, color: 'var(--ink-2)', fontWeight: 500 }}>{label}</span>
-            </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {LEGEND_ENTRIES.map(([type, label, color]) => (
+            <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 8,
+              background: 'rgba(255,255,255,0.8)', border: '1.5px solid ' + color + '60' }}>
+              <span style={{ width: 10, height: 10, borderRadius: type === 'campus' ? 3 : 999, background: color, display: 'block', flexShrink: 0 }}/>
+              <span style={{ fontSize: 11, color: 'var(--ink-2)', fontWeight: 500 }}>{label}</span>
+            </div>
           ))}
         </div>
       </div>
@@ -565,25 +607,32 @@ function MapScreen() {
         <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--muted)', marginBottom: 10 }}>
           Zones near you
         </div>
-        {nearbyZones.length === 0
-          ? <div style={{ fontSize: 13, color: 'var(--muted)', fontStyle: 'italic' }}>No zones match current filters.</div>
-          : nearbyZones.map(z => (
+        {zonesLoading && (
+          <div style={{ fontSize: 13, color: 'var(--muted)', fontStyle: 'italic' }}>Loading zones…</div>
+        )}
+        {!zonesLoading && nearbyZones.length === 0 && !zonesError && (
+          <div style={{ fontSize: 13, color: 'var(--muted)', fontStyle: 'italic' }}>No zones in this area.</div>
+        )}
+        {!zonesLoading && nearbyZones.map(z => {
+          const color = ZONE_COLORS[z.zone_type] || '#E8312A';
+          const displayName = z.name || z.label || ZONE_TYPE_LABELS[z.zone_type] || z.zone_type;
+          return (
             <div key={z.id} className="card" style={{ marginBottom: 8, background: 'rgba(255,255,255,0.8)', padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ width: 10, height: 10, borderRadius: 999, background: ZONE_COLORS[z.zone_type], flexShrink: 0 }}/>
+                <span style={{ width: 10, height: 10, borderRadius: z.zone_type === 'campus' ? 3 : 999, background: color, flexShrink: 0 }}/>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--navy)' }}>{z.label}</div>
-                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>
-                    {ZONE_TYPE_LABELS[z.zone_type]} · {z.dist < 1000 ? Math.round(z.dist) + 'm' : (z.dist / 1000).toFixed(1) + 'km'} away
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--navy)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{displayName}</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+                    {ZONE_TYPE_LABELS[z.zone_type] || z.zone_type}
+                    {z.dist != null && (
+                      <> · {z.dist < 1000 ? Math.round(z.dist) + 'm' : (z.dist / 1000).toFixed(1) + 'km'} away</>
+                    )}
                   </div>
                 </div>
-                <span className={'pill ' + (z.status === 'resolved' ? 'pill-resolved' : z.status === 'active' ? 'pill-escalated' : 'pill-review')} style={{ fontSize: 10 }}>
-                  {z.status === 'under_investigation' ? 'Investigating' : z.status[0].toUpperCase() + z.status.slice(1)}
-                </span>
               </div>
             </div>
-          ))
-        }
+          );
+        })}
       </div>
     </>
   );

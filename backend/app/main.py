@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,20 +26,26 @@ from app.routers import routines as routines_router
 from app.routers import dept_ratings as dept_ratings_router
 from app.routers import admin_users as admin_users_router
 from app.routers import geofence as geofence_router
+from app.routers import campus_zones as campus_zones_router
+from app.routers import super_zones as super_zones_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: warm Redis + auto-load sample corpus into BM25 if empty
+    # Startup: warm Redis + auto-load sample corpus into BM25 if empty.
+    # Set DISABLE_AI_WARMUP=true to skip on constrained environments (e.g. Railway
+    # without a persistent volume — loading 400 MB sentence-transformer models on
+    # an ephemeral container causes an OOM crash loop).
     get_redis()
-    try:
-        from app.ai.sample_corpus import load_sample_corpus
-        from app.ai import vector_store, bm25_index
-        if vector_store.count("national") == 0 and bm25_index.index_count("national") == 0:
-            import asyncio
-            asyncio.create_task(load_sample_corpus(generate_prefixes=False))
-    except Exception:
-        pass
+    if not os.environ.get("DISABLE_AI_WARMUP"):
+        try:
+            from app.ai.sample_corpus import load_sample_corpus
+            from app.ai import vector_store, bm25_index
+            if vector_store.count("national") == 0 and bm25_index.index_count("national") == 0:
+                import asyncio
+                asyncio.create_task(load_sample_corpus(generate_prefixes=False))
+        except Exception:
+            pass
     try:
         from app.database import AsyncSessionLocal
         from app.services.filing_svc import seed_templates
@@ -93,6 +100,9 @@ def create_app() -> FastAPI:
     app.include_router(dept_ratings_router.router)
     app.include_router(admin_users_router.router)
     app.include_router(geofence_router.router)
+    # Campus zones (admin polygon CRUD) — must be included before zones_router to avoid /{id} conflict
+    app.include_router(campus_zones_router.router)
+    app.include_router(super_zones_router.router)
 
     # Serve uploaded feed attachments in dev
     from fastapi.staticfiles import StaticFiles
