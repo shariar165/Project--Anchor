@@ -1111,6 +1111,45 @@ function UniHostel() {
   );
 }
 
+// ---- Step-up modal for uni admin ----
+function UniStepUpModal({ onDone, onCancel }) {
+  const [pw, setPw] = React.useState('');
+  const [err, setErr] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+
+  async function submit() {
+    setLoading(true); setErr('');
+    try {
+      const data = await AnchorAPI.apiPostAuth('/auth/stepup', { password: pw });
+      onDone(data.stepup_token);
+    } catch (e) { setErr(e.message || 'Authentication failed'); }
+    setLoading(false);
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(11,29,53,0.55)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}>
+      <div style={{ background:'var(--paper)', borderRadius:12, padding:'28px 24px', width:340, boxShadow:'0 8px 32px rgba(0,0,0,0.18)' }}>
+        <div style={{ fontWeight:700, fontSize:15, color:'var(--navy)', marginBottom:6 }}>Confirm your identity</div>
+        <div style={{ fontSize:13, color:'var(--graphite)', marginBottom:16 }}>This action requires your password.</div>
+        <input
+          type="password" value={pw} onChange={e => setPw(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && submit()}
+          placeholder="Password"
+          style={{ width:'100%', padding:'10px 12px', borderRadius:8, fontSize:13, border:'1.5px solid var(--mist)', marginBottom:10, boxSizing:'border-box' }}
+          autoFocus
+        />
+        {err && <div style={{ color:'var(--ember)', fontSize:12, marginBottom:8 }}>{err}</div>}
+        <div style={{ display:'flex', gap:8 }}>
+          <GhostButton size="sm" onClick={onCancel} style={{ flex:1 }}>Cancel</GhostButton>
+          <PrimaryButton size="sm" mode="sage" onClick={submit} disabled={loading || !pw} style={{ flex:1 }}>
+            {loading ? 'Verifying…' : 'Confirm'}
+          </PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- Verification feed (university admin) ----
 function UniFeedCard({ v, onDefer, onConfirm, onMarkFake, onDetail, busy, isDone, msg }) {
   const sc = v.signal_counts || {};
@@ -1192,6 +1231,7 @@ function UniVerificationFeed() {
   const [actionMsg, setActionMsg] = useState({});
   const [actionLoading, setActionLoading] = useState({});
   const [detail, setDetail] = useState(null);
+  const [stepUp, setStepUp] = useState(null); // { postId, action: 'confirm'|'fake' }
 
   function loadPosts(activeTab) {
     setLoading(true); setError('');
@@ -1219,25 +1259,23 @@ function UniVerificationFeed() {
     } finally { setActionLoading(a => ({...a, [postId]: false})); }
   }
 
-  async function handleConfirm(postId) {
-    setActionLoading(a => ({...a, [postId]: true})); setActionMsg(m => ({...m, [postId]: ''}));
-    try {
-      await AnchorAPI.apiPostAuth(`/v1/feed/admin/${postId}/confirm`, { internal_note: 'Confirmed by admin.' });
-      setActionMsg(m => ({...m, [postId]: 'confirmed'}));
-      setTimeout(() => loadPosts(tab), 400);
-    } catch (err) {
-      setActionMsg(m => ({...m, [postId]: err.message || 'Confirm failed'}));
-    } finally { setActionLoading(a => ({...a, [postId]: false})); }
-  }
+  function handleConfirm(postId) { setStepUp({ postId, action: 'confirm' }); }
+  function handleMarkFake(postId) { setStepUp({ postId, action: 'fake' }); }
 
-  async function handleMarkFake(postId) {
+  async function doActionWithToken(postId, action, stepupToken) {
     setActionLoading(a => ({...a, [postId]: true})); setActionMsg(m => ({...m, [postId]: ''}));
     try {
-      await AnchorAPI.apiPostAuth(`/v1/feed/admin/${postId}/mark-fake`, {
-        public_note: 'Post marked as inaccurate by university admin after review.',
-        internal_note: 'Marked fake by admin.',
+      const path = action === 'confirm' ? 'confirm' : 'mark-fake';
+      const body = action === 'confirm'
+        ? { internal_note: 'Confirmed by admin.' }
+        : { public_note: 'Post marked as inaccurate by university admin after review.', internal_note: 'Marked fake by admin.' };
+      const r = await fetch(`http://localhost:8000/v1/feed/admin/${postId}/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + stepupToken },
+        body: JSON.stringify(body),
       });
-      setActionMsg(m => ({...m, [postId]: 'marked fake'}));
+      if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'Action failed'); }
+      setActionMsg(m => ({...m, [postId]: action === 'confirm' ? 'confirmed' : 'marked fake'}));
       setTimeout(() => loadPosts(tab), 400);
     } catch (err) {
       setActionMsg(m => ({...m, [postId]: err.message || 'Failed'}));
@@ -1258,6 +1296,12 @@ function UniVerificationFeed() {
 
   return (
     <>
+      {stepUp && (
+        <UniStepUpModal
+          onDone={token => { setStepUp(null); doActionWithToken(stepUp.postId, stepUp.action, token); }}
+          onCancel={() => setStepUp(null)}
+        />
+      )}
       <PageHeader
         title="Verification feed"
         bn="যাচাইকরণ ফিড"
@@ -1281,7 +1325,7 @@ function UniVerificationFeed() {
       />
 
       <AuditNote tone="navy" icon="shield-check" className="mb-4">
-        Approving and marking-fake require step-up authentication (re-auth via Anchor app). Send-back does not.
+        Approving and marking-fake require step-up authentication — you'll be prompted for your password. Send-back does not.
       </AuditNote>
 
       <Card noPad>

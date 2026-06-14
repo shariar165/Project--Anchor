@@ -1,3 +1,42 @@
+// ---- Step-up modal (password re-confirm for sensitive actions) ----
+function AdminStepUpModal({ onDone, onCancel }) {
+  const [pw, setPw] = React.useState('');
+  const [err, setErr] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+
+  async function submit() {
+    setLoading(true); setErr('');
+    try {
+      const data = await AnchorAPI.apiPostAuth('/auth/stepup', { password: pw });
+      onDone(data.stepup_token);
+    } catch (e) { setErr(e.message || 'Authentication failed'); }
+    setLoading(false);
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(11,29,53,0.55)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}>
+      <div style={{ background:'var(--paper)', borderRadius:12, padding:'28px 24px', width:340, boxShadow:'0 8px 32px rgba(0,0,0,0.18)' }}>
+        <div style={{ fontWeight:700, fontSize:15, color:'var(--navy)', marginBottom:6 }}>Confirm your identity</div>
+        <div style={{ fontSize:13, color:'var(--graphite)', marginBottom:16 }}>This action requires your password.</div>
+        <input
+          type="password" value={pw} onChange={e => setPw(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && submit()}
+          placeholder="Password"
+          style={{ width:'100%', padding:'10px 12px', borderRadius:8, fontSize:13, border:'1.5px solid var(--mist)', marginBottom:10, boxSizing:'border-box' }}
+          autoFocus
+        />
+        {err && <div style={{ color:'var(--ember)', fontSize:12, marginBottom:8 }}>{err}</div>}
+        <div style={{ display:'flex', gap:8 }}>
+          <GhostButton size="sm" onClick={onCancel} style={{ flex:1 }}>Cancel</GhostButton>
+          <PrimaryButton size="sm" mode="ember" onClick={submit} disabled={loading || !pw} style={{ flex:1 }}>
+            {loading ? 'Verifying…' : 'Confirm'}
+          </PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Super Admin screens
 function SuperDashboard({ onGo }) {
   const D = window.AnchorData;
@@ -406,7 +445,6 @@ function FeedPostCard({ v, onDefer, onConfirm, busy, isDone, msg }) {
   const corrob = sc.corroborate ?? 0;
   const chall = sc.challenge ?? 0;
   const flags = sc.flags ?? 0;
-  const isStepUpErr = msg && (msg.toLowerCase().includes('step') || msg.includes('401') || msg.includes('403'));
 
   return (
     <div className={`hair border rounded-sm p-4 space-y-3 ${isDone ? 'opacity-60' : ''}`}
@@ -442,13 +480,7 @@ function FeedPostCard({ v, onDefer, onConfirm, busy, isDone, msg }) {
       </div>
 
       {/* Feedback row */}
-      {isStepUpErr && (
-        <div className="px-3 py-2 rounded-sm text-[12px]" style={{ background:'rgba(184,137,58,0.10)', color:'#8A6520', border:'1px solid rgba(184,137,58,0.25)' }}>
-          <Icon name="shield-alert" size={12} className="inline mr-1" />
-          Step-up authentication required. Re-authenticate with your password in the Anchor mobile app to unlock sensitive moderation actions.
-        </div>
-      )}
-      {msg && !isDone && !isStepUpErr && (
+      {msg && !isDone && (
         <div className="text-[11.5px]" style={{color:'var(--red)'}}>{msg}</div>
       )}
       {isDone && (
@@ -480,6 +512,7 @@ function SuperVerificationFeed() {
   const [error, setError] = useState('');
   const [actionMsg, setActionMsg] = useState({});
   const [actionLoading, setActionLoading] = useState({});
+  const [stepUp, setStepUp] = useState(null); // { postId } when modal is open
 
   function loadPosts(activeTab) {
     setLoading(true); setError('');
@@ -507,20 +540,35 @@ function SuperVerificationFeed() {
     } finally { setActionLoading(a => ({...a, [postId]: false})); }
   }
 
-  async function handleConfirm(postId) {
+  async function doConfirmWithToken(postId, stepupToken) {
     setActionLoading(a => ({...a, [postId]: true})); setActionMsg(m => ({...m, [postId]: ''}));
     try {
-      await AnchorAPI.apiPostAuth(`/v1/feed/admin/${postId}/confirm`, { internal_note: 'Confirmed by super admin.' });
+      await fetch('http://localhost:8000/v1/feed/admin/' + postId + '/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + stepupToken },
+        body: JSON.stringify({ internal_note: 'Confirmed by super admin.' }),
+      }).then(async r => {
+        if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'Confirm failed'); }
+      });
       setActionMsg(m => ({...m, [postId]: 'confirmed'}));
       loadPosts(tab);
     } catch (err) {
-      const msg = err.message || '';
-      setActionMsg(m => ({...m, [postId]: msg || 'Confirm failed'}));
+      setActionMsg(m => ({...m, [postId]: err.message || 'Confirm failed'}));
     } finally { setActionLoading(a => ({...a, [postId]: false})); }
+  }
+
+  function handleConfirm(postId) {
+    setStepUp({ postId });
   }
 
   return (
     <>
+      {stepUp && (
+        <AdminStepUpModal
+          onDone={token => { setStepUp(null); doConfirmWithToken(stepUp.postId, token); }}
+          onCancel={() => setStepUp(null)}
+        />
+      )}
       <PageHeader
         title="Verification feed"
         description="Posts escalated by university admins for platform-public visibility. Approve, deny, or send back."

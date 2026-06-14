@@ -643,7 +643,7 @@ function MapScreen() {
 // ═══════════════════════════════════════════════════════════════
 function FeedScreen() {
   const { mode } = useApp();
-  const [tab, setTab] = React.useState('top');
+  const [tab, setTab] = React.useState('recent');
   const [posts, setPosts] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState('');
@@ -701,11 +701,11 @@ function FeedScreen() {
         setPosts(items);
         setLoading(false);
       })
-      .catch(err => { setError(err.message || 'Could not load feed.'); setLoading(false); });
+      .catch(() => { setPosts([]); setLoading(false); });
   }, [mode, tab]);
 
-  const items = posts.map(toItem);
-  const visible = tab === 'trusted' ? items.filter(it => it.trusted) : items;
+  const feedItems = posts.map(toItem);
+  const visible = tab === 'trusted' ? feedItems.filter(it => it.trusted) : feedItems;
   const [hero, ...rest] = visible;
 
   return (
@@ -746,16 +746,14 @@ function FeedScreen() {
           </div>
         )}
 
-        {!loading && error && (
-          <div style={{ margin: '16px 0', padding: '14px 16px', background: 'rgba(232,49,42,0.06)', border: '1px solid rgba(232,49,42,0.2)', borderRadius: 12 }}>
-            <div style={{ fontSize: 13, color: 'var(--red)', fontFamily: 'var(--font-sans)' }}>{error}</div>
-            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, fontFamily: 'var(--font-sans)' }}>
-              Check that the backend server is running on port 8000.
-            </div>
+        {!loading && visible.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '48px 0 32px', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            <div style={{ fontSize: 22, marginBottom: 10 }}>📰</div>
+            No published stories yet in this edition.
           </div>
         )}
 
-        {!loading && !error && (
+        {!loading && visible.length > 0 && (
           <>
             {hero && <NewsFeature item={hero}/>}
 
@@ -765,18 +763,7 @@ function FeedScreen() {
 
             {rest.map(it => <NewsCard key={it.id} item={it}/>)}
 
-            {visible.length === 0 && (
-              <div style={{ padding: '60px 20px', textAlign: 'center' }}>
-                <div className="serif" style={{ fontSize: 20, color: 'var(--navy)' }}>Nothing in this section yet.</div>
-                <div style={{ marginTop: 6, fontSize: 13, color: 'var(--muted)', fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>
-                  Switch tab to see other stories.
-                </div>
-              </div>
-            )}
-
-            {visible.length > 0 && (
-              <div className="rule-fancy" style={{ marginTop: 22 }}>End of edition · {visible.length} verified items</div>
-            )}
+            <div className="rule-fancy" style={{ marginTop: 22 }}>End of edition · {visible.length} verified items</div>
           </>
         )}
       </div>
@@ -784,25 +771,46 @@ function FeedScreen() {
   );
 }
 
+function useNewsSignals(item) {
+  const [counts, setCounts] = React.useState({ corroborate: item.corr || 0, challenge: item.chal || 0, user_signal: null });
+  const [busy, setBusy] = React.useState(false);
+  const [sigErr, setSigErr] = React.useState('');
+
+  async function signal(type) {
+    if (!item.id || busy) return;
+    if (!localStorage.getItem('anchor_access_token')) { setSigErr('Sign in to signal.'); return; }
+    setBusy(true); setSigErr('');
+    try {
+      const data = await apiFetch(`/v1/feed/${item.id}/${type}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+      });
+      if (data?.counts) setCounts(data.counts);
+    } catch (e) { setSigErr(e.message || 'Could not record signal.'); }
+    setBusy(false);
+  }
+
+  return { counts, busy, signal, sigErr };
+}
+
 function NewsFeature({ item }) {
-  // Split kicker into "Section · Story": use as a teaser line
+  const { go } = useApp();
+  const { counts, busy, signal, sigErr } = useNewsSignals(item);
+  const userSig = counts.user_signal;
+
   const stripParts = [
     item.scope === 'campus' ? 'Anchor verified · Campus edition' : 'Anchor verified · National edition',
     item.byline.when,
     'Human-moderated',
   ];
 
-  // Build a tabloid headline — italic display with mixed sizes
   return (
     <article className="news-feature">
-      {/* Promotional red strap */}
       <div className="news-strap">
         <span className="label">{stripParts[0]}</span>
         <span className="label" style={{ flex: 'none' }}>{stripParts[1].toUpperCase()}</span>
       </div>
 
-      {/* Big photo, framed */}
-      <div className="news-photo">
+      <div className="news-photo" onClick={() => item.id && go('feed-post', { id: item.id })} style={{ cursor: item.id ? 'pointer' : 'default' }}>
         <div className="news-photo-frame">
           <NewsArt variant={item.art}/>
         </div>
@@ -811,38 +819,53 @@ function NewsFeature({ item }) {
         </div>
       </div>
 
-      {/* Decorative italic headline */}
-      <div className="news-decor">
+      <div className="news-decor" onClick={() => item.id && go('feed-post', { id: item.id })} style={{ cursor: item.id ? 'pointer' : 'default' }}>
         <span className="pre">{item.kicker}:</span>
         <span className="title" dangerouslySetInnerHTML={{ __html: decorateHeadline(item.headline) }}/>
       </div>
 
-      {/* Byline */}
       <div className="news-byline">
         by <strong>{item.byline.author}</strong> · {item.byline.source}
       </div>
 
-      {/* Drop-cap lead */}
       <p className="news-lead-drop">{item.lead}</p>
 
-      {/* Trust badges */}
       <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
         {item.trusted && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'rgba(184,137,58,0.35)', background: 'rgba(184,137,58,0.08)' }}><IconBadge size={9}/> Trusted source</span>}
         <span className="pill pill-resolved"><IconCheck size={9} sw={3}/> Reviewed & published</span>
       </div>
 
       <div className="news-actions">
-        <button className="news-act corr"><IconThumbUp size={13}/> Corroborate · {item.corr}</button>
-        <button className="news-act chal"><IconThumbDown size={13}/> Challenge · {item.chal}</button>
+        <button
+          className="news-act corr"
+          onClick={() => signal('corroborate')}
+          disabled={busy}
+          style={{ background: userSig === 'corroborate' ? 'rgba(74,107,92,0.22)' : undefined, fontWeight: userSig === 'corroborate' ? 700 : undefined }}
+        >
+          <IconThumbUp size={13}/> Corroborate · {counts.corroborate}
+        </button>
+        <button
+          className="news-act chal"
+          onClick={() => signal('challenge')}
+          disabled={busy}
+          style={{ background: userSig === 'challenge' ? 'rgba(196,69,54,0.16)' : undefined, fontWeight: userSig === 'challenge' ? 700 : undefined }}
+        >
+          <IconThumbDown size={13}/> Challenge · {counts.challenge}
+        </button>
       </div>
+      {sigErr && <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ember)' }}>{sigErr}</div>}
     </article>
   );
 }
 
 function NewsCard({ item }) {
+  const { go } = useApp();
+  const { counts, busy, signal, sigErr } = useNewsSignals(item);
+  const userSig = counts.user_signal;
+
   return (
     <article className="news-card">
-      <div className="news-photo">
+      <div className="news-photo" onClick={() => item.id && go('feed-post', { id: item.id })} style={{ cursor: item.id ? 'pointer' : 'default' }}>
         <div className="news-photo-frame">
           <NewsArt variant={item.art}/>
         </div>
@@ -850,8 +873,8 @@ function NewsCard({ item }) {
           <strong>Photo —</strong> {photoCaption(item)}
         </div>
       </div>
-      <div className="news-kicker">{item.kicker}</div>
-      <h3 className="news-headline lg">{item.headline}</h3>
+      <div className="news-kicker" onClick={() => item.id && go('feed-post', { id: item.id })} style={{ cursor: item.id ? 'pointer' : 'default' }}>{item.kicker}</div>
+      <h3 className="news-headline lg" onClick={() => item.id && go('feed-post', { id: item.id })} style={{ cursor: item.id ? 'pointer' : 'default' }}>{item.headline}</h3>
       <div className="news-byline">
         by <strong>{item.byline.author}</strong> · {item.byline.source} · {item.byline.when}
       </div>
@@ -861,9 +884,24 @@ function NewsCard({ item }) {
         <span className="pill pill-resolved"><IconCheck size={9} sw={3}/> Reviewed</span>
       </div>
       <div className="news-actions">
-        <button className="news-act corr"><IconThumbUp size={13}/> Corroborate · {item.corr}</button>
-        <button className="news-act chal"><IconThumbDown size={13}/> Challenge · {item.chal}</button>
+        <button
+          className="news-act corr"
+          onClick={() => signal('corroborate')}
+          disabled={busy}
+          style={{ background: userSig === 'corroborate' ? 'rgba(74,107,92,0.22)' : undefined, fontWeight: userSig === 'corroborate' ? 700 : undefined }}
+        >
+          <IconThumbUp size={13}/> Corroborate · {counts.corroborate}
+        </button>
+        <button
+          className="news-act chal"
+          onClick={() => signal('challenge')}
+          disabled={busy}
+          style={{ background: userSig === 'challenge' ? 'rgba(196,69,54,0.16)' : undefined, fontWeight: userSig === 'challenge' ? 700 : undefined }}
+        >
+          <IconThumbDown size={13}/> Challenge · {counts.challenge}
+        </button>
       </div>
+      {sigErr && <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ember)' }}>{sigErr}</div>}
     </article>
   );
 }

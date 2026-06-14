@@ -224,16 +224,10 @@ function HomeScreen() {
       <div style={{ padding: '16px 20px 28px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
           <div className="eyebrow">{mode === 'campus' ? 'Campus verified' : 'Verified news'}</div>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            <button onClick={() => go('news-feed')} style={{
-              background: 'transparent', border: 'none', cursor: 'pointer',
-              color: 'var(--muted)', fontSize: 11.5, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
-            }}>Newspaper →</button>
-            <button onClick={() => go('feed')} style={{
-              background: 'transparent', border: 'none', cursor: 'pointer',
-              color: 'var(--navy)', fontSize: 12, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
-            }}>Open →</button>
-          </div>
+          <button onClick={() => go('news-feed')} style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: 'var(--muted)', fontSize: 11.5, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+          }}>Newspaper →</button>
         </div>
         {(feedPosts.length
           ? feedPosts
@@ -1797,8 +1791,8 @@ function NewsArt({ variant }) {
 //  FeedRowMini — compact preview for Home
 // ═══════════════════════════════════════════════════════════════
 function FeedRowMini({ item, onOpen }) {
-  const { auth } = useApp();
   const isApi = !!item.post_number;
+  const hasToken = !!localStorage.getItem('anchor_access_token');
   const kicker   = isApi ? (item.category || '').replace(/_/g, ' ').toUpperCase() : item.kicker;
   const headline = isApi ? item.title : item.headline;
   const when     = isApi
@@ -1813,7 +1807,7 @@ function FeedRowMini({ item, onOpen }) {
   const [busy, setBusy] = React.useState(false);
 
   async function signal(type) {
-    if (!isApi || busy || !auth?.token) return;
+    if (!isApi || busy || !localStorage.getItem('anchor_access_token')) return;
     setBusy(true);
     try {
       const data = await apiFetch(`/v1/feed/${item.id}/${type}`, {
@@ -1827,9 +1821,15 @@ function FeedRowMini({ item, onOpen }) {
   const userSig = counts.user_signal;
 
   return (
-    <div style={{ padding: '14px 0', borderTop: '1px solid var(--mist)', display: 'flex', gap: 12 }}>
+    <div
+      onClick={onOpen || undefined}
+      style={{
+        padding: '14px 0', borderTop: '1px solid var(--mist)', display: 'flex', gap: 12,
+        cursor: onOpen ? 'pointer' : 'default',
+      }}
+    >
       <div style={{ width: 80, height: 60, borderRadius: 6, overflow: 'hidden', flexShrink: 0, position: 'relative' }}>
-        <NewsArt variant={item.art || 'a'}/>
+        <NewsArt variant={item.art || { incident:'protest', missing_person:'building', road:'road', safety:'court', civic_event:'building' }[item.category] || 'protest'}/>
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="news-kicker" style={{ marginBottom: 3, fontSize: 9 }}>{kicker}</div>
@@ -1837,37 +1837,27 @@ function FeedRowMini({ item, onOpen }) {
         <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', fontSize: 10.5, color: 'var(--muted)' }}>
           <button
             onClick={e => { e.stopPropagation(); signal('corroborate'); }}
-            disabled={!isApi || !auth?.token || busy}
+            disabled={!isApi || !hasToken || busy}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 3,
               background: userSig === 'corroborate' ? 'var(--sage)' : 'rgba(74,107,92,0.1)',
               color: userSig === 'corroborate' ? 'white' : 'var(--sage-2)',
               border: 'none', borderRadius: 999, padding: '2px 8px',
-              fontSize: 10.5, fontWeight: 600, cursor: isApi && auth?.token ? 'pointer' : 'default',
+              fontSize: 10.5, fontWeight: 600, cursor: isApi && hasToken ? 'pointer' : 'default',
             }}
           ><IconCheck size={9} sw={2.4}/> {counts.corroborate}</button>
           <button
             onClick={e => { e.stopPropagation(); signal('challenge'); }}
-            disabled={!isApi || !auth?.token || busy}
+            disabled={!isApi || !hasToken || busy}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 3,
               background: userSig === 'challenge' ? 'var(--ember)' : 'rgba(196,69,54,0.08)',
               color: userSig === 'challenge' ? 'white' : 'var(--ember)',
               border: 'none', borderRadius: 999, padding: '2px 8px',
-              fontSize: 10.5, fontWeight: 600, cursor: isApi && auth?.token ? 'pointer' : 'default',
+              fontSize: 10.5, fontWeight: 600, cursor: isApi && hasToken ? 'pointer' : 'default',
             }}
           ><IconX size={9} sw={2.4}/> {counts.challenge}</button>
           <span style={{ marginLeft: 'auto' }}>{when}</span>
-          {onOpen && (
-            <button
-              onClick={e => { e.stopPropagation(); onOpen(); }}
-              style={{
-                background: 'transparent', border: 'none', cursor: 'pointer',
-                color: 'var(--navy)', fontSize: 11,
-                fontFamily: 'var(--font-serif)', fontStyle: 'italic', padding: 0,
-              }}
-            >Open →</button>
-          )}
         </div>
       </div>
     </div>

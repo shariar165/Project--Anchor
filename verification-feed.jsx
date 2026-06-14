@@ -35,6 +35,11 @@ const CATEGORIES = [
   { k: 'civic_event',    label: 'Civic Event',     icon: '📢' },
 ];
 
+const VF_CAT_ART = {
+  incident: 'protest', missing_person: 'building', road: 'road',
+  safety: 'court', civic_event: 'building',
+};
+
 const TRUST_META = {
   none:   { label: 'Verified',       color: 'var(--muted)', icon: '👤' },
   bronze: { label: 'Trusted Bronze', color: '#CD7F32',       icon: '🛡️' },
@@ -127,7 +132,7 @@ function VerificationFeedScreen() {
   const { go, back, mode, auth } = useApp();
   const canSeeCampus = mode === 'campus' && !!auth?.user?.tenant_id;
   const [scope, setScope] = React.useState(canSeeCampus ? 'campus' : 'national');
-  const [tab, setTab]     = React.useState('top'); // top | latest | trusted
+  const [tab, setTab]     = React.useState('latest'); // top | latest | trusted
   const [posts, setPosts] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError]     = React.useState('');
@@ -143,14 +148,16 @@ function VerificationFeedScreen() {
       let items = Array.isArray(data) ? data : (data?.items ?? []);
       if (tab === 'trusted') items = items.filter(p => p.admin_confirmed);
       setPosts(items);
-    } catch (e) { setError(e.message); }
+    } catch (_) { setPosts([]); }
     setLoading(false);
   }
 
   const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
-  const issueNum = posts.length > 0 ? String(posts[0].post_number || 1).padStart(3, '0') : '001';
-  const hero = posts[0] || null;
-  const rest = posts.slice(1);
+
+  const displayPosts = tab === 'trusted' ? posts.filter(p => p.admin_confirmed) : posts;
+  const issueNum = String(displayPosts[0]?.post_number || 1).padStart(3, '0');
+  const hero = displayPosts[0] || null;
+  const rest = displayPosts.slice(1);
   const editionLabel = scope === 'campus' ? 'Campus edition · Daffodil' : 'National edition · Bangladesh';
 
   return (
@@ -201,11 +208,15 @@ function VerificationFeedScreen() {
         </div>
       </div>
 
-      {/* ── Loading / Error / Empty ── */}
+      {/* ── Loading ── */}
       {loading && <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13 }}>Loading…</div>}
-      {error   && <div style={{ textAlign: 'center', padding: 20, color: 'var(--red)',   fontSize: 13 }}>{error}</div>}
-      {!loading && !error && posts.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13 }}>No stories yet.</div>
+
+      {/* ── Empty state ── */}
+      {!loading && displayPosts.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+          <div style={{ fontSize: 24, marginBottom: 10 }}>📰</div>
+          No verified stories yet in this edition.
+        </div>
       )}
 
       {/* ── Breaking strip ── */}
@@ -226,7 +237,7 @@ function VerificationFeedScreen() {
           {/* Hero illustration */}
           <div style={{ width: '100%', height: 210, position: 'relative', overflow: 'hidden', background: 'var(--navy)' }}>
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <NewsArt variant="d"/>
+              <NewsArt variant={VF_CAT_ART[hero.category] || 'protest'}/>
             </div>
             <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(247,243,238,0.93)', padding: '5px 14px', borderTop: '1px solid var(--mist)' }}>
               <span style={{ fontSize: 10, color: 'var(--muted)', fontStyle: 'italic' }}>
@@ -292,8 +303,8 @@ function VerificationFeedScreen() {
                   </span>
                 </div>
               </div>
-              <div style={{ width: 68, height: 68, borderRadius: 8, overflow: 'hidden', flexShrink: 0, background: 'var(--navy)' }}>
-                <NewsArt variant={['a','b','c','d'][i % 4]}/>
+              <div style={{ width: 68, height: 68, borderRadius: 8, overflow: 'hidden', flexShrink: 0, background: 'var(--navy)', position: 'relative' }}>
+                <NewsArt variant={VF_CAT_ART[p.category] || ['protest','traffic','court','road'][i % 4]}/>
               </div>
             </div>
           );

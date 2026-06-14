@@ -41,7 +41,8 @@ async def main(password: str) -> None:
             user.status = AccountStatus.active
             user.email_verified = True
             user.full_name = SUPER_ADMIN_NAME
-            print(f"[updated] {SUPER_ADMIN_EMAIL} — role set to super_admin")
+            user.mfa_enabled = False  # clear MFA so the reset password works immediately
+            print(f"[updated] {SUPER_ADMIN_EMAIL} — role set to super_admin, MFA cleared")
         else:
             user = User(
                 id=uuid.uuid4(),

@@ -219,8 +219,9 @@ async def confirm_post(
     request: Request,
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_stepup),
-    _role: TokenData = Depends(_mod_or_admin),
 ):
+    if token.role not in ("admin", "moderator", "super_admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     post = await _load_post_or_404(db, post_id, token)
 
     if post.publisher_user_id == token.user_id:
@@ -242,8 +243,9 @@ async def mark_fake(
     request: Request,
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_stepup),
-    _role: TokenData = Depends(_mod_or_admin),
 ):
+    if token.role not in ("admin", "moderator", "super_admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     if not body.public_note or len(body.public_note) < 30:
         raise HTTPException(400, "public_note must be at least 30 characters")
 
@@ -265,8 +267,9 @@ async def take_down(
     request: Request,
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_stepup),
-    _role: TokenData = Depends(_mod_or_admin),
 ):
+    if token.role not in ("admin", "moderator", "super_admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     if not body.public_note or len(body.public_note) < 30:
         raise HTTPException(400, "public_note must be at least 30 characters")
 
@@ -327,8 +330,9 @@ async def restore_post(
     request: Request,
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_stepup),
-    _role: TokenData = Depends(_admin_only),
 ):
+    if token.role not in ("admin", "super_admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     post = await _load_post_or_404(db, post_id, token)
     await feed_moderation_svc.record_moderation(
         db, post, token.user_id, ModerationAction.restore,
@@ -346,8 +350,9 @@ async def promote_to_zone(
     request: Request,
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_stepup),
-    _role: TokenData = Depends(_admin_only),
 ):
+    if token.role not in ("admin", "super_admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     post = await _load_post_or_404(db, post_id, token)
 
     from app.models.feed import PostCategory

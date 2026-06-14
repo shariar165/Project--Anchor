@@ -42,6 +42,8 @@ async def record_moderation(
         post.admin_confirmed = True
         post.admin_confirmed_at = _now()
         post.admin_confirmed_by = moderator_id
+        if post.state == PostState.pending_ai:
+            post.state = PostState.live
     elif action == ModerationAction.mark_fake:
         post.state = PostState.marked_fake
         post.admin_confirmed = False
