@@ -72,6 +72,9 @@ Always use the **venv** — all dependencies are isolated there:
 | `/v1/routines` | `routers/routines.py` | optional | Academic class schedules (draft/publish) |
 | `/v1/departments/...` | `routers/dept_ratings.py` | optional | Dept ratings + per-dept summary |
 | `/v1/admin/users/...` | `routers/admin_users.py` | admin/super_admin | List users, create admin/moderator, patch role/status |
+| `/v1/admin/campus-zones/...` | `routers/campus_zones.py` | admin | Campus polygon zones (zone_type=campus only) |
+| `/v1/super-admin/zones/...` | `routers/super_zones.py` | super_admin | Red/purple/black zone CRUD (polygon + circle) |
+| `/v1/admin/timetable/...` | `routers/admin_timetable.py` | admin | CP-SAT timetable CRUD, solver jobs, NL edits, publish |
 | `/health` | `main.py` | none | DB + Redis liveness probe |
 
 ### Services (pure business logic, no HTTP)
@@ -84,6 +87,13 @@ Always use the **venv** — all dependencies are isolated there:
 - `services/fcm.py` — lazy Firebase Admin SDK init; degrades gracefully when `FCM_SERVICE_ACCOUNT_JSON_PATH` is unset; `send_to_token()` / `send_batch()` (max 500 tokens/call)
 - `services/geofence.py` — tenant campus boundary polygon storage/retrieval
 - `services/notice_svc.py`, `routine_svc.py`, `dept_rating_svc.py` — campus-specific content services
+- `services/feed_svc.py` — feed post CRUD, trust-weighted signal scoring, archival logic, post-state machine
+- `services/feed_prescreen.py` — AI pre-screening gate: regex block patterns first, then keyword-hint check per category; rejects or flags before publish
+- `services/feed_sse.py` — Redis pub/sub bridge for real-time signal-count pushes; `GET /v1/feed/{id}/signals/stream` is an SSE endpoint; keepalive comment sent every 30 s
+- `services/feed_attachment_svc.py` — validates MIME type, SHA-256 deduplicates, stores to `uploads/feed/`; limits configurable in `config.py` (`FEED_MAX_ATTACHMENTS`, `FEED_MAX_ATTACHMENT_MB`)
+- `services/feed_moderation_svc.py` — records `VerificationFeedModeration` rows; drives the false-alarm strike system and trust-tier promotions
+- `services/timetable_svc.py` — CRUD for all timetable entities (terms, batches, sections, rooms, courses, faculty, offerings, constraints)
+- `services/timetable_solver.py` — CP-SAT constraint solver (Google OR-Tools); `run_solve_job()` runs as a FastAPI `BackgroundTask`; `nl_to_entry_edit()` translates natural-language schedule edits via Ollama; solver supports warm-start from `prev_entries` for perturbation runs
 
 ### Common patterns
 
@@ -150,7 +160,7 @@ This creates (or resets) the `teamaivion@gmail.com` account with `role=super_adm
 - `audit_logs` is append-only (enforced at DB role level in production)
 - `sessions.refresh_token_hash` stores Argon2id hash of the raw refresh JWT string
 - Alembic auto-generates migrations from SQLAlchemy models: `alembic revision --autogenerate -m "description"`
-- Migration chain: `035cab04b834_initial_schema` → `1e240152fca9_alert_system` → `a3f7c8d2e1b5_application_system` → `b9f2a1c3d4e5_verification_feed` → `c5d3e2f1a0b9_filing_system` → `d4e5f6a7b8c9_notices_and_lawyers` → `e5f6a7b8c9d0_routine_notice_status_dept_rating` → `f0a1b2c3d4e5_add_super_admin_role` → `37afe0ddaa21_add_tenant_geofences`
+- Migration chain: `035cab04b834_initial_schema` → `1e240152fca9_alert_system` → `a3f7c8d2e1b5_application_system` → `b9f2a1c3d4e5_verification_feed` → `c5d3e2f1a0b9_filing_system` → `d4e5f6a7b8c9_notices_and_lawyers` → `e5f6a7b8c9d0_routine_notice_status_dept_rating` → `f0a1b2c3d4e5_add_super_admin_role` → `37afe0ddaa21_add_tenant_geofences` → `a8b3c4d5e6f7_unified_zones` → `b1c2d3e4f5a6_radius_m_nullable` → `c0d1e2f3a4b5_timetable_generator`
 - The `super_admin` enum value was added as an `ALTER TYPE` (PostgreSQL only). The SQLite test path does not run enum DDL, so the `super_admin` role works in tests via the string-based `Role` enum in Python.
 
 ## Testing
@@ -200,6 +210,10 @@ Use forward slashes in the path — backslashes are treated as escape sequences 
 - `ALERT_NEARBY_PAUSE_THRESHOLD=3` — responders needed to pause fan-out
 
 **Known `.env` issue** — the pre-existing `CLAUDE MESSAGE=` line (space in key name) causes a python-dotenv warning on every startup. It is cosmetic and does not break config loading.
+
+**AI warmup** — at startup, `main.py` auto-loads `sample_corpus.py` into the `national` ChromaDB namespace if empty, and seeds filing templates. Set `DISABLE_AI_WARMUP=true` to skip both on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer models cause an OOM crash loop on ephemeral containers).
+
+**Known production blocker** — see `todo.md`: `POST /auth/register` immediately creates a `User` row in PostgreSQL. If the OTP expires before verification, the user is permanently stuck (can't verify, login, or re-register). Fix: store the registration payload in Redis with OTP TTL; create the DB row only on successful OTP verification. A temporary re-registration workaround is live but not a permanent fix.
 
 ## JWT Notes
 Uses **PyJWT** (not python-jose — python-jose does not support EdDSA). UUID values in payloads must be converted to `str()` before encoding — PyJWT does not serialize UUID objects.
