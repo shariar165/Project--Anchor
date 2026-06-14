@@ -2,8 +2,7 @@
 Campus geofence router — save/load polygon boundary per tenant.
 
 Admins and moderators can GET the current geofence and POST to update it.
-The boundary is stored as a JSON array of {x, y} pixel coordinates matching
-the frontend SVG viewport (400×200 coordinate space).
+The boundary is stored as a JSON array of [lat, lng] WGS84 coordinate pairs.
 """
 import json
 import uuid

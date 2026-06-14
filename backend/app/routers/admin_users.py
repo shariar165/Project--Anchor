@@ -35,6 +35,10 @@ class UpdateStatusRequest(BaseModel):
     status: str
 
 
+class UpdateTenantRequest(BaseModel):
+    tenant_id: uuid.UUID
+
+
 class UserRow(BaseModel):
     id: uuid.UUID
     full_name: str
@@ -122,6 +126,32 @@ async def create_admin_user(
     await audit_svc.log_event(
         db, "admin_user_created", user.id, get_ip(request),
         {"created_by": str(token.user_id), "role": body.role},
+    )
+    return UserRow.model_validate(user)
+
+
+@router.patch("/{user_id}/tenant")
+async def update_user_tenant(
+    user_id: uuid.UUID,
+    body: UpdateTenantRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("super_admin")),
+):
+    from app.models.tenant import Tenant
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalars().first()
+    if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    tenant_result = await db.execute(select(Tenant).where(Tenant.id == body.tenant_id))
+    if not tenant_result.scalars().first():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    user.tenant_id = body.tenant_id
+    await audit_svc.log_event(
+        db, "user_tenant_changed", user.id, get_ip(request),
+        {"by": str(token.user_id), "new_tenant_id": str(body.tenant_id)},
     )
     return UserRow.model_validate(user)
 

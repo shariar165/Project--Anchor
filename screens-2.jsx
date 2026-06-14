@@ -1336,116 +1336,202 @@ function SettingsGroup({ title, items }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  ROUTINES SCREEN
+//  ROUTINES SCREEN — day-grouped cards, EN/BN, offline fallback
 // ═══════════════════════════════════════════════════════════════
-function RoutinesScreen() {
-  const [routines, setRoutines] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState('');
+var _ROUTINE_DAY_ORDER = ['Sat','Sun','Mon','Tue','Wed','Thu'];
+var _BN_DAYS = { Sat:'শনিবার', Sun:'রবিবার', Mon:'সোমবার', Tue:'মঙ্গলবার', Wed:'বুধবার', Thu:'বৃহস্পতিবার' };
+var _ROUTINE_L = {
+  EN: {
+    title:'Academic Routine', subtitle:'Your class schedule',
+    noData:'No routines published yet',
+    noDataSub:"Your admin hasn't published a schedule yet. Check back later.",
+    offline:'Offline — showing demo schedule',
+    loading:'Loading…',
+  },
+  BN: {
+    title:'শিক্ষার সময়সূচী', subtitle:'আপনার ক্লাস রুটিন',
+    noData:'এখনো কোনো রুটিন প্রকাশিত হয়নি',
+    noDataSub:'অ্যাডমিন এখনো সময়সূচী প্রকাশ করেননি।',
+    offline:'অফলাইন — ডেমো রুটিন দেখানো হচ্ছে',
+    loading:'লোড হচ্ছে…',
+  },
+};
+var _MOCK_ROUTINE = {
+  id:'mock', title:'SWE — Batch 41, Section A (Demo)',
+  department:'SWE', batch:'Batch 41', semester:'Spring 2026',
+  slots:[
+    { day:'Sat', time:'8:30-10:00',  course:'SE223',  course_name:'Algorithm Design',      room:'KT-701A', teacher:'Dr. DEH' },
+    { day:'Sat', time:'10:00-11:30', course:'CS101',  course_name:'OOP',                   room:'KT-601',  teacher:'Dr. JC'  },
+    { day:'Sun', time:'8:30-10:00',  course:'ENG101', course_name:'English',                room:'KT-501',  teacher:'Ms. RA'  },
+    { day:'Mon', time:'11:30-1:00',  course:'SE224',  course_name:'SE Practice (Lab)',      room:'LAB-903', teacher:'Dr. DEH' },
+    { day:'Wed', time:'2:30-4:00',   course:'GE235',  course_name:'Discrete Mathematics',  room:'KT-601',  teacher:'Dr. SM'  },
+  ],
+};
 
-  React.useEffect(() => {
-    setLoading(true);
-    setError('');
-    const token = localStorage.getItem('anchor_access_token');
-    const headers = token ? { Authorization: 'Bearer ' + token } : {};
-    fetch('http://localhost:8000/v1/routines?page=1', { headers })
-      .then(r => {
-        if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
-        return r.json();
-      })
-      .then(data => { setRoutines(data); setLoading(false); })
-      .catch(err => { setError(err.message || 'Could not load routines.'); setLoading(false); });
+function RoutinesScreen() {
+  var appCtx = useApp ? useApp() : {};
+  var lang = (appCtx.lang === 'BN') ? 'BN' : 'EN';
+  var L = _ROUTINE_L[lang];
+  var fontBN = lang === 'BN' ? { fontFamily: 'var(--font-bn, inherit)' } : {};
+
+  var [routines, setRoutines] = React.useState([]);
+  var [loading, setLoading] = React.useState(true);
+  var [offline, setOffline] = React.useState(false);
+
+  React.useEffect(function() {
+    setLoading(true); setOffline(false);
+    var fetch$ = (typeof apiFetch === 'function')
+      ? apiFetch('/v1/routines?page=1')
+      : (function() {
+          var token = localStorage.getItem('anchor_access_token');
+          var headers = token ? { Authorization: 'Bearer ' + token } : {};
+          return fetch('http://localhost:8000/v1/routines?page=1', { headers })
+            .then(function(r) {
+              if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Request failed'); });
+              return r.json();
+            });
+        })();
+
+    fetch$
+      .then(function(data) { setRoutines(Array.isArray(data) ? data : []); setLoading(false); })
+      .catch(function() { setRoutines([_MOCK_ROUTINE]); setOffline(true); setLoading(false); });
   }, []);
+
+  function groupByDay(slots) {
+    var m = {};
+    _ROUTINE_DAY_ORDER.forEach(function(d) { m[d] = []; });
+    (slots || []).forEach(function(s) { var d = s.day || ''; if (m[d]) m[d].push(s); });
+    return m;
+  }
 
   function fmtDate(iso) {
     if (!iso) return '';
-    try { return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
-    catch { return iso; }
+    try { return new Date(iso).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }); }
+    catch(e) { return iso; }
   }
 
   return (
-    <>
-      <Header back title="Academic Routine" subtitle="Your class schedule"/>
-      <div style={{ padding: '16px 20px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+    React.createElement(React.Fragment, null,
+      React.createElement(Header, { back: true, title: L.title, subtitle: L.subtitle }),
+      React.createElement('div', { style: { padding: '12px 16px 36px', display: 'flex', flexDirection: 'column', gap: 16 } },
 
-        {loading && (
-          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
-            Loading routines…
-          </div>
-        )}
+        /* Offline banner */
+        offline && React.createElement('div', {
+          style: { padding: '10px 14px', background: 'rgba(184,137,58,0.08)',
+            border: '1px solid rgba(184,137,58,0.28)', borderRadius: 10 }
+        }, React.createElement('span', {
+          style: { fontSize: 12, color: 'var(--gold)', fontFamily: 'var(--font-sans)', ...fontBN }
+        }, L.offline)),
 
-        {!loading && error && (
-          <div style={{ padding: '14px 16px', background: 'rgba(232,49,42,0.06)', border: '1px solid rgba(232,49,42,0.2)', borderRadius: 12 }}>
-            <div style={{ fontSize: 13, color: 'var(--red)', fontFamily: 'var(--font-sans)' }}>{error}</div>
-            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, fontFamily: 'var(--font-sans)' }}>
-              Check that the backend server is running on port 8000.
-            </div>
-          </div>
-        )}
+        /* Loading */
+        loading && React.createElement('div', {
+          style: { textAlign: 'center', padding: '48px 0', color: 'var(--muted)', fontSize: 13,
+            fontFamily: 'var(--font-sans)', ...fontBN }
+        }, L.loading),
 
-        {!loading && !error && routines.length === 0 && (
-          <div style={{ padding: '48px 16px', textAlign: 'center' }}>
-            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, color: 'var(--navy)', fontWeight: 500 }}>
-              No routines published yet
-            </div>
-            <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>
-              Your admin hasn't published a class schedule yet. Check back later.
-            </div>
-          </div>
-        )}
+        /* Empty */
+        !loading && !offline && routines.length === 0 && React.createElement('div', {
+          style: { padding: '56px 16px', textAlign: 'center' }
+        },
+          React.createElement('div', {
+            style: { fontFamily: 'var(--font-serif)', fontSize: 18, color: 'var(--navy)', fontWeight: 500, ...fontBN }
+          }, L.noData),
+          React.createElement('div', {
+            style: { marginTop: 6, fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', ...fontBN }
+          }, L.noDataSub)
+        ),
 
-        {!loading && !error && routines.map(r => (
-          <div key={r.id} style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, overflow: 'hidden' }}>
-            <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid var(--mist)' }}>
-              <div style={{ fontFamily: 'var(--font-serif)', fontSize: 17, fontWeight: 500, color: 'var(--navy)', lineHeight: 1.2 }}>
-                {r.title}
-              </div>
-              <div style={{ display: 'flex', gap: 12, marginTop: 5, fontSize: 11.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', flexWrap: 'wrap' }}>
-                {r.department && <span>Dept: <strong style={{ color: 'var(--ink-2)' }}>{r.department}</strong></span>}
-                {r.batch && <span>Batch: <strong style={{ color: 'var(--ink-2)' }}>{r.batch}</strong></span>}
-                {r.semester && <span>Semester: <strong style={{ color: 'var(--ink-2)' }}>{r.semester}</strong></span>}
-                {r.published_at && (
-                  <span className="mono" style={{ fontSize: 10.5 }}>Published {fmtDate(r.published_at)}</span>
-                )}
-              </div>
-            </div>
+        /* Routine cards */
+        !loading && routines.map(function(r) {
+          var byDay = groupByDay(r.slots);
+          return React.createElement('div', { key: r.id },
 
-            {Array.isArray(r.slots) && r.slots.length > 0 ? (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, fontFamily: 'var(--font-sans)' }}>
-                  <thead>
-                    <tr style={{ background: 'rgba(74,107,92,0.07)' }}>
-                      {['Day', 'Time', 'Course', 'Room', 'Teacher'].map(h => (
-                        <th key={h} style={{
-                          padding: '7px 12px', textAlign: 'left', fontWeight: 600,
-                          color: 'var(--graphite)', fontSize: 10.5, letterSpacing: '0.05em',
-                          textTransform: 'uppercase', borderBottom: '1px solid var(--mist)', whiteSpace: 'nowrap',
-                        }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {r.slots.map((slot, i) => (
-                      <tr key={i} style={{ borderBottom: i < r.slots.length - 1 ? '1px solid var(--mist)' : 'none' }}>
-                        <td style={{ padding: '8px 12px', color: 'var(--ink-2)', whiteSpace: 'nowrap' }}>{slot.day || '—'}</td>
-                        <td style={{ padding: '8px 12px', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'nowrap' }}>{slot.time || slot.start_time || '—'}</td>
-                        <td style={{ padding: '8px 12px', color: 'var(--navy)', fontWeight: 500 }}>{slot.course || slot.course_code || '—'}</td>
-                        <td style={{ padding: '8px 12px', color: 'var(--ink-2)' }}>{slot.room || '—'}</td>
-                        <td style={{ padding: '8px 12px', color: 'var(--ink-2)' }}>{slot.teacher || slot.instructor || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div style={{ padding: '14px 16px', fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontStyle: 'italic' }}>
-                No class slots defined for this routine.
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </>
+            /* Meta header */
+            React.createElement('div', { style: { marginBottom: 10 } },
+              React.createElement('div', {
+                style: { fontFamily: 'var(--font-serif)', fontSize: 17, fontWeight: 500, color: 'var(--navy)', ...fontBN }
+              }, r.title),
+              React.createElement('div', {
+                style: { display: 'flex', gap: 10, marginTop: 4, fontSize: 11.5, color: 'var(--muted)',
+                  fontFamily: 'var(--font-sans)', flexWrap: 'wrap' }
+              },
+                r.batch    && React.createElement('span', null, r.batch),
+                r.semester && React.createElement('span', null, '· ' + r.semester),
+                r.published_at && React.createElement('span', {
+                  style: { fontFamily: 'var(--font-mono)', fontSize: 10.5 }
+                }, '· ' + fmtDate(r.published_at))
+              )
+            ),
+
+            /* Day sections */
+            _ROUTINE_DAY_ORDER.map(function(day) {
+              var dslots = byDay[day];
+              if (!dslots || dslots.length === 0) return null;
+              return React.createElement('div', { key: day, style: { marginBottom: 8 } },
+
+                /* Day label with sage stripe */
+                React.createElement('div', {
+                  style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }
+                },
+                  React.createElement('div', {
+                    style: { width: 3, height: 18, borderRadius: 2, background: 'var(--sage)', flexShrink: 0 }
+                  }),
+                  React.createElement('span', {
+                    style: { fontFamily: 'var(--font-serif)', fontSize: 14, fontWeight: 500,
+                      color: 'var(--navy)', ...fontBN }
+                  }, lang === 'BN' ? (_BN_DAYS[day] || day) : day)
+                ),
+
+                /* Slot rows card */
+                React.createElement('div', {
+                  style: { background: 'rgba(255,255,255,0.72)', border: '1px solid var(--mist)',
+                    borderRadius: 12, overflow: 'hidden' }
+                },
+                  dslots.map(function(slot, i) {
+                    return React.createElement('div', {
+                      key: i,
+                      style: {
+                        display: 'grid',
+                        gridTemplateColumns: '80px 1fr auto',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: '10px 14px',
+                        borderBottom: i < dslots.length - 1 ? '1px solid var(--mist)' : 'none',
+                      }
+                    },
+                      /* Time */
+                      React.createElement('div', {
+                        style: { fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--muted)', whiteSpace: 'nowrap' }
+                      }, slot.time || slot.start_time || '—'),
+
+                      /* Course code + name */
+                      React.createElement('div', null,
+                        React.createElement('div', {
+                          style: { fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 600, color: 'var(--navy)' }
+                        }, slot.course || slot.course_code || '—'),
+                        slot.course_name && React.createElement('div', {
+                          style: { fontSize: 11.5, color: 'var(--ink-2)', fontFamily: 'var(--font-sans)', ...fontBN }
+                        }, slot.course_name)
+                      ),
+
+                      /* Room + teacher */
+                      React.createElement('div', { style: { textAlign: 'right', minWidth: 0 } },
+                        React.createElement('div', {
+                          style: { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--graphite)' }
+                        }, slot.room || '—'),
+                        React.createElement('div', {
+                          style: { fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }
+                        }, slot.teacher || slot.instructor || '—')
+                      )
+                    );
+                  })
+                )
+              );
+            })
+          );
+        })
+      )
+    )
   );
 }
 
