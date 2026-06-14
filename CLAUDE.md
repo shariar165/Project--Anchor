@@ -18,6 +18,17 @@ Both frontend layers share two operating modes:
 
 ## Frontend Prototype
 
+### First-run setup
+
+Firebase config is **not** hardcoded — copy the example files and fill in your project values:
+
+```bash
+cp env.example.js env.js                        # Firebase web app config + VAPID key
+cp firebase-sw-env.example.js firebase-sw-env.js  # must match env.js values
+```
+
+Values come from Firebase Console → Project Settings → Your Apps (web app) and → Cloud Messaging → Web Push certificates (VAPID key). Both files are `.gitignore`d.
+
 ### Running
 
 ```bash
@@ -81,7 +92,7 @@ All helpers target `http://localhost:8000`. For production, update the `AUTH_API
 
 FCM web push requires three things to work end-to-end:
 
-1. **`auth.jsx`** — `FIREBASE_CONFIG` (already set to real project values) and `FIREBASE_VAPID_KEY` (fill in from Firebase Console → Project Settings → Cloud Messaging → Web Push certificates).  `registerFCMToken()` is called fire-and-forget after every login completion (4 call sites). It no-ops if `FIREBASE_VAPID_KEY` is still the placeholder.
+1. **`auth.jsx`** — `FIREBASE_CONFIG` and `FIREBASE_VAPID_KEY` are read from `window.ENV` (populated by `env.js` — see First-run setup above). `registerFCMToken()` is called fire-and-forget after every login completion (4 call sites). It no-ops if `FIREBASE_VAPID_KEY` is the placeholder string.
 
 2. **`firebase-messaging-sw.js`** — service worker at repo root; must be served at `/firebase-messaging-sw.js`. Already has real Firebase project config. Handles `onBackgroundMessage` to show push notifications.
 
@@ -261,6 +272,9 @@ cd backend
 | `/v1/routines` | `routers/routines.py` | optional | Academic class schedules (draft/publish) |
 | `/v1/departments/...` | `routers/dept_ratings.py` | optional | Dept ratings + per-dept summary |
 | `/v1/admin/users/...` | `routers/admin_users.py` | admin/super_admin | User management |
+| `/v1/admin/campus-zones/...` | `routers/campus_zones.py` | admin | Campus polygon zones (zone_type=campus only) |
+| `/v1/super-admin/zones/...` | `routers/super_zones.py` | super_admin | Red/purple/black zone CRUD (polygon + circle) |
+| `/v1/admin/timetable/...` | `routers/admin_timetable.py` | admin | CP-SAT timetable CRUD, solver jobs, NL edits |
 | `/health` | `main.py` | none | DB + Redis liveness probe |
 
 ### AI Pipeline (`backend/app/ai/`)
@@ -281,6 +295,22 @@ Stage 7  (inline)           — anonymised audit log
 
 LLM: **Ollama** (local) with `qwen3:8b` / `qwen3:1.7b` (fast). Falls back to a deterministic stub when Ollama is offline. Vector store: **ChromaDB** at `backend/data/chromadb`. Namespaces: `national` and `diu`.
 
-### Security issues tracked (open — not yet fixed)
+To ingest new legal documents into ChromaDB: use `backend/app/ai/ingestion.py` → `ingest_document()`. Chunks get contextual prefixes from the LLM before embedding (Anthropic-style contextual retrieval). Warm-up at startup auto-loads `sample_corpus.py` into the `national` namespace if empty; set `DISABLE_AI_WARMUP=true` in `.env` to skip this on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer causes OOM otherwise).
 
-See `backend/CLAUDE.md` § "Security — Known Open Issues" for SEC-12 through SEC-16.
+### Timetable generator (`backend/app/services/timetable_solver.py`)
+
+CP-SAT constraint solver (Google OR-Tools) that generates clash-free academic timetables. Exposed via `/v1/admin/timetable/...`:
+
+- Data setup: Terms → Batches/Sections → Rooms → Courses → Faculty profiles → Offerings → Eligibility → Schedule config → Constraints
+- `POST /v1/admin/timetable/solve` — enqueues a `TimetableSolveJob`; solver runs as a background task, writing `TimetableEntry` rows with `result_version`
+- `POST /v1/admin/timetable/entries/{id}/edit` — manual drag-drop entry correction; validates no conflicts
+- `POST /v1/admin/timetable/nl-edit` — natural language edit (e.g. "move Dr. Ahmed's Thursday slot to Tuesday") via `nl_to_entry_edit()`
+- `POST /v1/admin/timetable/publish` — sets `published=true` on all entries for a term+version; students then see their schedule via `/v1/routines`
+- `GET /v1/admin/timetable/validate` — returns all hard-constraint violations for a result version
+
+The solver honors `TimetableConstraint` rows with `enforcement=hard|soft` and `weight`. `solver_status` on `TimetableSolveJob` reflects OR-Tools outcome: `OPTIMAL`, `FEASIBLE`, or `INFEASIBLE` (with `infeasible_core` populated for debugging).
+
+### Known production blockers
+
+- **`todo.md`** — Registration ghost-account bug: `POST /auth/register` creates a DB row immediately; if the OTP expires the user is permanently stuck. Fix is to store payload in Redis and only create the `User` row on successful OTP verification. A temporary workaround (re-registration re-sends OTP) is in place.
+- **Security** — See `backend/CLAUDE.md` § "Security — Known Open Issues" for SEC-12 through SEC-16 (TOTP secret stored plaintext, refresh token rotation race, step-up token binding, etc.).
