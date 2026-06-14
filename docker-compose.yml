@@ -1,0 +1,87 @@
+version: "3.9"
+name: anchor
+
+services:
+  # ── Infrastructure ─────────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: anchor
+      POSTGRES_PASSWORD: anchor_dev_password
+      POSTGRES_DB: anchor_db
+    volumes:
+      - anchor_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anchor -d anchor_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - anchor_redis:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── RAG service (internal — not exposed publicly) ───────────────────────────
+  rag:
+    build:
+      context: ./services/rag
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    volumes:
+      - ./services/rag:/code
+      - anchor_chromadb:/code/data/chromadb
+    ports:
+      - "8001:8001"
+    environment:
+      # Ollama runs on the host machine; use host.docker.internal to reach it.
+      # On Linux: add extra_hosts: ["host.docker.internal:host-gateway"]
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      CHROMADB_PATH: data/chromadb
+    env_file:
+      - path: ./services/rag/.env
+        required: false
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── Core API (public-facing) ────────────────────────────────────────────────
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./services/api:/code
+      - ./services/api/uploads:/code/uploads
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://anchor:anchor_dev_password@db/anchor_db
+      REDIS_URL: redis://redis:6379/0
+      RAG_SERVICE_URL: http://rag:8001
+    env_file:
+      - path: ./services/api/.env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  anchor_pgdata:
+  anchor_redis:
+  anchor_chromadb:
