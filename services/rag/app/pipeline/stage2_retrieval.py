@@ -1,4 +1,4 @@
-"""
+﻿"""
 Stage 2 — Contextual Hybrid Retrieval + Cross-Encoder Reranking.
 
 Pipeline per query:
@@ -8,8 +8,8 @@ Pipeline per query:
   → cross-encoder rerank (CENTRAL — runs on every path)
 """
 import logging
-from app.ai.models import RetrievedChunk, QueryAnalysis
-from app.ai import embeddings, vector_store, bm25_index
+from app.pipeline.models import RetrievedChunk, QueryAnalysis
+from app.pipeline import embeddings, vector_store, bm25_index
 
 logger = logging.getLogger(__name__)
 

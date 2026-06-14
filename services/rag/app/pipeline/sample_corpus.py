@@ -1,4 +1,4 @@
-"""
+﻿"""
 Built-in sample legal corpus for Anchor AI demo / development.
 
 Contains key Bangladesh statutes, procedural workflows, and DIU campus policies.
@@ -591,7 +591,7 @@ async def load_sample_corpus(generate_prefixes: bool = False) -> int:
     Load the built-in sample corpus into ChromaDB and BM25 indices.
     generate_prefixes=False for fast load (skips LLM prefix generation).
     """
-    from app.ai.ingestion import ingest_document
+    from app.pipeline.ingestion import ingest_document
     import logging
     logger = logging.getLogger(__name__)
 

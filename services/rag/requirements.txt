@@ -1,0 +1,11 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+httpx>=0.28
+pydantic[email]>=2.11
+
+# AI Engine — RAG pipeline
+sentence-transformers>=3.0
+chromadb>=0.6
+rank-bm25>=0.2
+ddgs>=0.1
+fpdf2>=2.8.1

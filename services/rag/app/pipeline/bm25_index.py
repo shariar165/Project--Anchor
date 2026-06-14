@@ -1,11 +1,11 @@
-"""
+﻿"""
 Contextual BM25 sparse retrieval with Bangla-English legal synonym expansion.
 Runs in-memory per namespace. Rebuilt on each ingestion batch.
 """
 import re
 import logging
 import threading
-from app.ai.models import ChunkMetadata, RetrievedChunk, DocumentType
+from app.pipeline.models import ChunkMetadata, RetrievedChunk, DocumentType
 
 logger = logging.getLogger(__name__)
 

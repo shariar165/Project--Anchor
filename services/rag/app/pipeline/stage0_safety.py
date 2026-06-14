@@ -1,10 +1,10 @@
-"""
+﻿"""
 Stage 0 — Safety Pre-Flight.
 Runs before any routing. Fast keyword pre-filter + optional small-LLM pass.
 Some queries must never reach the RAG pipeline.
 """
 import re
-from app.ai.models import SafetyVerdict
+from app.pipeline.models import SafetyVerdict
 
 # Pattern lists (Bangla + English). Each list is low-latency regex.
 _EMERGENCY = [

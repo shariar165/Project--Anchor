@@ -1,4 +1,4 @@
-"""
+﻿"""
 Stage 4 — Generation with Legal Reasoning Scaffold.
 
 Forces the LLM to reason step by step:
@@ -10,8 +10,8 @@ Every claim must cite a chunk ID in [brackets].
 import json
 import re
 import logging
-from app.ai.models import RetrievedChunk, QueryAnalysis
-from app.ai import llm_client
+from app.pipeline.models import RetrievedChunk, QueryAnalysis
+from app.pipeline import llm_client
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Stage 3 — Corrective RAG (RETAINED & CENTRAL).
 
 Confidence gate with multi-signal scoring → web-search fallback when needed
@@ -10,8 +10,8 @@ the merged web+doc pool.
 """
 import math
 import logging
-from app.ai.models import RetrievedChunk, QueryAnalysis
-from app.ai import stage2_retrieval
+from app.pipeline.models import RetrievedChunk, QueryAnalysis
+from app.pipeline import stage2_retrieval
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ async def _web_search(query: str, max_results: int = 5) -> list[dict]:
 
 
 def _web_to_chunks(web_results: list[dict]) -> list[RetrievedChunk]:
-    from app.ai.models import ChunkMetadata, DocumentType
+    from app.pipeline.models import ChunkMetadata, DocumentType
     chunks = []
     for i, r in enumerate(web_results):
         text = f"{r.get('title', '')}\n{r.get('body', '')}".strip()[:1000]

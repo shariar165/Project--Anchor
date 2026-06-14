@@ -1,4 +1,4 @@
-"""
+﻿"""
 Stage 1 — Query Understanding.
 Two orthogonal decisions made in parallel:
   1. Intent classifier  → what kind of query is this?
@@ -9,8 +9,8 @@ Plus calibrated clarification (ask once, only when answer-changing).
 import json
 import re
 import logging
-from app.ai.models import QueryAnalysis, Intent, Complexity
-from app.ai import llm_client
+from app.pipeline.models import QueryAnalysis, Intent, Complexity
+from app.pipeline import llm_client
 
 logger = logging.getLogger(__name__)
 

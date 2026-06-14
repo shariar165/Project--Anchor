@@ -1,4 +1,4 @@
-"""
+﻿"""
 ChromaDB vector store wrapper.
 Per-tenant namespaces: 'national' (shared) and 'diu' (campus-scoped).
 Lazy-initialised — safe to import before ChromaDB is installed.
@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 from typing import Optional
-from app.ai.models import ChunkMetadata, RetrievedChunk, DocumentType
+from app.pipeline.models import ChunkMetadata, RetrievedChunk, DocumentType
 
 logger = logging.getLogger(__name__)
 

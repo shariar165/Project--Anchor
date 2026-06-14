@@ -38,15 +38,6 @@ async def lifespan(app: FastAPI):
     # without a persistent volume — loading 400 MB sentence-transformer models on
     # an ephemeral container causes an OOM crash loop).
     get_redis()
-    if not os.environ.get("DISABLE_AI_WARMUP"):
-        try:
-            from app.ai.sample_corpus import load_sample_corpus
-            from app.ai import vector_store, bm25_index
-            if vector_store.count("national") == 0 and bm25_index.index_count("national") == 0:
-                import asyncio
-                asyncio.create_task(load_sample_corpus(generate_prefixes=False))
-        except Exception:
-            pass
     try:
         from app.database import AsyncSessionLocal
         from app.services.filing_svc import seed_templates

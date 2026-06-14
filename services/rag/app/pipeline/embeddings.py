@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lazy-loaded sentence-transformers models.
 - Embedder: paraphrase-multilingual-mpnet-base-v2  (dense retrieval)
 - Reranker: cross-encoder/ms-marco-MiniLM-L-6-v2  (CENTRAL — runs on every path)

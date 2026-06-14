@@ -1,4 +1,4 @@
-"""
+﻿"""
 Stage 6 — Output Adaptation.
 
 - Language: respond in user's input language
@@ -9,7 +9,7 @@ Stage 6 — Output Adaptation.
 
 Also contains: safety response templates, exit ramp responses.
 """
-from app.ai.models import RetrievedChunk
+from app.pipeline.models import RetrievedChunk
 
 DISCLAIMER_EN = (
     "\n\n---\n*AI-generated legal guidance — not a substitute for advice from a "

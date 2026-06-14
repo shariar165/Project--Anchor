@@ -1,4 +1,4 @@
-"""
+﻿"""
 Anchor AI — 7-Stage RAG Pipeline Orchestrator.
 
 STAGE 0 → Safety Pre-Flight
@@ -14,8 +14,8 @@ STAGE 7 → Audit Log (anonymised)
 import asyncio
 import logging
 import uuid
-from app.ai.models import ChatRequest, ChatResponse, SafetyVerdict
-from app.ai import (
+from app.pipeline.models import ChatRequest, ChatResponse, SafetyVerdict
+from app.pipeline import (
     stage0_safety,
     stage1_query,
     stage2_retrieval,
@@ -87,7 +87,7 @@ async def run(request: ChatRequest) -> ChatResponse:
 
     # Simple path: no retrieval needed
     if not analysis.needs_retrieval:
-        from app.ai import llm_client
+        from app.pipeline import llm_client
         answer_raw = await llm_client.generate(
             f"Answer concisely in {output_lang}: {query}",
             model=llm_client.MAIN_MODEL,

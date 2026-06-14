@@ -1,4 +1,4 @@
-"""Pydantic data models for the Anchor AI RAG pipeline stages."""
+﻿"""Pydantic data models for the Anchor AI RAG pipeline stages."""
 from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import Optional, Any

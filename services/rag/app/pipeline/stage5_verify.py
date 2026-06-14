@@ -1,4 +1,4 @@
-"""
+﻿"""
 Stage 5 — Claim-Level Verification.
 
 Upgrade from v1 "ask the same LLM if it was correct" (weak).
@@ -15,8 +15,8 @@ Decision rules:
 import json
 import re
 import logging
-from app.ai.models import RetrievedChunk, VerificationResult
-from app.ai import llm_client
+from app.pipeline.models import RetrievedChunk, VerificationResult
+from app.pipeline import llm_client
 
 logger = logging.getLogger(__name__)
 

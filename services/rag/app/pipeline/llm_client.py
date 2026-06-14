@@ -1,4 +1,4 @@
-"""
+﻿"""
 Async LLM client for Anchor AI.
 Primary: Ollama inference (URL from OLLAMA_BASE_URL env var, defaults to localhost:11434).
 Fallback: Deterministic stub when Ollama is unreachable (CI / dev without GPU).

@@ -1,82 +1,92 @@
 """
 AI Legal Companion router — /ai/chat and supporting endpoints.
+Proxies to the internal RAG service (services/rag) over HTTP.
+JWT auth is enforced here at the API layer; RAG never sees user tokens.
 """
 import logging
-from fastapi import APIRouter, HTTPException, Request
+import os
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
 from app.limiter import limiter
-from app.ai.models import ChatRequest, ChatResponse
-from app.ai import pipeline
+from app.deps import get_current_user
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
+RAG_URL = os.environ.get("RAG_SERVICE_URL", "http://localhost:8001")
+RAG_INTERNAL_SECRET = os.environ.get("RAG_INTERNAL_SECRET", "")
 
-@router.post("/chat", response_model=ChatResponse)
+
+def _rag_headers() -> dict[str, str]:
+    h: dict[str, str] = {"Content-Type": "application/json"}
+    if RAG_INTERNAL_SECRET:
+        h["X-Internal-Secret"] = RAG_INTERNAL_SECRET
+    return h
+
+
+@router.post("/chat")
 @limiter.limit("30/minute")
 async def chat(
     request: Request,
-    body: ChatRequest,
-) -> ChatResponse:
+    body: dict[str, Any],
+    _user=Depends(get_current_user),
+) -> dict[str, Any]:
     """
-    Anchor AI Legal Companion — full 7-stage RAG pipeline.
+    Anchor AI Legal Companion — proxies to the RAG service.
 
-    Stages:
+    Stages (run inside services/rag):
       0 Safety pre-flight (emergency / crisis / injection detection)
-      1 Query understanding (intent + characterizer + entity extraction)
+      1 Query understanding (intent + entity extraction)
       2 Contextual hybrid retrieval (dense + BM25 + RRF merge)
-      3 Corrective RAG (confidence gate + web search + rerank)
+      3 Corrective RAG (confidence gate + web search fallback)
       4 Generation (legal reasoning scaffold with citation grounding)
       5 Claim-level verification
       6 Output adaptation (language + register + citations + disclaimer)
     """
     try:
-        return await pipeline.run(body)
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await client.post(
+                f"{RAG_URL}/chat",
+                json=body,
+                headers=_rag_headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="AI service temporarily unavailable.")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except Exception as e:
-        logger.error("Pipeline error: %s", e, exc_info=True)
+        logger.error("RAG proxy error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="AI pipeline error — please try again.")
 
 
 @router.post("/ingest", include_in_schema=False)
-async def ingest_sample(request: Request):
-    """
-    Load the built-in sample legal corpus (dev/demo setup).
-    Not exposed in production schema.
-    """
+async def ingest_sample(request: Request) -> dict[str, Any]:
+    """Proxy to RAG service ingest endpoint (dev/demo setup)."""
     try:
-        from app.ai.sample_corpus import load_sample_corpus
-        count = await load_sample_corpus(generate_prefixes=False)
-        return {"status": "ok", "chunks_loaded": count}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(f"{RAG_URL}/ingest", headers=_rag_headers())
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="AI service temporarily unavailable.")
     except Exception as e:
-        logger.error("Ingest error: %s", e, exc_info=True)
+        logger.error("Ingest proxy error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/health")
-async def ai_health():
-    """Check AI subsystem component availability."""
-    from app.ai import embeddings, vector_store, bm25_index, llm_client
-
-    embedder_ok = embeddings._get_embedder() is not None
-    reranker_ok = embeddings._get_reranker() is not None
-    chroma_ok = vector_store._get_client() is not None
-    ollama_ok = await llm_client._check_availability()
-
-    national_count = vector_store.count("national")
-    diu_count = vector_store.count("diu")
-    bm25_national = bm25_index.index_count("national")
-    bm25_diu = bm25_index.index_count("diu")
-
-    return {
-        "pipeline": "ok",
-        "embedder": "ok" if embedder_ok else "unavailable (stub mode)",
-        "reranker": "ok" if reranker_ok else "unavailable (score passthrough)",
-        "chromadb": "ok" if chroma_ok else "unavailable",
-        "ollama": "ok" if ollama_ok else "unavailable (stub mode)",
-        "corpus": {
-            "national_chunks": national_count,
-            "diu_chunks": diu_count,
-            "bm25_national": bm25_national,
-            "bm25_diu": bm25_diu,
-        },
-    }
+async def ai_health() -> dict[str, Any]:
+    """Proxy health check to RAG service. Returns degraded status if RAG is unreachable."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{RAG_URL}/health", headers=_rag_headers())
+            return resp.json()
+    except httpx.ConnectError:
+        return {"pipeline": "unavailable", "error": "RAG service unreachable"}
+    except Exception as e:
+        return {"pipeline": "unavailable", "error": str(e)}
