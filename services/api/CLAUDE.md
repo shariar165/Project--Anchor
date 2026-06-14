@@ -144,7 +144,7 @@ Used in: `routers/notices.py`, `routers/routines.py`.
 **Seeding a super admin** (run once after `alembic upgrade head`):
 
 ```powershell
-cd backend
+cd services/api
 .\.venv\Scripts\python.exe create_superadmin.py <password>
 ```
 
@@ -211,9 +211,9 @@ Use forward slashes in the path — backslashes are treated as escape sequences 
 
 **Known `.env` issue** — the pre-existing `CLAUDE MESSAGE=` line (space in key name) causes a python-dotenv warning on every startup. It is cosmetic and does not break config loading.
 
-**AI warmup** — at startup, `main.py` auto-loads `sample_corpus.py` into the `national` ChromaDB namespace if empty, and seeds filing templates. Set `DISABLE_AI_WARMUP=true` to skip both on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer models cause an OOM crash loop on ephemeral containers).
+**AI warmup** — the RAG service (`services/rag`) auto-loads `sample_corpus.py` into the `national` ChromaDB namespace at startup if empty. The Core API no longer runs warmup directly. Set `DISABLE_AI_WARMUP=true` in `services/rag/.env` to skip on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer models cause an OOM crash loop on ephemeral containers).
 
-**Known production blocker** — see `todo.md`: `POST /auth/register` immediately creates a `User` row in PostgreSQL. If the OTP expires before verification, the user is permanently stuck (can't verify, login, or re-register). Fix: store the registration payload in Redis with OTP TTL; create the DB row only on successful OTP verification. A temporary re-registration workaround is live but not a permanent fix.
+**Known production blocker** — see `docs/specs/todo-registration-ghostaccounts.md` at repo root: `POST /auth/register` immediately creates a `User` row in PostgreSQL. If the OTP expires before verification, the user is permanently stuck (can't verify, login, or re-register). Fix: store the registration payload in Redis with OTP TTL; create the DB row only on successful OTP verification. A temporary re-registration workaround is live but not a permanent fix.
 
 ## JWT Notes
 Uses **PyJWT** (not python-jose — python-jose does not support EdDSA). UUID values in payloads must be converted to `str()` before encoding — PyJWT does not serialize UUID objects.

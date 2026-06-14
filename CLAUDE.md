@@ -4,25 +4,56 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Anchor AI** is a civic trust platform with three layers:
+**Anchor AI** is a civic trust platform organized as a monorepo with four layers:
 
-1. **Frontend prototype** — React 18 SPA (CDN + Babel Standalone, no build step) in the repo root
-2. **Backend API** — FastAPI + PostgreSQL + Redis in `backend/`; see `backend/CLAUDE.md` for full backend guidance
-3. **Admin panel** — no-build React prototype in `admin/`; has its own `admin/CLAUDE.md`
+1. **Student app** — React 18 SPA (CDN + Babel Standalone, no build step) in `apps/student/`
+2. **Admin panel** — no-build React prototype in `apps/admin/`; has its own `apps/admin/CLAUDE.md`
+3. **Core API** — FastAPI + PostgreSQL + Redis in `services/api/`; see `services/api/CLAUDE.md` for full backend guidance
+4. **RAG service** — standalone FastAPI microservice in `services/rag/`; hosts the 7-stage legal AI pipeline
 
 Both frontend layers share two operating modes:
 - **Campus Mode** (DIU — Daffodil International University): complaints, applications, academic routine, campus notices
 - **National Mode** (Bangladesh): FIR/GD drafting, lawyer directory, red zone safety maps, legal rights
 
+### Repo layout
+
+```
+apps/
+  student/          # No-build React SPA — CDN + Babel Standalone
+    src/            # All JSX + CSS source (ios-frame.jsx … app.jsx, styles.css)
+    index.html      # Entry point — loads scripts from src/ in dependency order
+    firebase-messaging-sw.js  # Service worker (must stay at web root, not in src/)
+    env.example.js  # Copy to env.js and fill in Firebase values (gitignored)
+  admin/            # No-build React admin panel
+    src/            # Modular JSX files
+    index.html      # Self-contained — all JSX inlined as <script type="text/babel">
+
+services/
+  api/              # FastAPI Core API — auth, alerts, feed, timetable, etc.
+  rag/              # FastAPI RAG microservice — 7-stage AI pipeline
+
+docs/
+  design-exports/   # Earlier design exploration files (design_*.jsx / design_*.css)
+  specs/            # Spec documents and known-issue write-ups
+
+scripts/
+  dev.sh            # One-command local startup (db+redis, rag:8001, api:8000)
+
+docker-compose.yml  # Full-stack 4-container orchestration (db, redis, rag, api)
+.env.example        # Documented env vars for all services
+ARCHITECTURE.md     # Condensed architecture overview
+```
+
 ---
 
-## Frontend Prototype
+## Student App (`apps/student/`)
 
 ### First-run setup
 
 Firebase config is **not** hardcoded — copy the example files and fill in your project values:
 
 ```bash
+cd apps/student
 cp env.example.js env.js                        # Firebase web app config + VAPID key
 cp firebase-sw-env.example.js firebase-sw-env.js  # must match env.js values
 ```
@@ -32,6 +63,7 @@ Values come from Firebase Console → Project Settings → Your Apps (web app) a
 ### Running
 
 ```bash
+cd apps/student
 python -m http.server 8080        # Python — works for SW registration (needs HTTP, not file://)
 npx http-server . -p 8080         # Node alternative
 ```
@@ -40,27 +72,27 @@ The service worker (`firebase-messaging-sw.js`) requires the app to be served ov
 
 ### File Load Order (critical)
 
-`index.html` imports scripts top-to-bottom — order matters because each file uses globals defined by earlier files:
+`apps/student/index.html` imports scripts top-to-bottom from `src/` — order matters because each file uses globals defined by earlier files:
 
-1. `ios-frame.jsx` — IOSDevice frame component
-2. `icons.jsx` — SVG icon components
-3. `splash.jsx` — Splash1, Splash2 intro screens
-4. `screens.jsx` — HomeScreen, ChatScreen, AlertScreen
-5. `screens-2.jsx` — CasesScreen, MapScreen, FeedScreen, LawyersScreen, RoutinesScreen, DeptRatingScreen, NoticesScreen, ProfileScreen
-6. `chat-pro.jsx` — Advanced chat interface
-7. `auth.jsx` — Login, Register, MFA, EmailVerify, OTP, TrackingLookup; holds `registerFCMToken()` and `FIREBASE_CONFIG`
-8. `applications.jsx` — Application submission screens; exports `apiFetch` and `getToken` as globals
-9. `filings.jsx` — Complaint/filing screens; uses `filingApiFetch` global
-10. `verification-feed.jsx` — Verification feed screens; uses `apiFetch` from `applications.jsx`
-11. `app.jsx` — App shell, AppCtx, Header, BottomNav, RouteView, GeofenceConsentModal (mounts last)
+1. `src/ios-frame.jsx` — IOSDevice frame component
+2. `src/icons.jsx` — SVG icon components
+3. `src/splash.jsx` — Splash1, Splash2 intro screens
+4. `src/screens.jsx` — HomeScreen, ChatScreen, AlertScreen
+5. `src/screens-2.jsx` — CasesScreen, MapScreen, FeedScreen, LawyersScreen, RoutinesScreen, DeptRatingScreen, NoticesScreen, ProfileScreen
+6. `src/chat-pro.jsx` — Advanced chat interface
+7. `src/auth.jsx` — Login, Register, MFA, EmailVerify, OTP, TrackingLookup; holds `registerFCMToken()` and `FIREBASE_CONFIG`
+8. `src/applications.jsx` — Application submission screens; exports `apiFetch` and `getToken` as globals
+9. `src/filings.jsx` — Complaint/filing screens; uses `filingApiFetch` global
+10. `src/verification-feed.jsx` — Verification feed screens; uses `apiFetch` from `applications.jsx`
+11. `src/app.jsx` — App shell, AppCtx, Header, BottomNav, RouteView, GeofenceConsentModal (mounts last)
 
-Firebase SDK CDN scripts load between Leaflet and the component scripts — they must be before `auth.jsx`.
+Firebase SDK CDN scripts load between Leaflet and the component scripts — they must be before `src/auth.jsx`.
 
-`design_*.jsx` / `design_*.css` files are earlier design exploration copies — not loaded by `index.html`.
+Design exploration copies live in `docs/design-exports/` and are not loaded by `index.html`.
 
 ### Architecture
 
-**State & Routing** — `AppCtx` (React context in `app.jsx`) is the single source of truth:
+**State & Routing** — `AppCtx` (React context in `src/app.jsx`) is the single source of truth:
 - `mode`: `'campus' | 'country'` — drives accent colors (sage ↔ ember) and tile content
 - `route`: `{ name, params }` — current screen
 - `lang`: `'EN' | 'BN'`
@@ -79,24 +111,24 @@ Navigation: `go(name, params)` pushes; `back()` pops. No router library.
 - `anchor_device_id` — stable device identifier for FCM token registration
 
 **API helpers (globals)** — several modules export helper functions as window globals:
-- `apiFetch(path, opts)` from `applications.jsx` — adds `Authorization` header
-- `filingApiFetch(path, opts)` from `filings.jsx`
-- `vfFetch(path, opts)` from `verification-feed.jsx`
-- `alertApiPost(path, body, token)` from `screens.jsx` — used by AlertScreen
+- `apiFetch(path, opts)` from `src/applications.jsx` — adds `Authorization` header
+- `filingApiFetch(path, opts)` from `src/filings.jsx`
+- `vfFetch(path, opts)` from `src/verification-feed.jsx`
+- `alertApiPost(path, body, token)` from `src/screens.jsx` — used by AlertScreen
 
 All helpers target `http://localhost:8000`. For production, update the `AUTH_API` / base URL constants in each file.
 
-**Data** — Mock data in `screens-2.jsx` (`ACTIVE_CASES`, `MOCK_LAWYERS`, `ZONES`) is used as fallback when the backend is offline.
+**Data** — Mock data in `src/screens-2.jsx` (`ACTIVE_CASES`, `MOCK_LAWYERS`, `ZONES`) is used as fallback when the backend is offline.
 
 ### Firebase Push Notifications
 
 FCM web push requires three things to work end-to-end:
 
-1. **`auth.jsx`** — `FIREBASE_CONFIG` and `FIREBASE_VAPID_KEY` are read from `window.ENV` (populated by `env.js` — see First-run setup above). `registerFCMToken()` is called fire-and-forget after every login completion (4 call sites). It no-ops if `FIREBASE_VAPID_KEY` is the placeholder string.
+1. **`src/auth.jsx`** — `FIREBASE_CONFIG` and `FIREBASE_VAPID_KEY` are read from `window.ENV` (populated by `env.js` — see First-run setup above). `registerFCMToken()` is called fire-and-forget after every login completion (4 call sites). It no-ops if `FIREBASE_VAPID_KEY` is the placeholder string.
 
-2. **`firebase-messaging-sw.js`** — service worker at repo root; must be served at `/firebase-messaging-sw.js`. Already has real Firebase project config. Handles `onBackgroundMessage` to show push notifications.
+2. **`firebase-messaging-sw.js`** — service worker at `apps/student/` root; must be served at `/firebase-messaging-sw.js`. Already has real Firebase project config. Handles `onBackgroundMessage` to show push notifications.
 
-3. **Backend** — `FCM_SERVICE_ACCOUNT_JSON_PATH` set in `backend/.env` pointing to the Firebase Admin SDK service account JSON. FCM service (`backend/app/services/fcm.py`) degrades gracefully if unconfigured.
+3. **Backend** — `FCM_SERVICE_ACCOUNT_JSON_PATH` set in `services/api/.env` pointing to the Firebase Admin SDK service account JSON. FCM service (`services/api/app/services/fcm.py`) degrades gracefully if unconfigured.
 
 ### Alert Fan-Out Chain
 
@@ -111,7 +143,7 @@ Location snapshots are kept fresh by `watchPosition` in `AppProvider` (throttled
 
 ### Design System
 
-CSS custom properties in `styles.css`:
+CSS custom properties in `src/styles.css`:
 
 ```
 --navy: #0B1D35    primary dark
@@ -129,22 +161,22 @@ Key utility classes: `.eyebrow`, `.pill`, `.card`, `.btn`/`.btn-primary`/`.btn-g
 
 ### Key UI Patterns
 
-- **C2CToggle** (`app.jsx`): Animated mode switch — flipping swaps the accent color CSS var and re-renders the tile grid
-- **IOSDevice** (`ios-frame.jsx`): Pure CSS/SVG iPhone frame; no image assets
-- **3-Phase Alert** (`screens.jsx`): Before/During/After tabs; 4s press-and-hold fills SVG ring, then confirmation modal before `POST /v1/alerts/trigger`
-- **GeofenceConsentModal** (`app.jsx`): Bottom-sheet shown once on first login; accept/decline stored in localStorage; re-accessible via ProfileScreen → Location toggle
+- **C2CToggle** (`src/app.jsx`): Animated mode switch — flipping swaps the accent color CSS var and re-renders the tile grid
+- **IOSDevice** (`src/ios-frame.jsx`): Pure CSS/SVG iPhone frame; no image assets
+- **3-Phase Alert** (`src/screens.jsx`): Before/During/After tabs; 4s press-and-hold fills SVG ring, then confirmation modal before `POST /v1/alerts/trigger`
+- **GeofenceConsentModal** (`src/app.jsx`): Bottom-sheet shown once on first login; accept/decline stored in localStorage; re-accessible via ProfileScreen → Location toggle
 - **Splash animation**: Uses `animation-fill-mode: forwards` — do not remove or splash state leaks into app shell
 
 ---
 
-## Admin Panel (`admin/`)
+## Admin Panel (`apps/admin/`)
 
-No-build React prototype. Full source in `admin/src/`. Deploys to Vercel as a separate project (root directory: `admin/`).
+No-build React prototype. Full source in `apps/admin/src/`. Deploys to Vercel as a separate project (root directory: `apps/admin`).
 
 ### Running
 
 ```bash
-cd admin
+cd apps/admin
 python -m http.server 8081        # Python
 npx serve .                        # Node alternative
 ```
@@ -162,7 +194,7 @@ No module system — each file exposes components via `Object.assign(window, { .
 
 ```
 data → primitives → shell → entry → uni-dashboard → uni-complaints →
-uni-routine → uni-misc → super → settings → tweaks-panel → app
+uni-routine → uni-timetable → uni-misc → super → settings → tweaks-panel → app
 ```
 
 ### Architecture
@@ -212,27 +244,35 @@ Leaflet map with full zone CRUD. Calls `GET|POST /v1/admin/zones`, `PATCH|DELETE
 
 ---
 
-## Backend — Quick Reference
+## Core API — Quick Reference (`services/api/`)
 
-Full guidance is in `backend/CLAUDE.md`. Key points:
+Full guidance is in `services/api/CLAUDE.md`. Key points:
 
 ### Running
 
 ```powershell
-cd backend
+# From repo root — start db and redis only (rag runs separately)
 docker compose up -d db redis      # PostgreSQL on :5433, Redis on :6379
+
+cd services/api
 .\.venv\Scripts\python.exe -m alembic upgrade head
 .\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000
 ```
 
-Docker Compose reads `backend/.env` — note the pre-existing `CLAUDE MESSAGE=` line (space in key) causes a dotenv warning but does not prevent the app from loading.
+Or use the root `docker-compose.yml` to bring up all 4 services at once:
+
+```powershell
+docker compose up --build
+```
+
+Config is in `services/api/.env`. Note the pre-existing `CLAUDE MESSAGE=` line (space in key) causes a dotenv warning but does not prevent the app from loading.
 
 ### Testing (no Docker required)
 
 Tests use SQLite in-memory + fakeredis:
 
 ```powershell
-cd backend
+cd services/api
 .\.venv\Scripts\python.exe -m pytest -x -v
 # single file:
 .\.venv\Scripts\python.exe -m pytest -x -v tests/test_alerts.py
@@ -241,7 +281,7 @@ cd backend
 ### Seeding
 
 ```powershell
-cd backend
+cd services/api
 .\.venv\Scripts\python.exe create_superadmin.py <password>
 # Creates/resets teamaivion@gmail.com as super_admin. Safe to re-run.
 ```
@@ -254,8 +294,8 @@ cd backend
 | `/auth/mfa/...` | `routers/mfa.py` | required | TOTP setup/verify, recovery codes |
 | `/auth/sessions` | `routers/sessions.py` | required | List & revoke active sessions |
 | `/complaints/track/{code}` | `routers/tracking.py` | none | Anonymous complaint status lookup |
-| `/ai/chat` | `routers/ai.py` | required | 7-stage RAG pipeline (POST) |
-| `/ai/health` | `routers/ai.py` | none | AI subsystem status |
+| `/ai/chat` | `routers/ai.py` | required | Proxies to RAG service (POST) |
+| `/ai/health` | `routers/ai.py` | none | RAG service health proxy |
 | `/v1/alerts/...` | `routers/alerts.py` | varies | Alert events, responses, evidence |
 | `/v1/users/me/fcm-token` | `routers/alerts.py` | required | Register FCM push token (`POST`) |
 | `/v1/users/me/location` | `routers/alerts.py` | required | Upsert location snapshot + geofence consent (`POST`) |
@@ -277,27 +317,64 @@ cd backend
 | `/v1/admin/timetable/...` | `routers/admin_timetable.py` | admin | CP-SAT timetable CRUD, solver jobs, NL edits |
 | `/health` | `main.py` | none | DB + Redis liveness probe |
 
-### AI Pipeline (`backend/app/ai/`)
+---
+
+## RAG Service — Quick Reference (`services/rag/`)
+
+Standalone FastAPI microservice that hosts the 7-stage legal AI pipeline. The Core API (`/ai/chat`) proxies here after enforcing JWT auth; RAG never sees user JWTs — only a shared `X-Internal-Secret` header.
+
+### Running
+
+```powershell
+cd services/rag
+pip install -r requirements.txt
+.\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8001
+```
+
+### Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /chat` | Run full 7-stage RAG pipeline; body passed through from Core API |
+| `GET /health` | Check embedder, ChromaDB, and Ollama availability |
+| `POST /ingest` | Load built-in sample corpus into ChromaDB (dev/demo only) |
+
+### AI Pipeline (`services/rag/app/pipeline/`)
 
 `pipeline.py` orchestrates 7 stages:
 
 ```
-Stage 0  safety.py          — emergency / injection pre-flight
-Stage 1  stage1_query.py    — intent classification + entity extraction (Qwen3 via Ollama)
-Stage 2  stage2_retrieval.py — hybrid dense (ChromaDB) + BM25, RRF merge
-Stage 3  stage3_corrective.py — confidence gate; falls back to web search if below threshold
-Stage 3b                    — exit ramp + lawyer referral if confidence < ABSOLUTE_FLOOR
-Stage 4  stage4_generation.py — legal reasoning scaffold with citation grounding
-Stage 5  stage5_verify.py   — claim-level verification; can trigger regeneration
-Stage 6  stage6_output.py   — language adaptation, citations, disclaimer
-Stage 7  (inline)           — anonymised audit log
+Stage 0  stage0_safety.py       — emergency / injection pre-flight
+Stage 1  stage1_query.py        — intent classification + entity extraction (Qwen3 via Ollama)
+Stage 2  stage2_retrieval.py    — hybrid dense (ChromaDB) + BM25, RRF merge
+Stage 3  stage3_corrective.py   — confidence gate; falls back to web search if below threshold
+Stage 3b                        — exit ramp + lawyer referral if confidence < ABSOLUTE_FLOOR
+Stage 4  stage4_generation.py   — legal reasoning scaffold with citation grounding
+Stage 5  stage5_verify.py       — claim-level verification; can trigger regeneration
+Stage 6  stage6_output.py       — language adaptation, citations, disclaimer
+Stage 7  (inline)               — anonymised audit log
 ```
 
-LLM: **Ollama** (local) with `qwen3:8b` / `qwen3:1.7b` (fast). Falls back to a deterministic stub when Ollama is offline. Vector store: **ChromaDB** at `backend/data/chromadb`. Namespaces: `national` and `diu`.
+LLM: **Ollama** (local) with `qwen3:8b` / `qwen3:1.7b` (fast). Falls back to a deterministic stub when Ollama is offline. Vector store: **ChromaDB** at `services/rag/data/chromadb`. Namespaces: `national` and `diu`.
 
-To ingest new legal documents into ChromaDB: use `backend/app/ai/ingestion.py` → `ingest_document()`. Chunks get contextual prefixes from the LLM before embedding (Anthropic-style contextual retrieval). Warm-up at startup auto-loads `sample_corpus.py` into the `national` namespace if empty; set `DISABLE_AI_WARMUP=true` in `.env` to skip this on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer causes OOM otherwise).
+To ingest new legal documents into ChromaDB: use `services/rag/app/pipeline/ingestion.py` → `ingest_document()`. Chunks get contextual prefixes from the LLM before embedding (Anthropic-style contextual retrieval). Warm-up at startup auto-loads `sample_corpus.py` into the `national` namespace if empty; set `DISABLE_AI_WARMUP=true` in `services/rag/.env` to skip this on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer causes OOM otherwise).
 
-### Timetable generator (`backend/app/services/timetable_solver.py`)
+### RAG ↔ API wiring
+
+`services/api/app/routers/ai.py` is an HTTP proxy: it enforces JWT auth, then forwards the request body to `RAG_SERVICE_URL/chat` with `X-Internal-Secret`. On `ConnectError` it returns 503; on pipeline error it proxies the RAG status code. Configure via:
+
+```
+# services/api/.env
+RAG_SERVICE_URL=http://localhost:8001
+RAG_INTERNAL_SECRET=<shared-secret>
+
+# services/rag/.env
+RAG_INTERNAL_SECRET=<same-shared-secret>
+```
+
+---
+
+## Timetable Generator (`services/api/app/services/timetable_solver.py`)
 
 CP-SAT constraint solver (Google OR-Tools) that generates clash-free academic timetables. Exposed via `/v1/admin/timetable/...`:
 
@@ -312,5 +389,5 @@ The solver honors `TimetableConstraint` rows with `enforcement=hard|soft` and `w
 
 ### Known production blockers
 
-- **`todo.md`** — Registration ghost-account bug: `POST /auth/register` creates a DB row immediately; if the OTP expires the user is permanently stuck. Fix is to store payload in Redis and only create the `User` row on successful OTP verification. A temporary workaround (re-registration re-sends OTP) is in place.
-- **Security** — See `backend/CLAUDE.md` § "Security — Known Open Issues" for SEC-12 through SEC-16 (TOTP secret stored plaintext, refresh token rotation race, step-up token binding, etc.).
+- **`docs/specs/todo-registration-ghostaccounts.md`** — Registration ghost-account bug: `POST /auth/register` creates a DB row immediately; if the OTP expires the user is permanently stuck. Fix is to store payload in Redis and only create the `User` row on successful OTP verification. A temporary workaround (re-registration re-sends OTP) is in place.
+- **Security** — See `services/api/CLAUDE.md` § "Security — Known Open Issues" for SEC-12 through SEC-16 (TOTP secret stored plaintext, refresh token rotation race, step-up token binding, etc.).
