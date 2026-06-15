@@ -108,3 +108,10 @@ class UserInfo(BaseModel):
     phone_verified: bool
     total_filings: int = 0
     resolved_filings: int = 0
+    department: str | None = None
+
+
+class UserProfileUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=2, max_length=200)
+    phone: str | None = Field(default=None, pattern=r"^01[3-9]\d{8}$")
+    department: str | None = Field(default=None, max_length=200)

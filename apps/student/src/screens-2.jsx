@@ -1167,11 +1167,91 @@ function NoticesScreen() {
 //  PROFILE SCREEN
 // ═══════════════════════════════════════════════════════════════
 function ProfileScreen() {
-  const { go, logout, auth, geofenceConsent, setGeofenceConsent } = useApp();
+  const { go, logout, auth, geofenceConsent, setGeofenceConsent, login } = useApp();
   const user = auth && auth.user;
-  const displayName = user ? user.name : 'Sadia Akter';
+  const displayName = user ? user.name : '';
   const isStudent = user && user.role === 'student';
-  const initials = displayName.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  const initials = displayName.split(' ').map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+
+  const [editMode, setEditMode] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [saveError, setSaveError] = React.useState('');
+  const [draftName, setDraftName] = React.useState('');
+  const [draftPhone, setDraftPhone] = React.useState('');
+  const [draftDept, setDraftDept] = React.useState('');
+
+  const enterEditMode = () => {
+    setDraftName(user ? user.name || '' : '');
+    setDraftPhone(user ? user.phone || '' : '');
+    setDraftDept(user ? user.department || '' : '');
+    setSaveError('');
+    setEditMode(true);
+  };
+
+  const cancelEdit = () => {
+    setEditMode(false);
+    setSaveError('');
+  };
+
+  const handleSave = async () => {
+    const body = {};
+    if (draftName.trim() && draftName.trim() !== (user && user.name)) body.full_name = draftName.trim();
+    if (!(user && user.phone_verified) && draftPhone !== (user && user.phone || '')) body.phone = draftPhone || null;
+    if (isStudent && draftDept !== (user && user.department || '')) body.department = draftDept || null;
+
+    if (Object.keys(body).length === 0) {
+      setEditMode(false);
+      return;
+    }
+    setSaving(true);
+    setSaveError('');
+    try {
+      const token = localStorage.getItem('anchor_access_token');
+      const res = await fetch('http://localhost:8000/auth/me', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + token,
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSaveError(data.detail || 'Save failed');
+        return;
+      }
+      login({
+        ...user,
+        name:             data.full_name,
+        phone:            data.phone,
+        phone_verified:   data.phone_verified,
+        email_verified:   data.email_verified,
+        department:       data.department || null,
+        total_filings:    data.total_filings ?? 0,
+        resolved_filings: data.resolved_filings ?? 0,
+      });
+      setEditMode(false);
+    } catch (err) {
+      setSaveError(err.message || 'Network error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const subtitle = isStudent
+    ? (user && user.department ? `${user.department} · Daffodil International University` : 'Daffodil International University')
+    : 'General Public · Bangladesh';
+
+  const fieldStyle = {
+    width: '100%', padding: '10px 13px', borderRadius: 10, border: '1px solid var(--mist-2)',
+    background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--navy)',
+    outline: 'none', boxSizing: 'border-box',
+  };
+  const lockedFieldStyle = {
+    padding: '10px 13px', borderRadius: 10, border: '1px solid var(--mist)',
+    background: 'var(--cream-2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  };
+
   return (
     <>
       <Header back/>
@@ -1180,45 +1260,154 @@ function ProfileScreen() {
           padding: 18, borderRadius: 18, background: 'linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.55))',
           border: '1px solid var(--mist)',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <div style={{
-              width: 56, height: 56, borderRadius: 999, position: 'relative',
-              background: 'linear-gradient(135deg, #C9B7A2, #8E7A60)',
-              color: '#F7F3EE', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 22,
-            }}>
-              {initials}
-              <span style={{
-                position: 'absolute', bottom: -2, right: -2, width: 20, height: 20, borderRadius: 999,
-                background: 'var(--gold)', color: '#fff', display: 'flex',
-                alignItems: 'center', justifyContent: 'center', border: '2.5px solid var(--cream)',
-              }}><IconCheck size={11} sw={3}/></span>
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="serif" style={{ fontSize: 19, fontWeight: 500, color: 'var(--navy)', lineHeight: 1.1 }}>{displayName}</div>
-              <div style={{ marginTop: 4, fontSize: 12.5, color: 'var(--ink-2)' }}>
-                {isStudent ? 'SWE · 4th year · Daffodil International University' : 'General Public · Bangladesh'}
+          {!editMode ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{
+                  width: 56, height: 56, borderRadius: 999, position: 'relative', flexShrink: 0,
+                  background: 'linear-gradient(135deg, #C9B7A2, #8E7A60)',
+                  color: '#F7F3EE', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 22,
+                }}>
+                  {initials}
+                  <span style={{
+                    position: 'absolute', bottom: -2, right: -2, width: 20, height: 20, borderRadius: 999,
+                    background: 'var(--gold)', color: '#fff', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', border: '2.5px solid var(--cream)',
+                  }}><IconCheck size={11} sw={3}/></span>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="serif" style={{ fontSize: 19, fontWeight: 500, color: 'var(--navy)', lineHeight: 1.1 }}>{displayName}</div>
+                  <div style={{ marginTop: 4, fontSize: 12.5, color: 'var(--ink-2)' }}>{subtitle}</div>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {isStudent && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'rgba(184,137,58,0.35)', background: 'rgba(184,137,58,0.08)' }}><IconCheck size={9} sw={3}/> Verified DIU</span>}
+                    {user && user.email_verified && <span className="pill" style={{ color: 'var(--sage)', borderColor: 'rgba(74,107,92,0.28)', background: 'rgba(74,107,92,0.07)' }}><IconCheck size={9} sw={3}/> Email verified</span>}
+                  </div>
+                </div>
               </div>
-              <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {isStudent && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'rgba(184,137,58,0.35)', background: 'rgba(184,137,58,0.08)' }}><IconCheck size={9} sw={3}/> Verified DIU</span>}
-                <span className="pill"><IconClock size={10}/> Since Jan 2024</span>
-              </div>
-            </div>
-          </div>
 
-          {/* Stats */}
-          <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed var(--mist)', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-            {[
-              { l: 'Cases filed', v: '7' },
-              { l: 'Resolved', v: '4' },
-              { l: 'Trust score', v: '92' },
-            ].map(s => (
-              <div key={s.l} style={{ textAlign: 'center' }}>
-                <div className="serif" style={{ fontSize: 22, fontWeight: 500, color: 'var(--navy)', letterSpacing: '-0.02em' }}>{s.v}</div>
-                <div className="eyebrow" style={{ marginTop: 2, fontSize: 9.5 }}>{s.l}</div>
+              {/* Stats */}
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed var(--mist)', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                {[
+                  { l: 'Cases filed', v: String(user && user.total_filings != null ? user.total_filings : 0) },
+                  { l: 'Resolved',    v: String(user && user.resolved_filings != null ? user.resolved_filings : 0) },
+                  { l: 'Trust score', v: '—' },
+                ].map(s => (
+                  <div key={s.l} style={{ textAlign: 'center' }}>
+                    <div className="serif" style={{ fontSize: 22, fontWeight: 500, color: 'var(--navy)', letterSpacing: '-0.02em' }}>{s.v}</div>
+                    <div className="eyebrow" style={{ marginTop: 2, fontSize: 9.5 }}>{s.l}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+
+              {/* Edit profile button */}
+              <button
+                onClick={enterEditMode}
+                style={{
+                  marginTop: 14, width: '100%', padding: '9px 0', borderRadius: 10,
+                  border: '1px solid var(--mist-2)', background: 'rgba(11,29,53,0.04)',
+                  cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: 500,
+                  color: 'var(--navy)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                }}>
+                Edit profile
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--navy)', fontFamily: 'var(--font-sans)' }}>Edit profile</div>
+                <button onClick={cancelEdit} style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontSize: 13 }}>Cancel</button>
+              </div>
+
+              {/* Full name */}
+              <div style={{ marginBottom: 12 }}>
+                <div className="eyebrow" style={{ marginBottom: 5 }}>Full name</div>
+                <input
+                  style={fieldStyle}
+                  value={draftName}
+                  onChange={e => { setDraftName(e.target.value); setSaveError(''); }}
+                  placeholder="Your full name"
+                />
+              </div>
+
+              {/* Email — always locked */}
+              <div style={{ marginBottom: 12 }}>
+                <div className="eyebrow" style={{ marginBottom: 5 }}>Email</div>
+                <div style={lockedFieldStyle}>
+                  <div>
+                    <div style={{ fontSize: 14, color: user && user.email ? 'var(--navy)' : 'var(--muted)' }}>
+                      {user && user.email ? user.email : 'Not set'}
+                    </div>
+                    {user && user.email_verified && (
+                      <div style={{ fontSize: 11, color: 'var(--sage)', marginTop: 2 }}>Verified</div>
+                    )}
+                  </div>
+                  <IconLock size={14} stroke="var(--muted)"/>
+                </div>
+              </div>
+
+              {/* Phone — locked if verified */}
+              <div style={{ marginBottom: 12 }}>
+                <div className="eyebrow" style={{ marginBottom: 5 }}>Phone number</div>
+                {user && user.phone_verified ? (
+                  <div style={lockedFieldStyle}>
+                    <div>
+                      <div style={{ fontSize: 14, color: 'var(--navy)' }}>{user.phone || 'Not set'}</div>
+                      <div style={{ fontSize: 11, color: 'var(--sage)', marginTop: 2 }}>Verified — cannot change</div>
+                    </div>
+                    <IconLock size={14} stroke="var(--muted)"/>
+                  </div>
+                ) : (
+                  <input
+                    style={fieldStyle}
+                    type="tel"
+                    value={draftPhone}
+                    onChange={e => { setDraftPhone(e.target.value); setSaveError(''); }}
+                    placeholder="01XXXXXXXXX"
+                  />
+                )}
+              </div>
+
+              {/* Department — students only */}
+              {isStudent && (
+                <div style={{ marginBottom: 12 }}>
+                  <div className="eyebrow" style={{ marginBottom: 5 }}>Department</div>
+                  <input
+                    style={fieldStyle}
+                    value={draftDept}
+                    onChange={e => { setDraftDept(e.target.value); setSaveError(''); }}
+                    placeholder="e.g. Software Engineering"
+                  />
+                </div>
+              )}
+
+              {saveError && (
+                <div style={{
+                  marginBottom: 10, padding: '9px 12px', borderRadius: 10,
+                  background: 'rgba(232,49,42,0.07)', border: '1px solid rgba(232,49,42,0.2)',
+                  fontSize: 12.5, color: 'var(--red)', fontFamily: 'var(--font-sans)',
+                }}>
+                  {saveError}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <button
+                  onClick={cancelEdit}
+                  className="btn btn-ghost"
+                  style={{ flex: 1, height: 42, borderRadius: 10, fontSize: 14 }}>
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="btn btn-primary"
+                  style={{ flex: 2, height: 42, borderRadius: 10, fontSize: 14, opacity: saving ? 0.75 : 1 }}>
+                  {saving ? 'Saving…' : 'Save changes'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 

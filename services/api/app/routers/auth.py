@@ -13,11 +13,12 @@ from app.config import get_settings
 from app.models.user import User, Role, AccountStatus
 from app.models.session import Session
 from app.models.filing import Filing
+from app.models.application import StudentCampusSettings
 from app.schemas.auth import (
     RegisterRequest, LoginRequest, TokenResponse, MFAPendingResponse,
     RefreshRequest, LogoutRequest, ForgotPasswordRequest, ResetPasswordRequest,
     VerifyEmailRequest, VerifyPhoneRequest, ResendVerificationRequest,
-    StepUpRequest, StepUpResponse, UserInfo,
+    StepUpRequest, StepUpResponse, UserInfo, UserProfileUpdate,
 )
 from app.services import password as pwd_svc, token as tok_svc, otp as otp_svc
 from app.services import email as email_svc, sms as sms_svc, audit as audit_svc
@@ -462,21 +463,21 @@ async def stepup(body: StepUpRequest, db: AsyncSession = Depends(get_db), redis=
     return StepUpResponse(stepup_token=stepup_token, expires_in=settings.stepup_token_ttl)
 
 
-@router.get("/me", response_model=UserInfo)
-async def me(db: AsyncSession = Depends(get_db), token: TokenData = Depends(get_current_user)):
-    result = await db.execute(select(User).where(User.id == token.user_id))
-    user = result.scalars().first()
-    if not user:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+async def _build_user_info(db: AsyncSession, user: User, user_id) -> UserInfo:
     total = await db.scalar(
-        select(func.count()).select_from(Filing).where(Filing.complainant_user_id == token.user_id)
+        select(func.count()).select_from(Filing).where(Filing.complainant_user_id == user_id)
     )
     resolved = await db.scalar(
         select(func.count()).select_from(Filing).where(
-            Filing.complainant_user_id == token.user_id,
+            Filing.complainant_user_id == user_id,
             Filing.state == "resolved",
         )
     )
+    department = None
+    if user.role.value == "student":
+        campus = await db.get(StudentCampusSettings, user_id)
+        if campus:
+            department = campus.department
     return UserInfo(
         id=user.id,
         full_name=user.full_name,
@@ -489,4 +490,63 @@ async def me(db: AsyncSession = Depends(get_db), token: TokenData = Depends(get_
         phone_verified=user.phone_verified,
         total_filings=total or 0,
         resolved_filings=resolved or 0,
+        department=department,
     )
+
+
+@router.get("/me", response_model=UserInfo)
+async def me(db: AsyncSession = Depends(get_db), token: TokenData = Depends(get_current_user)):
+    result = await db.execute(select(User).where(User.id == token.user_id))
+    user = result.scalars().first()
+    if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return await _build_user_info(db, user, token.user_id)
+
+
+@router.patch("/me", response_model=UserInfo)
+async def update_me(
+    body: UserProfileUpdate,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(get_current_user),
+):
+    result = await db.execute(select(User).where(User.id == token.user_id))
+    user = result.scalars().first()
+    if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    if body.full_name is not None:
+        user.full_name = body.full_name.strip()
+
+    if body.phone is not None:
+        if user.phone_verified:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Phone number is already verified and cannot be changed",
+            )
+        existing = await db.execute(
+            select(User).where(User.phone == body.phone, User.id != user.id)
+        )
+        if existing.scalars().first():
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="Phone number already in use")
+        user.phone = body.phone
+
+    if body.department is not None:
+        if user.role.value != "student":
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Department field is only applicable to student accounts",
+            )
+        campus = await db.get(StudentCampusSettings, token.user_id)
+        if campus is None:
+            campus = StudentCampusSettings(user_id=token.user_id)
+            db.add(campus)
+        if campus.department_locked:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Department has been locked by an administrator",
+            )
+        campus.department = body.department
+
+    await db.commit()
+    await db.refresh(user)
+    return await _build_user_info(db, user, token.user_id)

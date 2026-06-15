@@ -245,11 +245,18 @@ function LoginScreen() {
       saveTokens(data.access_token, data.refresh_token);
       const me = await apiGet('/auth/me');
       login({
-        id:        String(me.id),
-        name:      me.full_name,
-        role:      me.role,
-        tenant_id: me.tenant_id ? String(me.tenant_id) : null,
-        mfa:       me.mfa_enabled,
+        id:               String(me.id),
+        name:             me.full_name,
+        role:             me.role,
+        tenant_id:        me.tenant_id ? String(me.tenant_id) : null,
+        mfa:              me.mfa_enabled,
+        email:            me.email || null,
+        phone:            me.phone || null,
+        email_verified:   me.email_verified,
+        phone_verified:   me.phone_verified,
+        total_filings:    me.total_filings ?? 0,
+        resolved_filings: me.resolved_filings ?? 0,
+        department:       me.department || null,
       });
       registerFCMToken();
       go('home');
@@ -748,11 +755,18 @@ function VerifyEmailScreen({ params }) {
       saveTokens(data.access_token, data.refresh_token);
       const me = await apiGet('/auth/me');
       login({
-        id:        String(me.id),
-        name:      me.full_name,
-        role:      me.role,
-        tenant_id: me.tenant_id ? String(me.tenant_id) : null,
-        mfa:       me.mfa_enabled,
+        id:               String(me.id),
+        name:             me.full_name,
+        role:             me.role,
+        tenant_id:        me.tenant_id ? String(me.tenant_id) : null,
+        mfa:              me.mfa_enabled,
+        email:            me.email || null,
+        phone:            me.phone || null,
+        email_verified:   me.email_verified,
+        phone_verified:   me.phone_verified,
+        total_filings:    me.total_filings ?? 0,
+        resolved_filings: me.resolved_filings ?? 0,
+        department:       me.department || null,
       });
       registerFCMToken();
       go('home');
@@ -854,11 +868,18 @@ function VerifyOTPScreen({ params }) {
       saveTokens(data.access_token, data.refresh_token);
       const me = await apiGet('/auth/me');
       login({
-        id:        String(me.id),
-        name:      me.full_name,
-        role:      me.role,
-        tenant_id: me.tenant_id ? String(me.tenant_id) : null,
-        mfa:       me.mfa_enabled,
+        id:               String(me.id),
+        name:             me.full_name,
+        role:             me.role,
+        tenant_id:        me.tenant_id ? String(me.tenant_id) : null,
+        mfa:              me.mfa_enabled,
+        email:            me.email || null,
+        phone:            me.phone || null,
+        email_verified:   me.email_verified,
+        phone_verified:   me.phone_verified,
+        total_filings:    me.total_filings ?? 0,
+        resolved_filings: me.resolved_filings ?? 0,
+        department:       me.department || null,
       });
       registerFCMToken();
       go('home');
