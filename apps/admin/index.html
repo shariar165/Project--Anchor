@@ -5989,6 +5989,7 @@ function SuperRedZones({ onGo }) {
         if (!form.name.trim()) { setFormError('Zone name is required'); setSaving(false); return; }
         await AnchorAPI.apiPostAuth('/v1/super-admin/zones', {
           zone_type: form.zone_type,
+          shape_type: 'circle',
           center_lat: lat,
           center_lng: lng,
           radius_m: radius,

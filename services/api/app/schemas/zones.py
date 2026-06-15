@@ -66,6 +66,7 @@ class ZoneCreate(BaseModel):
     center_lng: float = Field(..., ge=-180, le=180)
     radius_m: Optional[int] = Field(default=None, gt=0, le=50000)
     description: Optional[str] = Field(default=None, max_length=2000)
+    expires_at: Optional[datetime] = None
     university_id: Optional[uuid.UUID] = None
 
     @model_validator(mode="after")

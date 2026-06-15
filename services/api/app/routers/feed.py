@@ -193,9 +193,9 @@ async def list_feed(
     settings = get_settings()
     page_size = min(page_size, 50)
 
-    if scope == "campus" and not token.tenant_id:
-        raise HTTPException(400, "Campus scope requires a tenant association")
-
+    # Campus scope works even when the account has no tenant association (single-tenant
+    # deployment): list_posts only narrows by tenant_id when one is present, so a null
+    # tenant_id returns the shared campus edition.
     posts = await feed_svc.list_posts(
         db,
         scope=scope,
@@ -240,8 +240,8 @@ async def publish_post(
     token: TokenData = Depends(require_stepup),
 ):
     settings = get_settings()
-    if body.scope == "campus" and not token.tenant_id:
-        raise HTTPException(400, "Campus posts require a tenant association")
+    # Campus posts are allowed without a tenant association (single-tenant deployment);
+    # the post is stored with the publisher's tenant_id, which may be null.
 
     # AI pre-screen (synchronous gate)
     try:

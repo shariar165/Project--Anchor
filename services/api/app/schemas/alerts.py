@@ -74,6 +74,21 @@ class NearbyAlertItem(BaseModel):
     created_at: datetime
 
 
+class ResponderItem(BaseModel):
+    # Distance only — responder coordinates are never exposed (privacy).
+    model_config = ConfigDict(from_attributes=True)
+    distance_m: int | None = None
+    response_type: str
+    created_at: datetime
+
+
+class AlertRespondersResponse(BaseModel):
+    event_id: uuid.UUID
+    zone_radius_m: int | None = None   # actual Zone.radius_m, or null if no zone
+    responder_count: int = 0           # count of response_type == "responding"
+    responders: list[ResponderItem] = []
+
+
 class PanicTriggerRequest(BaseModel):
     device_fingerprint: str = Field(min_length=1, max_length=200)
     lat: float | None = None

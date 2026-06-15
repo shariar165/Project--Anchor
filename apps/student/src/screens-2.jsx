@@ -1,5 +1,100 @@
 // Anchor — Screens part 2: Cases, CaseDetail, Map, Feed, Lawyers, Notices, Profile
 
+// ═══════════════════════════════════════════════════════════════
+//  NOTIFICATIONS / SETTINGS — frontend-only, persisted to localStorage
+//  (no backend exists for these; mirrors the anchor_geofence_consent pattern)
+// ═══════════════════════════════════════════════════════════════
+
+var NOTIF_PREF_DEFAULTS = { alerts: true, cases: true, notices: true, feed: true, marketing: false };
+
+function loadNotifPrefs() {
+  try {
+    var raw = JSON.parse(localStorage.getItem('anchor_notif_prefs'));
+    if (raw && typeof raw === 'object') return Object.assign({}, NOTIF_PREF_DEFAULTS, raw);
+  } catch (e) { /* corrupt / unavailable */ }
+  return Object.assign({}, NOTIF_PREF_DEFAULTS);
+}
+function saveNotifPrefs(p) {
+  try { localStorage.setItem('anchor_notif_prefs', JSON.stringify(p)); } catch (e) { /* ignore */ }
+}
+function notifPrefsOnCount() {
+  var p = loadNotifPrefs();
+  return Object.keys(NOTIF_PREF_DEFAULTS).filter(function (k) { return !!p[k]; }).length;
+}
+
+function loadTrustedContacts() {
+  try {
+    var raw = JSON.parse(localStorage.getItem('anchor_trusted_contacts'));
+    if (Array.isArray(raw)) return raw;
+  } catch (e) { /* ignore */ }
+  return [];
+}
+function saveTrustedContacts(list) {
+  try { localStorage.setItem('anchor_trusted_contacts', JSON.stringify(list)); } catch (e) { /* ignore */ }
+}
+
+// ── Notification feed ─────────────────────────────────────────────────────────
+function _notifKey(mode) { return mode === 'country' ? 'anchor_notif_country' : 'anchor_notif_campus'; }
+
+function _notifSeed(mode) {
+  var now = Date.now(), H = 3600 * 1000, D = 24 * H;
+  if (mode === 'country') {
+    return [
+      { id: 'n1', type: 'lawyer', title: 'Adv. Rahman replied', body: 'Your consultation request on the tenancy dispute has a response.', ts: new Date(now - 2 * H).toISOString(), read: false, route: 'lawyers' },
+      { id: 'n2', type: 'zone', title: 'Caution zone updated near you', body: 'A new red zone was added around Mirpur-10. Tap to view the safety map.', ts: new Date(now - 6 * H).toISOString(), read: false, route: 'map' },
+      { id: 'n3', type: 'case', title: 'GD draft ready', body: 'Your General Diary draft has been prepared and is ready to review.', ts: new Date(now - 2 * D).toISOString(), read: true, route: 'cases' },
+      { id: 'n4', type: 'notice', title: 'New legal-rights explainer', body: 'Know your rights during a police stop — a new guide is available.', ts: new Date(now - 3 * D).toISOString(), read: true, route: 'rights' },
+    ];
+  }
+  return [
+    { id: 'n1', type: 'alert', title: 'Safety alert near KT building', body: 'A nearby user triggered an emergency alert ~120m away. Stay aware.', ts: new Date(now - 1 * H).toISOString(), read: false, route: 'alert' },
+    { id: 'n2', type: 'case', title: 'Case ANCHOR-2291 routed', body: "Your complaint was forwarded to the Proctor's office for review.", ts: new Date(now - 5 * H).toISOString(), read: false, route: 'cases' },
+    { id: 'n3', type: 'notice', title: 'New campus notice', body: 'Mid-term routine published. Check the academic notices section.', ts: new Date(now - 26 * H).toISOString(), read: true, route: 'notices' },
+    { id: 'n4', type: 'rating', title: 'Department rating posted', body: 'Your feedback on the SWE department was recorded. Thank you.', ts: new Date(now - 3 * D).toISOString(), read: true, route: 'dept-rating' },
+  ];
+}
+
+function loadNotifications(mode) {
+  var m = mode === 'country' ? 'country' : 'campus';
+  var key = _notifKey(m);
+  var list = null;
+  try { list = JSON.parse(localStorage.getItem(key)); } catch (e) { list = null; }
+  if (!Array.isArray(list)) {
+    list = _notifSeed(m);
+    saveNotifications(list, m);
+  }
+  return list;
+}
+function saveNotifications(list, mode) {
+  try { localStorage.setItem(_notifKey(mode === 'country' ? 'country' : 'campus'), JSON.stringify(list)); } catch (e) { /* ignore */ }
+}
+function unreadCount(mode) {
+  try {
+    return loadNotifications(mode).filter(function (n) { return !n.read; }).length;
+  } catch (e) { return 0; }
+}
+function markAllNotificationsRead(mode) {
+  var list = loadNotifications(mode).map(function (n) { return Object.assign({}, n, { read: true }); });
+  saveNotifications(list, mode);
+  return list;
+}
+function notifRelTime(ts) {
+  var d = new Date(ts).getTime();
+  if (isNaN(d)) return '';
+  var mins = Math.floor((Date.now() - d) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  var hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  var days = Math.floor(hrs / 24);
+  if (days < 7) return days + 'd ago';
+  return new Date(ts).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+function notifIsToday(ts) {
+  var d = new Date(ts), n = new Date();
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+}
+
 // ── Helper: map a real Filing to the CaseCard display format ──────────────────
 
 function mapFilingToCase(f) {
@@ -643,6 +738,8 @@ function MapScreen() {
 // ═══════════════════════════════════════════════════════════════
 function FeedScreen() {
   const { mode } = useApp();
+  // Campus students can switch editions; national-only users always see national.
+  const [scope, setScope] = React.useState(mode === 'campus' ? 'campus' : 'national');
   const [tab, setTab] = React.useState('recent');
   const [posts, setPosts] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
@@ -687,11 +784,10 @@ function FeedScreen() {
   React.useEffect(() => {
     setLoading(true);
     setError('');
-    const apiScope = mode === 'campus' ? 'campus' : 'national';
     const sort = tab === 'recent' ? 'recent' : 'corroborate';
     const token = localStorage.getItem('anchor_access_token');
     const headers = token ? { Authorization: 'Bearer ' + token } : {};
-    fetch(`http://localhost:8000/v1/feed?scope=${apiScope}&sort=${sort}&page=1&page_size=30`, { headers })
+    fetch(`http://localhost:8000/v1/feed?scope=${scope}&sort=${sort}&page=1&page_size=30`, { headers })
       .then(r => {
         if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
         return r.json();
@@ -702,7 +798,7 @@ function FeedScreen() {
         setLoading(false);
       })
       .catch(() => { setPosts([]); setLoading(false); });
-  }, [mode, tab]);
+  }, [scope, tab]);
 
   const feedItems = posts.map(toItem);
   const visible = tab === 'trusted' ? feedItems.filter(it => it.trusted) : feedItems;
@@ -720,7 +816,7 @@ function FeedScreen() {
               The Anchor <em>Verified</em>
             </div>
             <div className="issue" style={{ marginTop: 2 }}>
-              {mode === 'campus' ? 'Campus edition · Daffodil' : 'National edition · Bangladesh'} · {today}
+              {scope === 'campus' ? 'Campus edition · Daffodil' : 'National edition · Bangladesh'} · {today}
             </div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0, paddingLeft: 10 }}>
@@ -730,6 +826,20 @@ function FeedScreen() {
             </div>
           </div>
         </div>
+
+        {/* Edition toggle — campus students can switch between editions */}
+        {mode === 'campus' && (
+          <div style={{ display: 'flex', gap: 6, margin: '8px 0 2px' }}>
+            {[['national', 'National'], ['campus', 'Campus · DIU']].map(([s, l]) => (
+              <button key={s} onClick={() => setScope(s)} style={{
+                fontSize: 10, padding: '3px 11px', borderRadius: 999, fontWeight: 600, cursor: 'pointer',
+                background: scope === s ? 'var(--navy)' : 'transparent',
+                color: scope === s ? 'white' : 'var(--muted)',
+                border: `1px solid ${scope === s ? 'var(--navy)' : 'var(--mist)'}`,
+              }}>{l}</button>
+            ))}
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="tabbar" style={{ marginBottom: 4 }}>
@@ -1167,7 +1277,7 @@ function NoticesScreen() {
 //  PROFILE SCREEN
 // ═══════════════════════════════════════════════════════════════
 function ProfileScreen() {
-  const { go, logout, auth, geofenceConsent, setGeofenceConsent, login } = useApp();
+  const { go, logout, auth, geofenceConsent, setGeofenceConsent, login, lang, setLang } = useApp();
   const user = auth && auth.user;
   const displayName = user ? user.name : '';
   const isStudent = user && user.role === 'student';
@@ -1191,6 +1301,39 @@ function ProfileScreen() {
   const cancelEdit = () => {
     setEditMode(false);
     setSaveError('');
+  };
+
+  // Settings sheets + derived counts (re-read from localStorage on sheet close)
+  const [sheet, setSheet] = React.useState(null); // 'notif' | 'contacts' | null
+  const [prefsCount, setPrefsCount] = React.useState(() => notifPrefsOnCount());
+  const [contactsCount, setContactsCount] = React.useState(() => loadTrustedContacts().length);
+  const refreshCounts = () => {
+    setPrefsCount(notifPrefsOnCount());
+    setContactsCount(loadTrustedContacts().length);
+  };
+  const closeSheet = () => { setSheet(null); refreshCounts(); };
+
+  const handleExport = () => {
+    try {
+      const data = {
+        exported_at: new Date().toISOString(),
+        app: 'Anchor AI',
+        profile: user || null,
+        language: lang,
+        geofence_consent: geofenceConsent,
+        notification_prefs: loadNotifPrefs(),
+        trusted_contacts: loadTrustedContacts(),
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'anchor-data-' + new Date().toISOString().slice(0, 10) + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) { console.warn('[Export] failed', e); }
   };
 
   const handleSave = async () => {
@@ -1414,17 +1557,17 @@ function ProfileScreen() {
       {/* Settings sections */}
       <div style={{ padding: '14px 20px 0' }}>
         <SettingsGroup title="Preferences" items={[
-          { label: 'Language',            value: 'English · বাংলা', Icon: IconGlobe },
-          { label: 'Notifications',       value: 'On · selective',  Icon: IconBell },
+          { label: 'Language',            value: lang === 'BN' ? 'বাংলা' : 'English', Icon: IconGlobe, onTap: () => setLang(lang === 'EN' ? 'BN' : 'EN') },
+          { label: 'Notifications',       value: prefsCount + ' of 5 on',  Icon: IconBell, onTap: () => setSheet('notif') },
           { label: 'Default anonymity',   value: 'Always ask',       Icon: IconEyeOff },
         ]}/>
         <SettingsGroup title="Safety" items={[
           { label: "Dead Man's Switch",   value: 'Active · 48h',     Icon: IconShield, accent: 'var(--ember)' },
           { label: 'Two-factor auth',     value: 'TOTP · enabled',   Icon: IconLock,   onTap: () => go('mfa-setup') },
-          { label: 'Trusted contacts',    value: '3 set',             Icon: IconPhone },
+          { label: 'Trusted contacts',    value: contactsCount === 1 ? '1 set' : contactsCount + ' set', Icon: IconPhone, onTap: () => setSheet('contacts') },
         ]}/>
         <SettingsGroup title="Data" items={[
-          { label: 'Export my data',      value: 'JSON · PDF',       Icon: IconUpload },
+          { label: 'Export my data',      value: 'JSON',             Icon: IconUpload, onTap: handleExport },
           { label: 'Delete account',      value: 'Permanent',         Icon: IconX, danger: true },
         ]}/>
         {/* Location consent */}
@@ -1484,6 +1627,9 @@ function ProfileScreen() {
           Built by Team AiVion · Daffodil International University
         </div>
       </div>
+
+      {sheet === 'notif' && <NotifPrefsSheet onClose={closeSheet}/>}
+      {sheet === 'contacts' && <TrustedContactsSheet onClose={closeSheet}/>}
     </>
   );
 }
@@ -1521,6 +1667,258 @@ function SettingsGroup({ title, items }) {
         })}
       </div>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  NOTIFICATIONS CENTER + SETTINGS SHEETS
+// ═══════════════════════════════════════════════════════════════
+
+var NOTIF_TYPE_META = {
+  alert:  { Icon: IconShield, color: 'var(--red)',   bg: 'rgba(232,49,42,0.08)',  bd: 'rgba(232,49,42,0.2)' },
+  case:   { Icon: IconFile,   color: 'var(--navy)',  bg: 'var(--cream-2)',        bd: 'var(--mist)' },
+  notice: { Icon: IconNews,   color: 'var(--gold)',  bg: 'rgba(184,137,58,0.1)',  bd: 'rgba(184,137,58,0.25)' },
+  rating: { Icon: IconStar,   color: 'var(--gold)',  bg: 'rgba(184,137,58,0.1)',  bd: 'rgba(184,137,58,0.25)' },
+  lawyer: { Icon: IconGavel,  color: 'var(--sage)',  bg: 'rgba(74,107,92,0.08)',  bd: 'rgba(74,107,92,0.2)' },
+  zone:   { Icon: IconMap,    color: 'var(--ember)', bg: 'rgba(196,69,54,0.08)',  bd: 'rgba(196,69,54,0.2)' },
+};
+
+function NotificationsScreen() {
+  const { mode, go } = useApp();
+  const [items, setItems] = React.useState(function () { return loadNotifications(mode); });
+
+  React.useEffect(function () { setItems(loadNotifications(mode)); }, [mode]);
+
+  const handleMarkAll = () => setItems(markAllNotificationsRead(mode));
+  const handleTap = (n) => {
+    const updated = items.map(x => x.id === n.id ? Object.assign({}, x, { read: true }) : x);
+    saveNotifications(updated, mode);
+    setItems(updated);
+    if (n.route) go(n.route, n.params || {});
+  };
+
+  const hasUnread = items.some(n => !n.read);
+  const today = items.filter(n => notifIsToday(n.ts));
+  const earlier = items.filter(n => !notifIsToday(n.ts));
+
+  const renderRow = (n, i, arr) => {
+    const meta = NOTIF_TYPE_META[n.type] || NOTIF_TYPE_META.case;
+    const Ico = meta.Icon;
+    return (
+      <div key={n.id} onClick={() => handleTap(n)} style={{
+        display: 'flex', gap: 12, padding: '13px 14px', cursor: 'pointer',
+        borderBottom: i < arr.length - 1 ? '1px solid var(--mist)' : 'none',
+        background: n.read ? 'transparent' : 'rgba(74,107,92,0.05)',
+      }}>
+        <div style={{
+          width: 34, height: 34, borderRadius: 9, flexShrink: 0, background: meta.bg,
+          border: '1px solid ' + meta.bd, color: meta.color,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}><Ico size={16}/></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ fontSize: 14, fontWeight: n.read ? 500 : 600, color: 'var(--navy)',
+                          fontFamily: 'var(--font-sans)', flex: 1, minWidth: 0 }}>{n.title}</div>
+            {!n.read && <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--red)', flexShrink: 0 }}/>}
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', marginTop: 3, lineHeight: 1.45 }}>{n.body}</div>
+          <div style={{ fontSize: 11, color: 'var(--mist-2)', marginTop: 5, fontFamily: 'var(--font-sans)' }}>{notifRelTime(n.ts)}</div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <Header back/>
+      <div style={{ padding: '4px 20px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <h1 className="h-display" style={{ margin: 0, fontSize: 26, lineHeight: 1.1 }}>Notifications</h1>
+        {hasUnread && (
+          <button onClick={handleMarkAll} style={{
+            border: 'none', background: 'none', cursor: 'pointer', color: 'var(--sage)',
+            fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600,
+            display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0, whiteSpace: 'nowrap',
+          }}><IconCheck size={13} sw={3}/> Mark all read</button>
+        )}
+      </div>
+
+      {items.length === 0 ? (
+        <div style={{ padding: '48px 28px', textAlign: 'center' }}>
+          <div style={{
+            width: 54, height: 54, borderRadius: 999, margin: '0 auto 14px',
+            background: 'var(--cream-2)', border: '1px solid var(--mist)', color: 'var(--mist-2)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}><IconBell size={24}/></div>
+          <div className="serif" style={{ fontSize: 17, color: 'var(--navy)' }}>You're all caught up</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, fontFamily: 'var(--font-sans)' }}>
+            New alerts, case updates and notices will appear here.
+          </div>
+        </div>
+      ) : (
+        <div style={{ padding: '8px 20px 0' }}>
+          {today.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div className="eyebrow" style={{ marginBottom: 8 }}>Today</div>
+              <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, overflow: 'hidden' }}>
+                {today.map((n, i) => renderRow(n, i, today))}
+              </div>
+            </div>
+          )}
+          {earlier.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div className="eyebrow" style={{ marginBottom: 8 }}>Earlier</div>
+              <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, overflow: 'hidden' }}>
+                {earlier.map((n, i) => renderRow(n, i, earlier))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+// Bottom-sheet shell — tap-outside to close; fixed within the scaled phone frame
+function BottomSheet({ title, onClose, children }) {
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(11,29,53,0.55)',
+      backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--cream)', borderRadius: '24px 24px 0 0', padding: '14px 22px 30px',
+        width: '100%', maxWidth: 402, maxHeight: '82%', overflowY: 'auto', boxSizing: 'border-box',
+      }}>
+        <div style={{ width: 40, height: 4, borderRadius: 999, background: 'var(--mist)', margin: '0 auto 16px' }}/>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--navy)', fontFamily: 'var(--font-serif)' }}>{title}</div>
+          <button onClick={onClose} aria-label="Close" style={{
+            border: 'none', background: 'none', cursor: 'pointer', color: 'var(--muted)', padding: 4, display: 'flex',
+          }}><IconX size={18}/></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ToggleRow({ label, sub, on, onToggle, accent }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid var(--mist)' }}>
+      <div style={{ flex: 1, paddingRight: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--navy)', fontFamily: 'var(--font-sans)' }}>{label}</div>
+        {sub && <div style={{ fontSize: 11.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', marginTop: 2 }}>{sub}</div>}
+      </div>
+      <button onClick={onToggle} aria-pressed={on} style={{
+        width: 44, height: 26, borderRadius: 999, border: 'none', cursor: 'pointer', flexShrink: 0,
+        background: on ? (accent || 'var(--sage)') : 'var(--mist)', position: 'relative', transition: 'background 0.2s',
+      }}>
+        <span style={{ position: 'absolute', top: 3, left: on ? 21 : 3, width: 20, height: 20, borderRadius: 999,
+                       background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.18)', transition: 'left 0.2s' }}/>
+      </button>
+    </div>
+  );
+}
+
+function NotifPrefsSheet({ onClose }) {
+  const [prefs, setPrefs] = React.useState(function () { return loadNotifPrefs(); });
+  const toggle = (k) => {
+    const next = Object.assign({}, prefs, { [k]: !prefs[k] });
+    saveNotifPrefs(next);
+    setPrefs(next);
+  };
+  const rows = [
+    { k: 'alerts',    label: 'Emergency alerts', sub: 'Nearby alerts and SOS fan-out', accent: 'var(--red)' },
+    { k: 'cases',     label: 'Case updates',     sub: 'Status changes on your filings' },
+    { k: 'notices',   label: 'Campus notices',   sub: 'Routines, announcements, events' },
+    { k: 'feed',      label: 'Verification feed', sub: 'Replies and signals on your posts' },
+    { k: 'marketing', label: 'Product news',     sub: 'Occasional updates from Anchor' },
+  ];
+  return (
+    <BottomSheet title="Notifications" onClose={onClose}>
+      <p style={{ fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', lineHeight: 1.55, margin: '0 0 8px' }}>
+        Choose what Anchor notifies you about.
+      </p>
+      {rows.map(r => (
+        <ToggleRow key={r.k} label={r.label} sub={r.sub} on={!!prefs[r.k]} accent={r.accent} onToggle={() => toggle(r.k)}/>
+      ))}
+      <button onClick={onClose} className="btn btn-primary" style={{ marginTop: 18, width: '100%', height: 44, borderRadius: 11, fontSize: 14 }}>Done</button>
+    </BottomSheet>
+  );
+}
+
+function TrustedContactsSheet({ onClose }) {
+  const [contacts, setContacts] = React.useState(function () { return loadTrustedContacts(); });
+  const [name, setName] = React.useState('');
+  const [phone, setPhone] = React.useState('');
+  const [relation, setRelation] = React.useState('');
+  const [err, setErr] = React.useState('');
+
+  const fieldStyle = {
+    width: '100%', padding: '10px 13px', borderRadius: 10, border: '1px solid var(--mist-2)',
+    background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--navy)', outline: 'none', boxSizing: 'border-box',
+  };
+  const persist = (list) => { saveTrustedContacts(list); setContacts(list); };
+
+  const addContact = () => {
+    const nm = name.trim(), ph = phone.trim();
+    if (!nm) { setErr('Name is required'); return; }
+    if (!/^01[3-9]\d{8}$/.test(ph)) { setErr('Enter a valid BD phone (01XXXXXXXXX)'); return; }
+    if (contacts.some(c => c.phone === ph)) { setErr('That number is already added'); return; }
+    persist(contacts.concat([{ id: 'tc_' + Date.now(), name: nm, phone: ph, relation: relation.trim() }]));
+    setName(''); setPhone(''); setRelation(''); setErr('');
+  };
+  const removeContact = (id) => persist(contacts.filter(c => c.id !== id));
+
+  return (
+    <BottomSheet title="Trusted contacts" onClose={onClose}>
+      <p style={{ fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)', lineHeight: 1.55, margin: '0 0 14px' }}>
+        These people are notified when you trigger an emergency alert or your Dead Man's Switch fires.
+      </p>
+      {contacts.length === 0 ? (
+        <div style={{ padding: 14, borderRadius: 12, border: '1px dashed var(--mist)', background: 'var(--cream-2)',
+                      textAlign: 'center', fontSize: 13, color: 'var(--muted)', fontFamily: 'var(--font-sans)', marginBottom: 16 }}>
+          No trusted contacts yet
+        </div>
+      ) : (
+        <div style={{ marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {contacts.map(c => (
+            <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 12px', borderRadius: 12,
+                                     background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)' }}>
+              <div style={{ width: 34, height: 34, borderRadius: 999, flexShrink: 0, background: 'var(--cream-2)',
+                            border: '1px solid var(--mist)', color: 'var(--sage)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <IconPhone size={15}/>
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--navy)', fontFamily: 'var(--font-sans)' }}>{c.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>
+                  {c.phone}{c.relation ? ' · ' + c.relation : ''}
+                </div>
+              </div>
+              <button onClick={() => removeContact(c.id)} aria-label="Remove contact" style={{
+                border: 'none', background: 'none', cursor: 'pointer', color: 'var(--muted)', padding: 6, flexShrink: 0, display: 'flex',
+              }}><IconX size={16}/></button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="eyebrow" style={{ marginBottom: 8 }}>Add a contact</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <input style={fieldStyle} value={name} onChange={e => { setName(e.target.value); setErr(''); }} placeholder="Full name"/>
+        <input style={fieldStyle} type="tel" value={phone} onChange={e => { setPhone(e.target.value); setErr(''); }} placeholder="01XXXXXXXXX"/>
+        <input style={fieldStyle} value={relation} onChange={e => setRelation(e.target.value)} placeholder="Relation (optional) — e.g. Sibling"/>
+      </div>
+      {err && (
+        <div style={{ marginTop: 10, padding: '9px 12px', borderRadius: 10, background: 'rgba(232,49,42,0.07)',
+                      border: '1px solid rgba(232,49,42,0.2)', fontSize: 12.5, color: 'var(--red)', fontFamily: 'var(--font-sans)' }}>{err}</div>
+      )}
+      <button onClick={addContact} className="btn btn-primary" style={{
+        marginTop: 12, width: '100%', height: 44, borderRadius: 11, fontSize: 14,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+      }}><IconPlus size={15}/> Add contact</button>
+    </BottomSheet>
   );
 }
 
@@ -1991,4 +2389,6 @@ Object.assign(window, {
   CasesScreen, CaseDetailScreen, MapScreen, FeedScreen,
   LawyersScreen, NoticesScreen, ProfileScreen,
   RoutinesScreen, DeptRatingScreen,
+  NotificationsScreen, NotifPrefsSheet, TrustedContactsSheet, BottomSheet,
+  unreadCount, loadNotifications, loadNotifPrefs, loadTrustedContacts,
 });

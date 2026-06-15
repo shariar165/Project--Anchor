@@ -749,9 +749,26 @@ function AlertScreen() {
   const [responderCount, setResponderCount] = _useS(0);
   const [safeMarked, setSafeMarked] = _useS(false);
   const [sending, setSending] = _useS(false);
+  const [gpsResult, setGpsResult] = _useS(null);
   const startRef = _useR(null);
   const rafRef = _useR(null);
   const token = localStorage.getItem('anchor_access_token');
+
+  // Pre-check GPS when confirmation modal opens so the warning appears before the user taps SEND
+  _useE(() => {
+    if (!showConfirm) { setGpsResult(null); return; }
+    if (!navigator.geolocation) { setGpsResult({ gps_status: 'unavailable' }); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setGpsResult({
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        gps_accuracy_m: pos.coords.accuracy ? Math.round(pos.coords.accuracy) : null,
+        gps_status: 'ok',
+      }),
+      () => setGpsResult({ gps_status: 'unavailable' }),
+      { timeout: 10000, maximumAge: 30000, enableHighAccuracy: false }
+    );
+  }, [showConfirm]);
 
   const startHold = () => {
     if (activated || showConfirm) return;
@@ -780,21 +797,8 @@ function AlertScreen() {
   const handleConfirmSend = async () => {
     setSending(true);
     try {
-      let gpsPayload = { gps_status: 'unavailable' };
-      if (navigator.geolocation) {
-        try {
-          const pos = await new Promise((resolve, reject) =>
-            navigator.geolocation.getCurrentPosition(resolve, reject,
-              { timeout: 5000, maximumAge: 30000, enableHighAccuracy: true })
-          );
-          gpsPayload = {
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-            gps_accuracy_m: pos.coords.accuracy ? Math.round(pos.coords.accuracy) : null,
-            gps_status: 'ok',
-          };
-        } catch (_) { /* GPS denied or timed out — proceed without coordinates */ }
-      }
+      // Use cached GPS result from the pre-check that ran when the modal opened
+      const gpsPayload = gpsResult || { gps_status: 'unavailable' };
       const data = await alertApiPost('/v1/alerts/trigger', gpsPayload, token);
       setAlertEventId(data.event_id);
       setActivated(true);
@@ -848,6 +852,7 @@ function AlertScreen() {
           onConfirm={handleConfirmSend}
           onCancel={handleCancelConfirm}
           sending={sending}
+          gpsUnavailable={gpsResult?.gps_status === 'unavailable'}
         />
       )}
 
@@ -911,8 +916,10 @@ function AlertScreen() {
         {phase === 'during' && (
           <AlertDuring
             holding={holding} progress={progress} activated={activated}
+            eventId={alertEventId} gpsResult={gpsResult} token={token}
             onDown={startHold} onUp={cancelHold}
             responderCount={responderCount}
+            onCount={setResponderCount}
             onMarkSafe={handleMarkSafe}
             onNeedMoreHelp={handleNeedMoreHelp}
           />
@@ -924,7 +931,7 @@ function AlertScreen() {
 }
 
 // ─── Double-confirmation modal (anti-trap, spec §4.2) ────────────────────────
-function ConfirmAlertModal({ onConfirm, onCancel, sending }) {
+function ConfirmAlertModal({ onConfirm, onCancel, sending, gpsUnavailable }) {
   const [btnEnabled, setBtnEnabled] = _useS(false);
 
   _useE(() => {
@@ -981,6 +988,16 @@ function ConfirmAlertModal({ onConfirm, onCancel, sending }) {
         </div>
       ))}
 
+      {gpsUnavailable && (
+        <div style={{
+          marginTop: 8, padding: '10px 12px', borderRadius: 10,
+          background: 'rgba(184,137,58,0.12)', border: '1px solid rgba(184,137,58,0.35)',
+          fontSize: 12, color: 'rgba(184,137,58,0.95)', lineHeight: 1.5,
+        }}>
+          ⚠️ Location unavailable — nearby users won't receive an alert. Your proctor will still be notified.
+        </div>
+      )}
+
       <div style={{
         marginTop: 8, padding: '10px 12px', borderRadius: 10,
         background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
@@ -1013,8 +1030,183 @@ function ConfirmAlertModal({ onConfirm, onCancel, sending }) {
   );
 }
 
+// ─── Live alert map (dark tactical) ──────────────────────────────────────────
+// Shows the user's own location, the fan-out zone ring, and responders placed
+// at their REAL distance but a randomised (privacy-preserving) bearing. The
+// backend never returns responder coordinates — only distance_m.
+const ALERT_MAP_DEFAULT = { lat: 23.7450, lng: 90.3718 };  // campus fallback (matches MapScreen)
+
+// Deterministic 0–2π bearing from a stable key so a responder dot keeps its
+// direction across polls (only the distance is real; the angle is obfuscated).
+function _stableBearing(key) {
+  let h = 0;
+  const s = String(key || '');
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return (h % 360) * Math.PI / 180;
+}
+
+function AlertLiveMap({ eventId, gpsResult, token, onCount }) {
+  const mapElRef = _useR(null);
+  const mapRef = _useR(null);
+  const userLayerRef = _useR(null);
+  const zoneRingRef = _useR(null);
+  const dotLayersRef = _useR([]);
+  const [poll, setPoll] = _useS({ zoneRadiusM: null, responders: [] });
+  const [reconnecting, setReconnecting] = _useS(false);
+
+  const hasGps = gpsResult && gpsResult.gps_status === 'ok'
+    && typeof gpsResult.lat === 'number' && typeof gpsResult.lng === 'number';
+  const center = hasGps ? { lat: gpsResult.lat, lng: gpsResult.lng } : ALERT_MAP_DEFAULT;
+  const leafletReady = typeof window !== 'undefined' && window.L;
+
+  // 1) Init map once
+  _useE(() => {
+    if (!leafletReady || !mapElRef.current || mapRef.current) return;
+    const map = L.map(mapElRef.current, {
+      center: [center.lat, center.lng],
+      zoom: hasGps ? 15 : 13,
+      zoomControl: false,
+      attributionControl: false,
+    });
+    // Dark tactical tiles (free, no key)
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19, detectRetina: true,
+      attribution: '© OpenStreetMap © CARTO',
+    }).addTo(map);
+    mapRef.current = map;
+    // Container mounts inside an already-laid-out view; nudge sizing just in case.
+    setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 120);
+
+    // User beacon (only when we actually have the user's location)
+    if (hasGps) {
+      const icon = L.divIcon({
+        className: '',
+        html: '<div class="alert-beacon"><span class="alert-beacon-ring"></span><span class="alert-beacon-dot"></span></div>',
+        iconSize: [22, 22], iconAnchor: [11, 11],
+      });
+      userLayerRef.current = L.marker([center.lat, center.lng], { icon, interactive: false }).addTo(map);
+    }
+
+    return () => {
+      if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
+      userLayerRef.current = null; zoneRingRef.current = null; dotLayersRef.current = [];
+    };
+  }, [leafletReady]);
+
+  // 2) Poll responders every 5s while the alert is live
+  _useE(() => {
+    if (!eventId) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const data = await alertApiGet(`/v1/alerts/${eventId}/responders`, token);
+        if (cancelled) return;
+        setReconnecting(false);
+        setPoll({ zoneRadiusM: data.zone_radius_m ?? null, responders: data.responders || [] });
+        if (onCount) onCount(data.responder_count || 0);
+      } catch (e) {
+        if (cancelled) return;
+        setReconnecting(true);  // keep last drawn state, surface a subtle indicator
+        console.warn('[AlertMap] responder poll failed:', e.message);
+      }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [eventId, token]);
+
+  // 3) Draw zone ring + responder dots whenever poll data changes
+  _useE(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const radius = poll.zoneRadiusM || 1000;  // fall back to backend default if no zone
+
+    // Zone ring
+    if (zoneRingRef.current) { try { map.removeLayer(zoneRingRef.current); } catch (_) {} zoneRingRef.current = null; }
+    if (poll.zoneRadiusM) {
+      zoneRingRef.current = L.circle([center.lat, center.lng], {
+        radius, color: '#E8312A', fillColor: '#E8312A', fillOpacity: 0.08, weight: 1.5, interactive: false,
+      }).addTo(map);
+    }
+
+    // Responder dots — clear then redraw
+    dotLayersRef.current.forEach(l => { try { map.removeLayer(l); } catch (_) {} });
+    dotLayersRef.current = [];
+    const cosLat = Math.cos(center.lat * Math.PI / 180) || 1e-9;
+    poll.responders.forEach((r, i) => {
+      const dist = (typeof r.distance_m === 'number' && r.distance_m >= 0) ? r.distance_m : radius / 2;
+      const theta = _stableBearing(r.created_at || String(i));
+      const dLat = (dist * Math.cos(theta)) / 111000;
+      const dLng = (dist * Math.sin(theta)) / (111000 * cosLat);
+      const icon = L.divIcon({
+        className: '',
+        html: '<div class="responder-dot"></div>',
+        iconSize: [14, 14], iconAnchor: [7, 7],
+      });
+      const m = L.marker([center.lat + dLat, center.lng + dLng], { icon, interactive: false }).addTo(map);
+      dotLayersRef.current.push(m);
+    });
+  }, [JSON.stringify(poll)]);
+
+  if (!leafletReady) {
+    return (
+      <div style={{
+        padding: '18px', borderRadius: 14, textAlign: 'center',
+        background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+        fontSize: 12.5, color: 'rgba(247,243,238,0.6)',
+      }}>
+        Map unavailable on this device.
+      </div>
+    );
+  }
+
+  const count = poll.responders.length;
+  return (
+    <div style={{ position: 'relative', borderRadius: 14, overflow: 'hidden', border: '1px solid rgba(232,49,42,0.3)' }}>
+      <div ref={mapElRef} style={{ height: 240, background: '#0A0A0C' }}/>
+
+      {/* Count overlay */}
+      <div style={{
+        position: 'absolute', left: 10, bottom: 10, zIndex: 500,
+        display: 'flex', alignItems: 'center', gap: 7,
+        padding: '6px 11px', borderRadius: 999,
+        background: 'rgba(10,10,12,0.82)', border: '1px solid rgba(232,49,42,0.4)',
+        fontSize: 11.5, color: '#FFD9D7', fontFamily: 'var(--font-sans)', fontWeight: 600,
+      }}>
+        <span style={{ width: 7, height: 7, borderRadius: 999, background: '#E8312A',
+          animation: 'statusPulse 1.5s ease-in-out infinite' }}/>
+        {count} {count === 1 ? 'person' : 'people'} responding
+      </div>
+
+      {/* Location-unavailable banner */}
+      {!hasGps && (
+        <div style={{
+          position: 'absolute', left: 10, right: 10, top: 10, zIndex: 500,
+          padding: '7px 11px', borderRadius: 10, textAlign: 'center',
+          background: 'rgba(184,137,58,0.18)', border: '1px solid rgba(184,137,58,0.4)',
+          fontSize: 11, color: '#E8C57A', fontFamily: 'var(--font-sans)',
+        }}>
+          Location unavailable — map centered on campus
+        </div>
+      )}
+
+      {/* Reconnecting indicator */}
+      {reconnecting && (
+        <div style={{
+          position: 'absolute', right: 10, bottom: 10, zIndex: 500,
+          padding: '5px 9px', borderRadius: 999,
+          background: 'rgba(10,10,12,0.82)', border: '1px solid rgba(255,255,255,0.12)',
+          fontSize: 10.5, color: 'rgba(247,243,238,0.6)', fontFamily: 'var(--font-sans)',
+        }}>
+          reconnecting…
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── During phase ────────────────────────────────────────────────────────────
-function AlertDuring({ holding, progress, activated, onDown, onUp, responderCount, onMarkSafe, onNeedMoreHelp }) {
+function AlertDuring({ holding, progress, activated, eventId, gpsResult, token, onDown, onUp, responderCount, onMarkSafe, onNeedMoreHelp, onCount }) {
   const circ = 2 * Math.PI * 102;
 
   if (activated) {
@@ -1039,6 +1231,9 @@ function AlertDuring({ holding, progress, activated, onDown, onUp, responderCoun
             </div>
           </div>
         </div>
+
+        {/* Live tactical map — your location, fan-out zone, responders */}
+        <AlertLiveMap eventId={eventId} gpsResult={gpsResult} token={token} onCount={onCount}/>
 
         {/* Responder count */}
         <div style={{

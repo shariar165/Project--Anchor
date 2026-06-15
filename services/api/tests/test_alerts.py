@@ -218,6 +218,57 @@ async def test_respond_cannot_help(client: AsyncClient, registered_user, second_
     assert resp.status_code == 200
 
 
+# ─── Responder listing tests (owner-only, distance-only) ─────────────────────
+
+@pytest.mark.asyncio
+async def test_list_responders_owner(client: AsyncClient, registered_user, second_user, db_session, mock_redis, alert_event_id):
+    """Owner can list responders; response carries zone radius + distance, never coordinates."""
+    # Second user responds with a known distance
+    await client.post(f"/v1/alerts/{alert_event_id}/respond",
+                      json={"response_type": "responding", "distance_m": 200},
+                      headers=_auth(second_user["tokens"]))
+
+    resp = await client.get(f"/v1/alerts/{alert_event_id}/responders",
+                            headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert str(data["event_id"]) == alert_event_id
+    assert data["zone_radius_m"] is not None  # zone exists (alert was triggered with GPS)
+    assert data["responder_count"] == 1
+    assert len(data["responders"]) == 1
+    item = data["responders"][0]
+    assert item["distance_m"] == 200
+    assert item["response_type"] == "responding"
+    # Privacy: responder coordinates are never exposed
+    assert "lat" not in item
+    assert "lng" not in item
+
+
+@pytest.mark.asyncio
+async def test_list_responders_non_owner_forbidden(client: AsyncClient, registered_user, second_user, db_session, mock_redis, alert_event_id):
+    """A non-owner cannot list another user's responders."""
+    resp = await client.get(f"/v1/alerts/{alert_event_id}/responders",
+                            headers=_auth(second_user["tokens"]))
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_responders_no_zone(client: AsyncClient, registered_user, db_session, mock_redis):
+    """Alert triggered without GPS has no zone — endpoint still 200 with null radius and empty list."""
+    trigger = await client.post("/v1/alerts/trigger", json={"gps_status": "unavailable"},
+                                headers=_auth(registered_user["tokens"]))
+    assert trigger.status_code == 200, trigger.text
+    event_id = trigger.json()["event_id"]
+
+    resp = await client.get(f"/v1/alerts/{event_id}/responders",
+                            headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["zone_radius_m"] is None
+    assert data["responder_count"] == 0
+    assert data["responders"] == []
+
+
 # ─── Evidence upload tests ───────────────────────────────────────────────────
 
 @pytest.mark.asyncio

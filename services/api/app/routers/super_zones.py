@@ -137,6 +137,7 @@ async def create_super_zone(
         center_lng=c_lng,
         radius_m=r_m,
         description_public=body.description,
+        expires_at=body.expires_at,
         created_by_id=token.user_id,
         created_by_role="super_admin",
         status=ZoneStatus.active,

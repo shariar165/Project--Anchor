@@ -26,11 +26,11 @@ from app.models.alert import (
 from app.models.user import User, AccountStatus
 from app.redis import get_redis
 from app.schemas.alerts import (
-    AlertStatusResponse, AlertTriggerRequest, AlertTriggerResponse,
+    AlertRespondersResponse, AlertStatusResponse, AlertTriggerRequest, AlertTriggerResponse,
     EvidenceUploadRequest, EvidenceUploadResponse,
     FCMTokenRegisterRequest, LocationUpdateRequest,
     NearbyAlertItem, PanicClaimRequest, PanicTriggerRequest,
-    Phase1SaveRequest, Phase1SaveResponse, RespondRequest,
+    Phase1SaveRequest, Phase1SaveResponse, ResponderItem, RespondRequest,
 )
 from app.services import alert_svc
 from app.services.audit import log_event as audit_log
@@ -393,6 +393,63 @@ async def get_alert_status(
         responder_count=resp_count or 0,
         lat=event.lat,
         lng=event.lng,
+    )
+
+
+@router.get("/v1/alerts/{event_id}/responders", response_model=AlertRespondersResponse)
+@limiter.limit("60/minute")
+async def list_alert_responders(
+    event_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(get_current_user),
+):
+    """
+    List responders for an alert — owner only.
+
+    Returns distance-only data (never responder coordinates) plus the alert
+    zone radius, so the client can draw the fan-out ring and place responder
+    dots at their real distance with a client-side randomised bearing.
+    """
+    result = await db.execute(select(AlertEvent).where(AlertEvent.event_id == event_id))
+    event = result.scalars().first()
+    if not event:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    actor_hash = alert_svc.compute_anonymous_hash(token.user_id)
+    if event.anonymous_actor_hash != actor_hash:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Not authorized for this alert")
+
+    # Zone radius — null-safe (no zone exists if GPS was unavailable at trigger)
+    zone_radius_m = None
+    if event.alert_zone_id:
+        zone = await db.scalar(select(Zone).where(Zone.id == event.alert_zone_id))
+        if zone:
+            zone_radius_m = zone.radius_m
+
+    rows = await db.execute(
+        select(AlertResponse)
+        .where(
+            and_(
+                AlertResponse.event_id == event.id,
+                AlertResponse.response_type == ResponseType.responding,
+            )
+        )
+        .order_by(AlertResponse.created_at)
+    )
+    responders = [
+        ResponderItem(
+            distance_m=r.distance_m,
+            response_type=r.response_type.value,
+            created_at=r.created_at,
+        )
+        for r in rows.scalars().all()
+    ]
+    return AlertRespondersResponse(
+        event_id=event.event_id,
+        zone_radius_m=zone_radius_m,
+        responder_count=len(responders),
+        responders=responders,
     )
 
 

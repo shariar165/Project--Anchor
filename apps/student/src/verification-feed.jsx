@@ -127,6 +127,9 @@ function StepUpModal({ onDone, onCancel }) {
 }
 
 // ─── Verification Feed Screen — newspaper layout ─────────────────────────────
+// DEPRECATED: the `feed` and `news-feed` routes both now render FeedScreen
+// (screens-2.jsx), which has the professional layout + inline Corroborate/Challenge
+// and a campus/national edition toggle. This component is no longer routed to.
 
 function VerificationFeedScreen() {
   const { go, back, mode, auth } = useApp();
@@ -317,14 +320,14 @@ function VerificationFeedScreen() {
 // ─── Publish Screen ───────────────────────────────────────────────────────────
 
 function PublishScreen() {
-  const { go, back, mode, auth } = useApp();
-  const hasTenant = !!auth.user?.tenant_id;
-  const canPublishCampus = hasTenant;
+  const { go, back, replace, mode, auth } = useApp();
+  // Campus scope is offered whenever the app is in Campus mode (DIU students).
+  const canPublishCampus = mode === 'campus';
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
 
   const [step, setStep] = React.useState(0);
   const [form, setForm] = React.useState({
-    category: '', scope: (mode === 'campus' && hasTenant) ? 'campus' : 'national',
+    category: '', scope: mode === 'campus' ? 'campus' : 'national',
     title: '', body: '', tags: [], geo_lat: '', geo_lng: '', geo_address: '', attachmentIds: [],
   });
   const [tagInput, setTagInput] = React.useState('');
@@ -398,7 +401,9 @@ function PublishScreen() {
       }
 
       const data = await res.json();
-      go('feed-post', { id: data.post_id });
+      // replace() instead of go() so the device Back button skips the publish
+      // form (which would otherwise remount at step 0) and returns to the feed.
+      replace('feed-post', { id: data.post_id });
     } catch (e) {
       setError(e.message);
     }

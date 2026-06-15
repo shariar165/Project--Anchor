@@ -56,7 +56,14 @@ function AppProvider({ children }) {
   const [mode, setMode] = useState(
     (stored?.isAuthenticated && stored?.user?.role === 'user') ? 'country' : 'campus'
   );
-  const [lang, setLang] = useState('EN');       // 'EN' | 'BN'
+  const [lang, setLangRaw] = useState(
+    localStorage.getItem('anchor_lang') === 'BN' ? 'BN' : 'EN'
+  );       // 'EN' | 'BN'
+  const setLang = (next) => {
+    const val = next === 'BN' ? 'BN' : 'EN';
+    try { localStorage.setItem('anchor_lang', val); } catch { /* storage unavailable */ }
+    setLangRaw(val);
+  };
   const [history, setHistory] = useState([]);
   const [auth, setAuth] = useState(
     stored || { isAuthenticated: false, user: null, authStep: null, pendingIdentifier: null }
@@ -87,6 +94,9 @@ function AppProvider({ children }) {
       return h.slice(0, -1);
     });
   };
+  // Navigate WITHOUT pushing the current route onto history (replace-in-place).
+  // Used after publishing so Back skips the now-stale multi-step form.
+  const replace = (name, params = {}) => setRoute({ name, params });
 
   const login = (userData) => {
     const newAuth = { isAuthenticated: true, user: userData, authStep: null, pendingIdentifier: null };
@@ -146,7 +156,7 @@ function AppProvider({ children }) {
     };
   }, [auth.isAuthenticated, geofenceConsent]);
 
-  const value = { mode, setMode, route, go, back, lang, setLang, auth, login, logout,
+  const value = { mode, setMode, route, go, back, replace, lang, setLang, auth, login, logout,
                   setAuthPending, geofenceConsent, setGeofenceConsent };
   return (
     <AppCtx.Provider value={value}>
@@ -174,8 +184,9 @@ function AppProvider({ children }) {
 // Header — logo, mode word, bell, avatar
 // ─────────────────────────────────────────────────────────────
 function Header({ title, subtitle, back: showBack = false, transparent = false }) {
-  const { back, mode, auth } = useApp();
+  const { back, go, mode, auth } = useApp();
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
+  const unread = (typeof unreadCount === 'function') ? unreadCount(mode) : 0;
   const user = auth && auth.user;
   const initials = user && user.name
     ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
@@ -225,17 +236,23 @@ function Header({ title, subtitle, back: showBack = false, transparent = false }
 
         <div style={{ flex: 1 }}/>
 
-        <button style={{
+        <button onClick={() => go('notifications')} aria-label="Notifications" style={{
           position: 'relative', width: 38, height: 38, borderRadius: 999,
           background: 'rgba(255,255,255,0.6)', border: '1px solid var(--mist)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           cursor: 'pointer', color: 'var(--navy)',
         }}>
           <IconBell size={17}/>
-          <span style={{
-            position: 'absolute', top: 6, right: 8, width: 7, height: 7, borderRadius: 999,
-            background: 'var(--red)', border: '1.5px solid var(--cream)',
-          }}/>
+          {unread > 0 && (
+            <span style={{
+              position: 'absolute', top: unread > 9 ? 1 : 3, right: unread > 9 ? 1 : 4,
+              minWidth: 15, height: 15, padding: '0 3px', borderRadius: 999,
+              background: 'var(--red)', border: '1.5px solid var(--cream)', color: '#fff',
+              fontSize: 9, fontWeight: 700, lineHeight: '12px', boxSizing: 'border-box',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontFamily: 'var(--font-sans)',
+            }}>{unread > 9 ? '9+' : unread}</span>
+          )}
         </button>
 
         <div style={{
@@ -348,7 +365,7 @@ function RouteView() {
     case:    CaseDetailScreen,
     alert:   AlertScreen,
     map:     MapScreen,
-    feed:            VerificationFeedScreen,
+    feed:            FeedScreen,
     'news-feed':     FeedScreen,
     'feed-publish':  PublishScreen,
     'feed-post':     PostDetailScreen,
@@ -359,6 +376,7 @@ function RouteView() {
     notices:      NoticesScreen,
     routines:     RoutinesScreen,
     'dept-rating': DeptRatingScreen,
+    notifications: NotificationsScreen,
     profile: ProfileScreen,
     compose: ComposeScreen,
     rights:  RightsScreen,
