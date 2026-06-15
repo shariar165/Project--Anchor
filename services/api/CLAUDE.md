@@ -213,7 +213,7 @@ Use forward slashes in the path — backslashes are treated as escape sequences 
 
 **AI warmup** — the RAG service (`services/rag`) auto-loads `sample_corpus.py` into the `national` ChromaDB namespace at startup if empty. The Core API no longer runs warmup directly. Set `DISABLE_AI_WARMUP=true` in `services/rag/.env` to skip on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer models cause an OOM crash loop on ephemeral containers).
 
-**Known production blocker** — see `docs/specs/todo-registration-ghostaccounts.md` at repo root: `POST /auth/register` immediately creates a `User` row in PostgreSQL. If the OTP expires before verification, the user is permanently stuck (can't verify, login, or re-register). Fix: store the registration payload in Redis with OTP TTL; create the DB row only on successful OTP verification. A temporary re-registration workaround is live but not a permanent fix.
+**Registration flow** — `POST /auth/register` stores the payload as JSON in Redis (`reg_payload:{identifier}`, TTL = `otp_ttl`) and creates no DB row. The `User` row is created as `active` only when the OTP is successfully verified via `/auth/verify-email` or `/auth/verify-phone`. This prevents ghost accounts — if the OTP expires, both Redis keys vanish and the user can re-register cleanly. Old `pending_verification` rows (from before this fix) are deleted on sight when a new registration arrives for the same identifier.
 
 ## JWT Notes
 Uses **PyJWT** (not python-jose — python-jose does not support EdDSA). UUID values in payloads must be converted to `str()` before encoding — PyJWT does not serialize UUID objects.

@@ -389,5 +389,5 @@ The solver honors `TimetableConstraint` rows with `enforcement=hard|soft` and `w
 
 ### Known production blockers
 
-- **`docs/specs/todo-registration-ghostaccounts.md`** — Registration ghost-account bug: `POST /auth/register` creates a DB row immediately; if the OTP expires the user is permanently stuck. Fix is to store payload in Redis and only create the `User` row on successful OTP verification. A temporary workaround (re-registration re-sends OTP) is in place.
+- **`docs/specs/todo-registration-ghost-accounts.md`** — Registration ghost-account bug: **Fixed.** `POST /auth/register` now stores the payload in Redis (same TTL as the OTP) and creates no DB row. The `User` row is created as `active` only on successful OTP verification. Old `pending_verification` ghost rows are cleaned up on sight.
 - **Security** — See `services/api/CLAUDE.md` § "Security — Known Open Issues" for SEC-12 through SEC-16 (TOTP secret stored plaintext, refresh token rotation race, step-up token binding, etc.).
