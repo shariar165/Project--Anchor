@@ -1,26 +1,24 @@
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import update
-from app.models.user import User, AccountStatus
 
 
-async def _active_user_tokens(client: AsyncClient, db_session, phone: str) -> dict:
-    await client.post("/auth/register", json={
+async def _active_user_tokens(client: AsyncClient, phone: str) -> dict:
+    reg = await client.post("/auth/register", json={
         "full_name": "Rotation User",
         "phone": phone,
         "password": "SecurePass123!",
         "terms": True,
         "data_consent": True,
     })
-    await db_session.execute(update(User).where(User.phone == phone).values(status=AccountStatus.active, phone_verified=True))
-    await db_session.commit()
+    otp = reg.json()["dev_otp"]
+    await client.post("/auth/verify-phone", json={"phone": phone, "code": otp})
     resp = await client.post("/auth/login", json={"identifier": phone, "password": "SecurePass123!"})
     return resp.json()
 
 
 @pytest.mark.asyncio
-async def test_refresh_issues_new_pair(client: AsyncClient, db_session):
-    tokens = await _active_user_tokens(client, db_session, "01788000001")
+async def test_refresh_issues_new_pair(client: AsyncClient):
+    tokens = await _active_user_tokens(client, "01788000001")
     resp = await client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
     assert resp.status_code == 200
     new_tokens = resp.json()
@@ -29,8 +27,8 @@ async def test_refresh_issues_new_pair(client: AsyncClient, db_session):
 
 
 @pytest.mark.asyncio
-async def test_old_refresh_blacklisted_after_rotation(client: AsyncClient, db_session):
-    tokens = await _active_user_tokens(client, db_session, "01788000002")
+async def test_old_refresh_blacklisted_after_rotation(client: AsyncClient):
+    tokens = await _active_user_tokens(client, "01788000002")
     await client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
     # Replay old refresh → should detect theft → 401
     resp = await client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
@@ -38,8 +36,8 @@ async def test_old_refresh_blacklisted_after_rotation(client: AsyncClient, db_se
 
 
 @pytest.mark.asyncio
-async def test_logout_blacklists_access_token(client: AsyncClient, db_session):
-    tokens = await _active_user_tokens(client, db_session, "01788000003")
+async def test_logout_blacklists_access_token(client: AsyncClient):
+    tokens = await _active_user_tokens(client, "01788000003")
     access = tokens["access_token"]
     refresh = tokens["refresh_token"]
 

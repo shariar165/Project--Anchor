@@ -16,7 +16,8 @@ async def test_register_phone_success(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_register_duplicate(client: AsyncClient):
+async def test_register_resend_while_pending(client: AsyncClient):
+    # Re-registering before verifying resends the OTP — no ghost account, returns 201.
     payload = {
         "full_name": "Dup User",
         "phone": "01712345679",
@@ -25,6 +26,24 @@ async def test_register_duplicate(client: AsyncClient):
         "data_consent": True,
     }
     await client.post("/auth/register", json=payload)
+    resp = await client.post("/auth/register", json=payload)
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_register_duplicate_active_account(client: AsyncClient):
+    # Re-registering after successful verification → 409.
+    payload = {
+        "full_name": "Dup User",
+        "phone": "01799990001",
+        "password": "SecurePass123!",
+        "terms": True,
+        "data_consent": True,
+    }
+    reg = await client.post("/auth/register", json=payload)
+    otp = reg.json()["dev_otp"]
+    await client.post("/auth/verify-phone", json={"phone": "01799990001", "code": otp})
+
     resp = await client.post("/auth/register", json=payload)
     assert resp.status_code == 409
 

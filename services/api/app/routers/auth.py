@@ -1,7 +1,7 @@
+import json
 import uuid
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, update, func
 from app.limiter import limiter
@@ -96,28 +96,12 @@ async def register(body: RegisterRequest, request: Request, db: AsyncSession = D
         existing_user = existing.scalars().first()
         if existing_user:
             if existing_user.status == AccountStatus.pending_verification:
-                # Update credentials in case the user retried with a different password,
-                # then resend OTP so they can complete the verification they started.
-                if await pwd_svc.check_pwned(body.password):
-                    raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password found in breach database")
-                existing_user.password_hash = pwd_svc.hash_password(body.password)
-                existing_user.full_name = body.full_name
-                code = ""
-                sent = False
-                if existing_user.email:
-                    code = await otp_svc.generate_and_store(redis, existing_user.email, "registration")
-                    sent = await email_svc.send_verification_email(existing_user.email, code)
-                elif existing_user.phone:
-                    code = await otp_svc.generate_and_store(redis, existing_user.phone, "registration")
-                    sent = await sms_svc.send_otp_sms(existing_user.phone, code)
-                resp = {
-                    "message": "Account pending verification. A new code has been sent.",
-                    "pending_verification": True,
-                }
-                if not sent and settings.environment in ("development", "testing") and code:
-                    resp["dev_otp"] = code
-                return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=resp)
-            raise HTTPException(status.HTTP_409_CONFLICT, detail="Account already exists")
+                # Ghost account from the old flow — delete it so the unique constraint
+                # won't block the new Redis-based user creation on verify.
+                await db.delete(existing_user)
+                await db.flush()
+            else:
+                raise HTTPException(status.HTTP_409_CONFLICT, detail="Account already exists")
 
     # HIBP check
     if await pwd_svc.check_pwned(body.password):
@@ -138,17 +122,18 @@ async def register(body: RegisterRequest, request: Request, db: AsyncSession = D
         if body.tenant_id:
             tenant_id = body.tenant_id
 
-    user = User(
-        full_name=body.full_name,
-        email=body.email,
-        phone=body.phone,
-        password_hash=pwd_svc.hash_password(body.password),
-        role=role,
-        tenant_id=tenant_id,
-        status=AccountStatus.pending_verification,
-    )
-    db.add(user)
-    await db.flush()
+    # Store registration payload in Redis (same TTL as the OTP).
+    # No DB row is created until the user verifies — prevents ghost accounts.
+    identifier = body.email or body.phone
+    payload = {
+        "full_name": body.full_name,
+        "email": body.email,
+        "phone": body.phone,
+        "password_hash": pwd_svc.hash_password(body.password),
+        "role": role.value,
+        "tenant_id": str(tenant_id) if tenant_id else None,
+    }
+    await redis.set(f"reg_payload:{identifier}", json.dumps(payload), ex=settings.otp_ttl)
 
     # Send verification OTP
     code: str = ""
@@ -160,7 +145,6 @@ async def register(body: RegisterRequest, request: Request, db: AsyncSession = D
         code = await otp_svc.generate_and_store(redis, body.phone, "registration")
         sent = await sms_svc.send_otp_sms(body.phone, code)
 
-    await audit_svc.log_event(db, "user_registered", user.id, get_ip(request))
     resp: dict = {"message": "Account created. Check your email/phone for a verification code."}
     if not sent and settings.environment in ("development", "testing") and code:
         resp["dev_otp"] = code
@@ -380,16 +364,29 @@ async def verify_email(body: VerifyEmailRequest, request: Request, db: AsyncSess
     if not ok:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid or expired code")
 
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalars().first()
-    if not user:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    raw = await redis.get(f"reg_payload:{email}")
+    if not raw:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Registration session expired. Please register again.")
 
-    if user.status not in (AccountStatus.pending_verification, AccountStatus.active):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Account is not eligible for activation")
-    user.email_verified = True
-    user.status = AccountStatus.active
+    data = json.loads(raw)
+    await redis.delete(f"reg_payload:{email}")
+
+    tenant_id = uuid.UUID(data["tenant_id"]) if data.get("tenant_id") else None
+    user = User(
+        full_name=data["full_name"],
+        email=data.get("email"),
+        phone=data.get("phone"),
+        password_hash=data["password_hash"],
+        role=Role(data["role"]),
+        tenant_id=tenant_id,
+        status=AccountStatus.active,
+        email_verified=True,
+    )
+    db.add(user)
+    await db.flush()
+
     tokens = await _issue_token_pair(db, redis, request, user)
+    await audit_svc.log_event(db, "user_registered", user.id, get_ip(request))
     await audit_svc.log_event(db, "email_verified", user.id, get_ip(request))
     return tokens
 
@@ -400,36 +397,48 @@ async def verify_phone(body: VerifyPhoneRequest, request: Request, db: AsyncSess
     if not ok:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid or expired code")
 
-    result = await db.execute(select(User).where(User.phone == body.phone))
-    user = result.scalars().first()
-    if not user:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    raw = await redis.get(f"reg_payload:{body.phone}")
+    if not raw:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Registration session expired. Please register again.")
 
-    if user.status not in (AccountStatus.pending_verification, AccountStatus.active):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Account is not eligible for activation")
-    user.phone_verified = True
-    user.status = AccountStatus.active
+    data = json.loads(raw)
+    await redis.delete(f"reg_payload:{body.phone}")
+
+    tenant_id = uuid.UUID(data["tenant_id"]) if data.get("tenant_id") else None
+    user = User(
+        full_name=data["full_name"],
+        email=data.get("email"),
+        phone=data.get("phone"),
+        password_hash=data["password_hash"],
+        role=Role(data["role"]),
+        tenant_id=tenant_id,
+        status=AccountStatus.active,
+        phone_verified=True,
+    )
+    db.add(user)
+    await db.flush()
+
     tokens = await _issue_token_pair(db, redis, request, user)
+    await audit_svc.log_event(db, "user_registered", user.id, get_ip(request))
     await audit_svc.log_event(db, "phone_verified", user.id, get_ip(request))
     return tokens
 
 
 @router.post("/resend-verification")
-async def resend_verification(body: ResendVerificationRequest, db: AsyncSession = Depends(get_db), redis=Depends(get_redis)):
-    result = await db.execute(
-        select(User).where(or_(User.email == body.identifier, User.phone == body.identifier))
-    )
-    user = result.scalars().first()
+async def resend_verification(body: ResendVerificationRequest, redis=Depends(get_redis)):
     settings = get_settings()
     sent = True
     code = ""
-    if user and user.status == AccountStatus.pending_verification:
-        if user.email and body.identifier == user.email:
-            code = await otp_svc.generate_and_store(redis, user.email, "registration")
-            sent = await email_svc.send_verification_email(user.email, code)
-        elif user.phone:
-            code = await otp_svc.generate_and_store(redis, user.phone, "registration")
-            sent = await sms_svc.send_otp_sms(user.phone, code)
+
+    raw = await redis.get(f"reg_payload:{body.identifier}")
+    if raw:
+        await redis.expire(f"reg_payload:{body.identifier}", settings.otp_ttl)
+        if "@" in body.identifier:
+            code = await otp_svc.generate_and_store(redis, body.identifier, "registration")
+            sent = await email_svc.send_verification_email(body.identifier, code)
+        else:
+            code = await otp_svc.generate_and_store(redis, body.identifier, "registration")
+            sent = await sms_svc.send_otp_sms(body.identifier, code)
 
     resp = {"message": "If pending verification, a new code has been sent"}
     if not sent and settings.environment in ("development", "testing") and code:

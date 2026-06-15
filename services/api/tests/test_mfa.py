@@ -1,27 +1,25 @@
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import update
-from app.models.user import User, AccountStatus
 
 
-async def _login_tokens(client, db_session, phone):
-    await client.post("/auth/register", json={
+async def _login_tokens(client, phone):
+    reg = await client.post("/auth/register", json={
         "full_name": "MFA User",
         "phone": phone,
         "password": "SecurePass123!",
         "terms": True,
         "data_consent": True,
     })
-    await db_session.execute(update(User).where(User.phone == phone).values(status=AccountStatus.active, phone_verified=True))
-    await db_session.commit()
+    otp = reg.json()["dev_otp"]
+    await client.post("/auth/verify-phone", json={"phone": phone, "code": otp})
     resp = await client.post("/auth/login", json={"identifier": phone, "password": "SecurePass123!"})
     return resp.json()
 
 
 @pytest.mark.asyncio
-async def test_totp_enroll_and_verify(client: AsyncClient, db_session):
+async def test_totp_enroll_and_verify(client: AsyncClient):
     import pyotp
-    tokens = await _login_tokens(client, db_session, "01766000001")
+    tokens = await _login_tokens(client, "01766000001")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
 
     # Enroll
@@ -44,10 +42,9 @@ async def test_totp_enroll_and_verify(client: AsyncClient, db_session):
 
 
 @pytest.mark.asyncio
-async def test_mfa_login_flow(client: AsyncClient, db_session, mock_redis):
+async def test_mfa_login_flow(client: AsyncClient, mock_redis):
     import pyotp
-    redis_mock, redis_store = mock_redis  # mock_redis yields (FakeRedis, dict)
-    tokens = await _login_tokens(client, db_session, "01766000002")
+    tokens = await _login_tokens(client, "01766000002")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
 
     # Enroll MFA

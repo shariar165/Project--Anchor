@@ -294,9 +294,9 @@ async def test_pending_account_cannot_login(client):
     })
     assert reg.status_code == 201
 
+    # No DB row exists until verify — unverified user looks like unknown user to login.
     login = await client.post("/auth/login", json={"identifier": email, "password": "PendingPass!1"})
-    assert login.status_code == 403
-    assert "verified" in login.json()["detail"].lower()
+    assert login.status_code == 401
 
 
 # ---------------------------------------------------------------------------

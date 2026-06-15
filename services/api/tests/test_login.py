@@ -30,8 +30,9 @@ async def test_login_unverified_rejected(client: AsyncClient, mock_redis, db_ses
         "terms": True,
         "data_consent": True,
     })
+    # No DB row exists until verify — unverified user looks like unknown user to login.
     resp = await client.post("/auth/login", json={"identifier": phone, "password": "SecurePass123!"})
-    assert resp.status_code == 403
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -55,20 +56,17 @@ async def test_login_wrong_password(client: AsyncClient, db_session):
 
 
 @pytest.mark.asyncio
-async def test_login_success(client: AsyncClient, db_session):
-    from sqlalchemy import update
-    from app.models.user import User, AccountStatus
-
+async def test_login_success(client: AsyncClient):
     phone = "01799000004"
-    await client.post("/auth/register", json={
+    reg = await client.post("/auth/register", json={
         "full_name": "Active User",
         "phone": phone,
         "password": "SecurePass123!",
         "terms": True,
         "data_consent": True,
     })
-    await db_session.execute(update(User).where(User.phone == phone).values(status=AccountStatus.active, phone_verified=True))
-    await db_session.commit()
+    otp = reg.json()["dev_otp"]
+    await client.post("/auth/verify-phone", json={"phone": phone, "code": otp})
 
     resp = await client.post("/auth/login", json={"identifier": phone, "password": "SecurePass123!"})
     assert resp.status_code == 200
