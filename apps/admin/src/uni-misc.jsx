@@ -235,6 +235,7 @@ function UniGeofence({ onGo }) {
   const [drawMode, setDrawMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [recentAlerts, setRecentAlerts] = useState([]);
   const [mapError, setMapError] = useState(null);
 
@@ -242,12 +243,13 @@ function UniGeofence({ onGo }) {
   const leafletMapRef = useRef(null);
   const polygonRef = useRef(null);
   const markersRef = useRef([]);
+  const savedLayersRef = useRef([]);
   const drawModeRef = useRef(false);
 
   const loadZones = () => {
     AnchorAPI.apiGet('/v1/admin/campus-zones')
-      .then(r => setZones(Array.isArray(r) ? r : []))
-      .catch(() => {});
+      .then(r => { setZones(Array.isArray(r) ? r : []); setLoadError(null); })
+      .catch(e => setLoadError(e.message || 'Failed to load zones'));
   };
 
   useEffect(() => {
@@ -305,6 +307,25 @@ function UniGeofence({ onGo }) {
       markersRef.current.push(m);
     });
   }, [vertices]);
+
+  // Draw all saved zones as persistent overlays (skip selected — shown by vertex effect above)
+  useEffect(() => {
+    const map = leafletMapRef.current;
+    if (!map || !window.L) return;
+    savedLayersRef.current.forEach(l => l.remove());
+    savedLayersRef.current = [];
+    zones.forEach(zone => {
+      if (!zone.polygon_coords || zone.polygon_coords.length < 3) return;
+      if (selectedZone?.id === zone.id) return;
+      const layer = window.L.polygon(zone.polygon_coords, {
+        color: '#4A6B5C', fillColor: '#4A6B5C', fillOpacity: 0.10, weight: 1.5, dashArray: '4 4',
+      });
+      layer.bindTooltip(zone.name || 'Campus Zone', { permanent: false });
+      layer.on('click', () => selectZone(zone));
+      layer.addTo(map);
+      savedLayersRef.current.push(layer);
+    });
+  }, [zones, selectedZone?.id]);
 
   const selectZone = (zone) => {
     setSelectedZone(zone);
@@ -474,6 +495,12 @@ function UniGeofence({ onGo }) {
 
           <Card>
             <SectionLabel right={<MonoChip>{zones.length}</MonoChip>}>Campus zones</SectionLabel>
+            {loadError && (
+              <div style={{ fontSize: 11.5, color: 'var(--ember)', background: 'rgba(196,69,54,0.08)', borderRadius: 4, padding: '6px 10px', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>{loadError}</span>
+                <button onClick={loadZones} style={{ background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontSize: 11.5, color: 'var(--ember)', padding: 0, marginLeft: 8 }}>Retry</button>
+              </div>
+            )}
             {zones.length === 0 ? (
               <div style={{ fontSize: 12, color: 'var(--muted)', textAlign: 'center', padding: '8px 0' }}>No zones saved yet</div>
             ) : zones.map(z => (

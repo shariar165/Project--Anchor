@@ -1542,17 +1542,15 @@ function SuperUsers() {
 // ─── Red Zone Map ─────────────────────────────────────────────────────────────
 
 const ZONE_COLORS = {
-  university: '#1FA663',
-  rape:       '#0B0B0B',
-  murder:     '#7B2CBF',
-  alert:      '#E8312A',
+  red:    '#ef4444',
+  purple: '#a855f7',
+  black:  '#374151',
 };
 
 const ZONE_TYPE_LABELS = {
-  university: 'University Zone',
-  rape:       'Safety Advisory (Sexual)',
-  murder:     'Safety Advisory (Violent)',
-  alert:      'Active Alert Zone',
+  red:    'Danger Zone',
+  purple: 'Murder Report Area',
+  black:  'Assault Report Area',
 };
 
 function SuperRedZones({ onGo }) {
@@ -1561,12 +1559,12 @@ function SuperRedZones({ onGo }) {
   const [loadError, setLoadError] = useState(null);
   const [mapError, setMapError] = useState(null);
   const [statusFilter, setStatusFilter] = useState('active');
-  const [typeFilters, setTypeFilters] = useState({ rape: true, murder: true, alert: true, university: true });
+  const [typeFilters, setTypeFilters] = useState({ red: true, purple: true, black: true });
 
   // 'list' = zone roster, 'form' = create/edit — both inside the right panel, no overlay
   const [panelMode, setPanelMode] = useState('list');
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ zone_type: 'alert', center_lat: '', center_lng: '', radius_m: 300, label: '', description_public: '', expires_at: '' });
+  const [form, setForm] = useState({ zone_type: 'red', center_lat: '', center_lng: '', radius_m: 300, name: '', description_public: '', expires_at: '' });
   const [formError, setFormError] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -1583,7 +1581,7 @@ function SuperRedZones({ onGo }) {
   function load() {
     setLoading(true);
     setLoadError(null);
-    AnchorAPI.apiGet('/v1/admin/zones?limit=200')
+    AnchorAPI.apiGet('/v1/super-admin/zones?limit=200')
       .then(data => { setZones(data); setLoading(false); })
       .catch(err => {
         const msg = err.message || 'Failed to load zones';
@@ -1653,7 +1651,7 @@ function SuperRedZones({ onGo }) {
         weight: isArchived ? 1 : 2,
         dashArray: isArchived ? '5 5' : null,
       });
-      const popupLabel = zone.label || ZONE_TYPE_LABELS[zone.zone_type] || zone.zone_type;
+      const popupLabel = zone.name || ZONE_TYPE_LABELS[zone.zone_type] || zone.zone_type;
       circle.bindPopup(`<strong>${popupLabel}</strong><br/>${zone.zone_type} · ${zone.radius_m}m · ${zone.status}`);
       circle.on('click', (ev) => {
         window.L.DomEvent.stopPropagation(ev);
@@ -1670,7 +1668,7 @@ function SuperRedZones({ onGo }) {
       center_lat: String(zone.center_lat),
       center_lng: String(zone.center_lng),
       radius_m: zone.radius_m,
-      label: zone.label || '',
+      name: zone.name || '',
       description_public: zone.description_public || '',
       expires_at: zone.expires_at ? zone.expires_at.slice(0, 10) : '',
     });
@@ -1701,20 +1699,21 @@ function SuperRedZones({ onGo }) {
     setFormError(null);
     try {
       if (editing) {
-        await AnchorAPI.apiPatch(`/v1/admin/zones/${editing.id}`, {
-          label: form.label || null,
-          description_public: form.description_public || null,
+        await AnchorAPI.apiPatch(`/v1/super-admin/zones/${editing.id}`, {
+          name: form.name || null,
+          description: form.description_public || null,
           radius_m: radius,
           expires_at: form.expires_at ? new Date(form.expires_at + 'T00:00:00Z').toISOString() : null,
         });
       } else {
-        await AnchorAPI.apiPostAuth('/v1/admin/zones', {
+        if (!form.name.trim()) { setFormError('Zone name is required'); setSaving(false); return; }
+        await AnchorAPI.apiPostAuth('/v1/super-admin/zones', {
           zone_type: form.zone_type,
           center_lat: lat,
           center_lng: lng,
           radius_m: radius,
-          label: form.label || null,
-          description_public: form.description_public || null,
+          name: form.name.trim(),
+          description: form.description_public || null,
           expires_at: form.expires_at ? new Date(form.expires_at + 'T00:00:00Z').toISOString() : null,
         });
       }
@@ -1731,7 +1730,7 @@ function SuperRedZones({ onGo }) {
     if (!confirmArchive) return;
     setArchiving(true);
     try {
-      await AnchorAPI.apiDelete(`/v1/admin/zones/${confirmArchive.id}`);
+      await AnchorAPI.apiDelete(`/v1/super-admin/zones/${confirmArchive.id}`);
     } catch (_) {
       // swallow — reload reflects reality
     } finally {
@@ -1839,7 +1838,7 @@ function SuperRedZones({ onGo }) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-[12px] font-semibold text-[var(--graphite)] truncate">
-                      {zone.label || ZONE_TYPE_LABELS[zone.zone_type]}
+                      {zone.name || ZONE_TYPE_LABELS[zone.zone_type]}
                     </span>
                     {zone.status === 'archived' && (
                       <span
@@ -1995,11 +1994,11 @@ function SuperRedZones({ onGo }) {
 
             <div>
               <label className="block text-[11px] font-semibold text-[var(--graphite)] uppercase tracking-wide mb-1">
-                Label <span className="text-[var(--muted)] normal-case font-normal">(optional)</span>
+                Zone name <span className="text-[var(--muted)] normal-case font-normal">(required)</span>
               </label>
               <input
-                value={form.label}
-                onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+                value={form.name}
+                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                 placeholder={ZONE_TYPE_LABELS[form.zone_type]}
                 className="w-full px-2.5 py-2 hair border rounded-sm bg-white text-[12px]"
               />
@@ -2124,7 +2123,7 @@ function SuperRedZones({ onGo }) {
         onConfirm={handleArchive}
         title="Archive this zone?"
         body={confirmArchive
-          ? `"${confirmArchive.label || ZONE_TYPE_LABELS[confirmArchive.zone_type]}" will be removed from the public map immediately. The record is preserved in audit history.`
+          ? `"${confirmArchive.name || ZONE_TYPE_LABELS[confirmArchive.zone_type]}" will be removed from the public map immediately. The record is preserved in audit history.`
           : ''}
         confirmWord="ARCHIVE"
         confirmLabel={archiving ? 'Archiving…' : 'Archive zone'}
