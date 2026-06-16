@@ -14,6 +14,11 @@ class Role(str, PyEnum):
     super_admin = "super_admin"
 
 
+# Campus application approval-chain positions an admin/moderator user can hold.
+# null = ordinary admin not staffed on the application chain.
+STAFF_POSITIONS = frozenset({"mentor", "department_head", "dean", "accounts"})
+
+
 class AccountStatus(str, PyEnum):
     pending_verification = "pending_verification"
     active = "active"
@@ -36,6 +41,8 @@ class User(Base, TimestampMixin):
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("tenants.id"), nullable=True, index=True
     )
+    # Application approval-chain position for admin/moderator staff (see STAFF_POSITIONS).
+    staff_position: Mapped[str | None] = mapped_column(String(30), nullable=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     phone_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

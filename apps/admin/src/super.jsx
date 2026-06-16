@@ -1353,7 +1353,7 @@ function SuperUsers() {
   const [total, setTotal]           = useState(0);
   const [roleFilter, setRoleFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm]             = useState({ full_name: '', email: '', password: '', role: 'admin' });
+  const [form, setForm]             = useState({ full_name: '', email: '', password: '', role: 'admin', staff_position: '' });
   const [creating, setCreating]     = useState(false);
   const [createError, setCreateError] = useState('');
 
@@ -1375,9 +1375,10 @@ function SuperUsers() {
   async function handleCreate(e) {
     e.preventDefault(); setCreating(true); setCreateError('');
     try {
-      await AnchorAPI.apiPostAuth('/v1/admin/users', form);
+      const payload = { ...form, staff_position: form.staff_position || null };
+      await AnchorAPI.apiPostAuth('/v1/admin/users', payload);
       setShowCreate(false);
-      setForm({ full_name: '', email: '', password: '', role: 'admin' });
+      setForm({ full_name: '', email: '', password: '', role: 'admin', staff_position: '' });
       load();
     } catch (e) { setCreateError(e.message); }
     finally { setCreating(false); }
@@ -1393,6 +1394,13 @@ function SuperUsers() {
   async function patchRole(userId, newRole) {
     try {
       await AnchorAPI.apiPatch(`/v1/admin/users/${userId}/role`, { role: newRole });
+      load();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function patchPosition(userId, newPosition) {
+    try {
+      await AnchorAPI.apiPatch(`/v1/admin/users/${userId}/position`, { staff_position: newPosition || null });
       load();
     } catch (e) { alert(e.message); }
   }
@@ -1443,6 +1451,23 @@ function SuperUsers() {
                 return <Tag tone={info.tone}>{info.label}</Tag>;
               }},
               { key: 'status', label: 'Status', render: r => <StatusPill status={r.status} /> },
+              { key: 'staff_position', label: 'App. stage', render: r => (
+                (r.role === 'admin' || r.role === 'moderator')
+                  ? (
+                    <select
+                      value={r.staff_position || ''}
+                      onClick={e => e.stopPropagation()}
+                      onChange={e => patchPosition(r.id, e.target.value)}
+                      className="text-[11px] px-1.5 py-1 hair border rounded-sm bg-white text-[var(--graphite)]"
+                    >
+                      <option value="">— none —</option>
+                      {['mentor', 'department_head', 'dean', 'accounts'].map(p => (
+                        <option key={p} value={p}>{p}</option>
+                      ))}
+                    </select>
+                  )
+                  : <span className="text-[11px] text-[var(--muted)]">—</span>
+              )},
               { key: 'mfa_enabled', label: 'MFA', render: r => (
                 <span className={`font-mono text-[11px] ${r.mfa_enabled ? 'text-[var(--sage)]' : 'text-[var(--muted)]'}`}>
                   {r.mfa_enabled ? 'ON' : 'off'}
@@ -1523,6 +1548,16 @@ function SuperUsers() {
                   className="w-full px-3 py-2 hair border rounded-sm bg-white text-[13px]">
                   <option value="admin">Admin</option>
                   <option value="moderator">Moderator</option>
+                </select>
+              </Field>
+              <Field label="Application stage" hint="Which approval stage this staff member handles. Leave as none for general admins.">
+                <select value={form.staff_position} onChange={e => setForm(f => ({ ...f, staff_position: e.target.value }))}
+                  className="w-full px-3 py-2 hair border rounded-sm bg-white text-[13px]">
+                  <option value="">— none —</option>
+                  <option value="mentor">Mentor</option>
+                  <option value="department_head">Department Head</option>
+                  <option value="dean">Dean</option>
+                  <option value="accounts">Accounts</option>
                 </select>
               </Field>
               <div className="flex gap-2 pt-2">

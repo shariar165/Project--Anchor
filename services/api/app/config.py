@@ -53,6 +53,7 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
+    notice_ai_model: str = "qwen3:1.7b"
 
     # HIBP
     hibp_check_enabled: bool = True

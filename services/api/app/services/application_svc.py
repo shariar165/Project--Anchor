@@ -11,16 +11,16 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.application import (
     Application, ApplicationAttachment, ApplicationReview,
     ApplicationState, ApplicationTemplate, StudentCampusSettings,
 )
-from app.models.user import User, Role
+from app.models.user import User, Role, STAFF_POSITIONS
 from app.schemas.applications import (
-    ApplicationCreate, ApplicationUpdate, ReviewRequest,
+    ApplicationCreate, ApplicationUpdate, ReviewRequest, TimelineEntry,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,124 @@ async def list_applications(
     return apps
 
 
+# ── Admin queue / enforcement / timeline ──────────────────────────────────────
+
+_STAGE_ORDER = ["mentor", "department_head", "dean", "accounts"]
+
+
+def can_review(caller: User, app: Application) -> bool:
+    """Whether this admin/moderator may act on the application's current stage."""
+    if caller.role == Role.super_admin:
+        return True
+    level = app.current_approver_level
+    if level == "mentor":
+        return app.current_approver_id is not None and caller.id == app.current_approver_id
+    if level in ("department_head", "dean", "accounts"):
+        if caller.staff_position != level:
+            return False
+        # Tenant scoping — caller must share the application's tenant (when both set)
+        if app.tenant_id is not None and caller.tenant_id is not None:
+            return caller.tenant_id == app.tenant_id
+        return True
+    return False
+
+
+async def list_applications_admin(
+    db: AsyncSession,
+    caller: User,
+    tenant_id: uuid.UUID | None,
+    stage: str | None = None,
+    state: str | None = None,
+    scope: str = "mine",
+    page: int = 1,
+    page_size: int = 20,
+) -> list[Application]:
+    q = select(Application)
+    if tenant_id is not None and caller.role != Role.super_admin:
+        q = q.where(Application.tenant_id == tenant_id)
+
+    if scope == "mine":
+        # Queue the caller can act on right now (state must be in_review).
+        q = q.where(Application.state == ApplicationState.in_review)
+        if caller.role == Role.super_admin:
+            pass  # super_admin sees the whole in_review queue
+        elif caller.staff_position in ("department_head", "dean", "accounts"):
+            q = q.where(Application.current_approver_level == caller.staff_position)
+        else:
+            # mentor — only applications assigned to this caller
+            q = q.where(
+                Application.current_approver_level == "mentor",
+                Application.current_approver_id == caller.id,
+            )
+    else:
+        if stage:
+            q = q.where(Application.current_approver_level == stage)
+
+    if state:
+        q = q.where(Application.state == state)
+
+    q = q.order_by(Application.updated_at.desc())
+    q = q.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(q)
+    apps = list(result.scalars().all())
+    for app in apps:
+        await db.refresh(app, ["template"])
+    return apps
+
+
+async def application_stats(
+    db: AsyncSession, caller: User, tenant_id: uuid.UUID | None
+) -> dict:
+    stage_q = select(
+        Application.current_approver_level, func.count(Application.id)
+    ).where(Application.state == ApplicationState.in_review)
+    if tenant_id is not None and caller.role != Role.super_admin:
+        stage_q = stage_q.where(Application.tenant_id == tenant_id)
+    stage_q = stage_q.group_by(Application.current_approver_level)
+    rows = (await db.execute(stage_q)).all()
+    by_stage = {lvl: cnt for lvl, cnt in rows if lvl}
+
+    dec_q = select(func.count(Application.id)).where(
+        Application.state.in_([ApplicationState.approved, ApplicationState.rejected])
+    )
+    if tenant_id is not None and caller.role != Role.super_admin:
+        dec_q = dec_q.where(Application.tenant_id == tenant_id)
+    decided = (await db.execute(dec_q)).scalar() or 0
+
+    return {
+        "mentor": by_stage.get("mentor", 0),
+        "department_head": by_stage.get("department_head", 0),
+        "dean": by_stage.get("dean", 0),
+        "accounts": by_stage.get("accounts", 0),
+        "decided": int(decided),
+    }
+
+
+def build_timeline(app: Application) -> list[TimelineEntry]:
+    """Shared timeline builder for student and admin timeline endpoints."""
+    entries: list[TimelineEntry] = [
+        TimelineEntry(event="created", actor_role=None, note="Draft created", timestamp=app.created_at)
+    ]
+    for rev in sorted(app.reviews, key=lambda r: r.reviewed_at):
+        entries.append(TimelineEntry(
+            event=rev.decision,
+            actor_role=rev.reviewer_role,
+            note=rev.notes,
+            timestamp=rev.reviewed_at,
+        ))
+    if app.approved_at:
+        entries.append(TimelineEntry(
+            event="approved_final", actor_role=None,
+            note="Application approved", timestamp=app.approved_at,
+        ))
+    if app.rejected_at:
+        entries.append(TimelineEntry(
+            event="rejected_final", actor_role=None,
+            note="Application rejected", timestamp=app.rejected_at,
+        ))
+    return entries
+
+
 async def update_application(
     db: AsyncSession, app: Application, data: ApplicationUpdate
 ) -> Application:
@@ -154,6 +272,7 @@ async def update_application(
     if data.language is not None:
         app.language = data.language
     await db.commit()
+    await db.refresh(app)
     await db.refresh(app, ["template", "attachments", "reviews"])
     return app
 
@@ -188,6 +307,9 @@ async def submit_application(
     app.first_approver_type = first_approver_choice
     app.state = ApplicationState.in_review
     await db.commit()
+    # Full refresh first so server-side columns (updated_at) repopulate before
+    # Pydantic serialization, then load relationships. See record_review.
+    await db.refresh(app)
     await db.refresh(app, ["template", "attachments", "reviews"])
     return app
 
@@ -199,6 +321,7 @@ async def withdraw_application(db: AsyncSession, app: Application) -> Applicatio
         raise ValueError("Cannot withdraw — an approver has already acted")
     app.state = ApplicationState.withdrawn
     await db.commit()
+    await db.refresh(app)
     await db.refresh(app, ["template", "attachments", "reviews"])
     return app
 
@@ -209,6 +332,7 @@ async def resubmit_application(db: AsyncSession, app: Application) -> Applicatio
     app.state = ApplicationState.in_review
     app.round_count += 1
     await db.commit()
+    await db.refresh(app)
     await db.refresh(app, ["template", "attachments", "reviews"])
     return app
 

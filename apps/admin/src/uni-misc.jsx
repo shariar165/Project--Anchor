@@ -15,7 +15,10 @@ function UniNotices({ onGo }) {
   const [audience, setAudience] = useState(new Set(['University-wide']));
   const [subject, setSubject] = useState('Library extended hours · Finals week Spring 2026');
   const [channels, setChannels] = useState({ push:true, sms:true, email:false });
+  const [tone, setTone] = useState('Formal · institutional');
+  const [schedule, setSchedule] = useState('Send now');
   const [generating, setGenerating] = useState(false);
+  const [aiGenerated, setAiGenerated] = useState(null); // null=not yet, true=AI, false=fallback
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -32,11 +35,30 @@ function UniNotices({ onGo }) {
 
   function parseAudience() {
     for (const a of audience) {
-      if (a === 'University-wide') return { scope: 'campus' };
       if (a.startsWith('Department: ')) return { scope: 'dept', dept: a.slice(12) };
-      if (a.startsWith('Batch ')) return { scope: 'campus', batch: a.slice(6) };
+      if (a.startsWith('Batch ')) return { scope: 'batch', batch: a.slice(6) };
     }
-    return { scope: 'campus' };
+    return { scope: 'university' };
+  }
+
+  async function handleGenerate() {
+    if (!prompt.trim()) { setActionError('Describe the notice for the AI first.'); return; }
+    setGenerating(true); setActionError(''); setActionSuccess('');
+    try {
+      const audienceLabel = Array.from(audience)[0] || 'University-wide';
+      const data = await AnchorAPI.apiPostAuth('/v1/notices/generate', {
+        prompt: prompt.trim(),
+        language,
+        tone,
+        audience: audienceLabel,
+        subject: subject.trim() || null,
+      });
+      setGenerated(data.body || '');
+      if (data.subject) setSubject(data.subject);
+      setAiGenerated(data.ai_generated);
+    } catch (err) {
+      setActionError(err.message || 'Could not generate notice.');
+    } finally { setGenerating(false); }
   }
 
   async function handleSaveDraft() {
@@ -95,10 +117,14 @@ function UniNotices({ onGo }) {
                   className="w-full p-3 hair border rounded-sm bg-white text-[13px] min-h-[80px]" />
               </Field>
               <div className="mt-2 flex items-center gap-2">
-                <PrimaryButton mode="sage" size="sm" icon="sparkles" onClick={() => { setGenerating(true); setTimeout(()=>setGenerating(false), 900); }}>
+                <PrimaryButton mode="sage" size="sm" icon="sparkles" onClick={handleGenerate} disabled={generating}>
                   {generating?'Generating…':'Generate notice'}
                 </PrimaryButton>
-                <span className="text-[11px] text-[var(--muted)]">Powered by Qwen3-8B · grounded in your university handbook</span>
+                <span className="text-[11px] text-[var(--muted)]">
+                  {aiGenerated === false
+                    ? 'AI offline — template draft (edit before publishing)'
+                    : 'Powered by Qwen3 (Ollama) · grounded in DIU notice conventions'}
+                </span>
               </div>
             </div>
           </Card>
@@ -115,8 +141,9 @@ function UniNotices({ onGo }) {
                 ))}
               </div>
             </div>
-            <textarea value={language==='en'?generated:'প্রিয় শিক্ষার্থীবৃন্দ,\n\nস্প্রিং ২০২৬ এর চূড়ান্ত পরীক্ষাকালীন সময়ে (৮–১৫ জুন), কেন্দ্রীয় গ্রন্থাগারের পাঠকক্ষ রাত ১:০০ পর্যন্ত খোলা থাকবে। রাত ১০ টার পরে প্রবেশের জন্য আইডি কার্ড আবশ্যক।\n\nশুভকামনা।\n\nরেজিস্ট্রার কার্যালয়\nড্যাফোডিল ইন্টারন্যাশনাল ইউনিভার্সিটি'}
+            <textarea value={generated}
               onChange={e=>setGenerated(e.target.value)}
+              placeholder={language==='bn' ? 'বিজ্ঞপ্তির খসড়া এখানে তৈরি হবে…' : 'The generated notice draft will appear here…'}
               className={`w-full p-4 hair border rounded-sm bg-[#FDFBF7] text-[13.5px] leading-relaxed min-h-[280px] ${language==='bn'?'font-bn':''}`} />
           </Card>
 
@@ -150,8 +177,8 @@ function UniNotices({ onGo }) {
             </div>
 
             <div className="mt-4 grid grid-cols-2 gap-3">
-              <Field label="Schedule"><select className="w-full px-2 py-1.5 hair border rounded-sm bg-white text-[13px]"><option>Send now</option><option>Schedule for later</option></select></Field>
-              <Field label="Tone"><select className="w-full px-2 py-1.5 hair border rounded-sm bg-white text-[13px]"><option>Formal · institutional</option><option>Warm · student-friendly</option></select></Field>
+              <Field label="Schedule"><select value={schedule} onChange={e=>setSchedule(e.target.value)} className="w-full px-2 py-1.5 hair border rounded-sm bg-white text-[13px]"><option>Send now</option><option>Schedule for later</option></select></Field>
+              <Field label="Tone"><select value={tone} onChange={e=>setTone(e.target.value)} className="w-full px-2 py-1.5 hair border rounded-sm bg-white text-[13px]"><option>Formal · institutional</option><option>Warm · student-friendly</option></select></Field>
             </div>
           </Card>
 
@@ -181,7 +208,7 @@ function UniNotices({ onGo }) {
                 </h4>
                 <div className="mt-1 text-[11px] text-[var(--muted)]">Registrar's Office · DIU</div>
                 <p className={`mt-3 text-[12px] text-[var(--ink)] leading-relaxed ${language==='bn'?'font-bn':''}`} style={{ textWrap:'pretty' }}>
-                  {language==='en' ? generated.split('\n').slice(0,4).join('\n') : 'স্প্রিং ২০২৬ এর চূড়ান্ত পরীক্ষাকালীন সময়ে কেন্দ্রীয় গ্রন্থাগার রাত ১টা পর্যন্ত খোলা থাকবে।'}
+                  {generated.split('\n').filter(Boolean).slice(0,4).join('\n')}
                 </p>
               </div>
             </div>

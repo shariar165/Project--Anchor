@@ -374,14 +374,20 @@ async def review_application(
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(get_current_user),
 ):
-    """Approver action — admin or moderator role."""
-    if token.role not in ("admin", "moderator"):
+    """Approver action — restricted to the staff member who owns the current stage."""
+    if token.role not in ("admin", "moderator", "super_admin"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Reviewer role required")
     app = await application_svc.get_application_any_user(db, application_id, token.tenant_id)
     if app is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Application not found")
     if app.state not in (ApplicationState.in_review,):
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Application is not in review state")
+    caller = await db.get(User, token.user_id)
+    if caller is None or not application_svc.can_review(caller, app):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail="You are not the assigned approver for this application's current stage",
+        )
     await application_svc.record_review(db, app, token.user_id, body)
     await db.refresh(app, ["template", "attachments", "reviews"])
     return app
@@ -399,21 +405,10 @@ async def get_timeline(
     if app is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Application not found")
 
-    entries: list[TimelineEntry] = []
-    entries.append(TimelineEntry(event="created", actor_role=None, note="Draft created", timestamp=app.created_at))
-    for rev in sorted(app.reviews, key=lambda r: r.reviewed_at):
-        entries.append(TimelineEntry(
-            event=rev.decision,
-            actor_role=rev.reviewer_role,
-            note=rev.notes,
-            timestamp=rev.reviewed_at,
-        ))
-    if app.approved_at:
-        entries.append(TimelineEntry(event="approved_final", actor_role=None, note="Application approved", timestamp=app.approved_at))
-    if app.rejected_at:
-        entries.append(TimelineEntry(event="rejected_final", actor_role=None, note="Application rejected", timestamp=app.rejected_at))
-
-    return TimelineResponse(application_id=app.id, state=app.state, entries=entries)
+    return TimelineResponse(
+        application_id=app.id, state=app.state,
+        entries=application_svc.build_timeline(app),
+    )
 
 
 # ── SSE stream ────────────────────────────────────────────────────────────────

@@ -113,6 +113,30 @@ class ApplicationListItem(BaseModel):
     template: TemplateResponse | None = None
 
 
+class AdminApplicationListItem(BaseModel):
+    """Row in the admin application queue."""
+    id: uuid.UUID
+    student_id: uuid.UUID
+    student_name: str | None = None
+    state: str
+    language: str
+    current_approver_level: str | None
+    requires_accounts_approval: bool = False
+    round_count: int
+    template_name: str | None = None
+    template_key: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApplicationStatsResponse(BaseModel):
+    mentor: int = 0
+    department_head: int = 0
+    dean: int = 0
+    accounts: int = 0
+    decided: int = 0
+
+
 class CampusSettingsResponse(BaseModel):
     user_id: uuid.UUID
     department: str | None

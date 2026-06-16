@@ -141,6 +141,7 @@ function supCrumbs(route) {
 function uniView(route, onGo, role, dark, setDark) {
   switch (route) {
     case '/university/dashboard': return <UniDashboard role={role} onGo={onGo} />;
+    case '/university/applications': return <UniApplications onGo={onGo} />;
     case '/university/complaints': return <UniComplaints onGo={onGo} />;
     case '/university/routine': return <UniRoutine onGo={onGo} />;
     case '/university/timetable': return <UniTimetable onGo={onGo} />;

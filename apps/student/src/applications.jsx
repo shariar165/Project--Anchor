@@ -1040,14 +1040,6 @@ function ApplicationDetailScreen({ params = {} }) {
   const isRejected = app.state === 'rejected';
   const isDraft = app.state === 'draft';
 
-  const CHAIN_STEPS = ['draft', 'submitted', 'in_review', 'approved'];
-  const stateIndex = {
-    draft: 0, submitted: 1, in_review: 2,
-    changes_requested: 2, escalated: 2,
-    approved: 3, rejected: 3, withdrawn: 3,
-  };
-  const currentStep = stateIndex[app.state] ?? 0;
-
   const DECISION_ICON = { approved: '✓', rejected: '✗', changes_requested: '↩' };
   const DECISION_COLOR = { approved: 'var(--sage)', rejected: 'var(--red)', changes_requested: 'var(--gold)' };
 
@@ -1064,33 +1056,55 @@ function ApplicationDetailScreen({ params = {} }) {
           </div>
         </div>
 
-        {/* Progress stepper */}
-        <div style={{
-          padding: '14px 16px', background: 'rgba(255,255,255,0.6)', borderRadius: 12,
-          border: '1px solid var(--mist)', marginBottom: 16,
-          display: 'flex', alignItems: 'center', gap: 4,
-        }}>
-          {['Drafted', 'Submitted', 'In Review', 'Decision'].map((lbl, i) => (
-            <React.Fragment key={i}>
-              <div style={{ flex: 1, textAlign: 'center' }}>
-                <div style={{
-                  width: 22, height: 22, borderRadius: '50%', margin: '0 auto 4px',
-                  background: i <= currentStep ? 'var(--sage)' : 'var(--mist)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 10, color: i <= currentStep ? '#fff' : 'var(--muted)',
-                }}>
-                  {i <= currentStep ? '●' : '○'}
-                </div>
-                <div style={{ fontSize: 9, color: i === currentStep ? 'var(--navy)' : 'var(--muted)', fontFamily: 'var(--font-sans)', fontWeight: i === currentStep ? 600 : 400 }}>
-                  {lbl}
-                </div>
-              </div>
-              {i < 3 && (
-                <div style={{ height: 1, flex: 1, background: i < currentStep ? 'var(--sage)' : 'var(--mist)', marginBottom: 14 }}/>
-              )}
-            </React.Fragment>
-          ))}
-        </div>
+        {/* Approval-chain stepper — first approver → dean → accounts (if money) → approved */}
+        {(() => {
+          const firstStage = app.first_approver_type === 'mentor' ? 'mentor' : 'department_head';
+          const stages = [firstStage, 'dean'];
+          if (app.template && app.template.requires_accounts_approval) stages.push('accounts');
+          const labels = [...stages.map(s => APPROVER_LABELS[s] || s), 'Approved'];
+          // Each approved review clears one stage.
+          const approvedCount = (app.reviews || []).filter(r => r.decision === 'approved').length;
+          const isApproved = app.state === 'approved';
+          const isRejected = app.state === 'rejected';
+          // The stage currently awaiting a decision (gold), unless finished.
+          const activeIdx = (isApproved || isRejected) ? -1 : approvedCount;
+          return (
+            <div style={{
+              padding: '14px 16px', background: 'rgba(255,255,255,0.6)', borderRadius: 12,
+              border: '1px solid var(--mist)', marginBottom: 16,
+              display: 'flex', alignItems: 'center', gap: 4,
+            }}>
+              {labels.map((lbl, i) => {
+                const isFinal = i === labels.length - 1;
+                const done = isFinal ? isApproved : (i < approvedCount || isApproved);
+                const active = i === activeIdx;
+                const rejectedHere = isRejected && i === approvedCount;
+                const bg = done ? 'var(--sage)' : rejectedHere ? 'var(--red)' : active ? 'var(--gold)' : 'var(--mist)';
+                const fg = (done || rejectedHere || active) ? '#fff' : 'var(--muted)';
+                const glyph = done ? '✓' : rejectedHere ? '✗' : active ? '●' : '○';
+                return (
+                  <React.Fragment key={i}>
+                    <div style={{ flex: 1, textAlign: 'center' }}>
+                      <div style={{
+                        width: 22, height: 22, borderRadius: '50%', margin: '0 auto 4px',
+                        background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 10, color: fg,
+                      }}>
+                        {glyph}
+                      </div>
+                      <div style={{ fontSize: 9, color: active ? 'var(--navy)' : 'var(--muted)', fontFamily: 'var(--font-sans)', fontWeight: active ? 600 : 400 }}>
+                        {lbl}
+                      </div>
+                    </div>
+                    {i < labels.length - 1 && (
+                      <div style={{ height: 1, flex: 1, background: (i < approvedCount || isApproved) ? 'var(--sage)' : 'var(--mist)', marginBottom: 14 }}/>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          );
+        })()}
 
         {/* Current holder */}
         {app.current_approver_level && (

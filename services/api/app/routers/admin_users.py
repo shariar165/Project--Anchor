@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import get_current_user, require_role, TokenData
-from app.models.user import User, Role, AccountStatus
+from app.models.user import User, Role, AccountStatus, STAFF_POSITIONS
 from app.services import password as pwd_svc, audit as audit_svc
 from app.services.device import get_ip
 
@@ -25,10 +25,15 @@ class CreateAdminRequest(BaseModel):
     password: str
     role: str
     tenant_id: Optional[uuid.UUID] = None
+    staff_position: Optional[str] = None
 
 
 class UpdateRoleRequest(BaseModel):
     role: str
+
+
+class UpdatePositionRequest(BaseModel):
+    staff_position: Optional[str] = None
 
 
 class UpdateStatusRequest(BaseModel):
@@ -49,6 +54,7 @@ class UserRow(BaseModel):
     mfa_enabled: bool
     email_verified: bool
     tenant_id: Optional[uuid.UUID] = None
+    staff_position: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -105,6 +111,12 @@ async def create_admin_user(
             detail=f"Role must be one of: {', '.join(sorted(_CREATABLE_ROLES))}",
         )
 
+    if body.staff_position is not None and body.staff_position not in STAFF_POSITIONS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"staff_position must be one of: {', '.join(sorted(STAFF_POSITIONS))}",
+        )
+
     existing = await db.execute(select(User).where(User.email == body.email))
     if existing.scalars().first():
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Email already registered")
@@ -120,6 +132,7 @@ async def create_admin_user(
         status=AccountStatus.active,
         email_verified=True,
         tenant_id=body.tenant_id,
+        staff_position=body.staff_position,
     )
     db.add(user)
     await db.flush()
@@ -181,6 +194,38 @@ async def update_user_role(
     await audit_svc.log_event(
         db, "user_role_changed", user.id, get_ip(request),
         {"by": str(token.user_id), "new_role": body.role},
+    )
+    return UserRow.model_validate(user)
+
+
+@router.patch("/{user_id}/position")
+async def update_user_position(
+    user_id: uuid.UUID,
+    body: UpdatePositionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("super_admin")),
+):
+    if body.staff_position is not None and body.staff_position not in STAFF_POSITIONS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"staff_position must be one of: {', '.join(sorted(STAFF_POSITIONS))}",
+        )
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalars().first()
+    if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.role not in (Role.admin, Role.moderator):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Staff position can only be assigned to admin or moderator users",
+        )
+
+    user.staff_position = body.staff_position
+    await audit_svc.log_event(
+        db, "user_position_changed", user.id, get_ip(request),
+        {"by": str(token.user_id), "new_position": body.staff_position},
     )
     return UserRow.model_validate(user)
 

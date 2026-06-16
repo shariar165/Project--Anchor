@@ -53,6 +53,16 @@ const AnchorAPI = (() => {
     return _refreshing;
   }
 
+  // Coerce a FastAPI error body into a readable string (422 detail is an array of objects).
+  function _detailMsg(data) {
+    const d = data && data.detail;
+    if (!d) return 'Request failed';
+    if (typeof d === 'string') return d;
+    if (Array.isArray(d)) return d.map(e => (e && e.msg) ? e.msg : JSON.stringify(e)).join('; ');
+    if (typeof d === 'object') return d.msg || JSON.stringify(d);
+    return String(d);
+  }
+
   function _authHeaders(extra = {}) {
     const tok = getAccessToken();
     const headers = { ...extra };
@@ -71,7 +81,7 @@ const AnchorAPI = (() => {
       throw new Error('Session expired — please log in again');
     }
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Request failed');
+    if (!res.ok) throw new Error(_detailMsg(data));
     return data;
   }
 
@@ -82,7 +92,7 @@ const AnchorAPI = (() => {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Request failed');
+    if (!res.ok) throw new Error(_detailMsg(data));
     return data;
   }
 

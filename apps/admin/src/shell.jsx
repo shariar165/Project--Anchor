@@ -69,6 +69,7 @@ function AdminShell({ mode='uni', route, onGo, role, setRole, dark, setDark, chi
       { icon:'layout-dashboard', label:'Dashboard', route:'/university/dashboard' },
     ]},
     { group:'Casework', items:[
+      { icon:'file-check', label:'Applications', route:'/university/applications' },
       { icon:'message-square-warning', label:'Complaints', route:'/university/complaints', badge:'7' },
       { icon:'user-square', label:'Teacher Grievances', route:'/university/grievances/teachers' },
       { icon:'building-2', label:'Department Grievances', route:'/university/grievances/departments' },

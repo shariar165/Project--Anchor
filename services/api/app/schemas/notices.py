@@ -24,6 +24,21 @@ class NoticeUpdate(BaseModel):
     expires_at: datetime | None = None
 
 
+class NoticeGenerateRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=2000)
+    language: str = Field(default="en", pattern="^(en|bn)$")
+    tone: str | None = Field(default=None, max_length=100)
+    audience: str | None = Field(default=None, max_length=100)
+    subject: str | None = Field(default=None, max_length=200)
+
+
+class NoticeGenerateResponse(BaseModel):
+    subject: str
+    body: str
+    language: str
+    ai_generated: bool
+
+
 class NoticeResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

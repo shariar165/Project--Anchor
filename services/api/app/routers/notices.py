@@ -1,16 +1,23 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.database import get_db
+from app.limiter import limiter
 from app.redis import get_redis
 from app.deps import get_current_user, require_role, TokenData
 from app.models.notice import NoticeScope, NoticeStatus
 from app.models.user import User, AccountStatus
-from app.schemas.notices import NoticeCreate, NoticeUpdate, NoticeResponse
-from app.services import notice_svc
+from app.schemas.notices import (
+    NoticeCreate,
+    NoticeUpdate,
+    NoticeResponse,
+    NoticeGenerateRequest,
+    NoticeGenerateResponse,
+)
+from app.services import notice_svc, notice_ai_svc
 from app.services.token import decode_token, is_blacklisted
 
 router = APIRouter(prefix="/v1/notices", tags=["notices"])
@@ -65,6 +72,24 @@ async def list_notices(
         is_admin=admin,
         page=page,
     )
+
+
+@router.post("/generate", response_model=NoticeGenerateResponse)
+@limiter.limit("20/minute")
+async def generate_notice(
+    request: Request,
+    body: NoticeGenerateRequest,
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    """Draft a DIU notice with Ollama. Falls back to a template when AI is offline."""
+    result = await notice_ai_svc.generate_notice(
+        prompt=body.prompt,
+        language=body.language,
+        tone=body.tone,
+        audience=body.audience,
+        subject=body.subject,
+    )
+    return result
 
 
 @router.post("", response_model=NoticeResponse, status_code=status.HTTP_201_CREATED)
