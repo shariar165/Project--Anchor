@@ -9,6 +9,8 @@ __pycache__/
 
 # Runtime / generated data
 backend/data/
+services/api/data/
+services/rag/data/
 
 # Logs
 *.log

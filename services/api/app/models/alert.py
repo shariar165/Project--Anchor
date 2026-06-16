@@ -50,6 +50,13 @@ class ResponseType(str, PyEnum):
     flagged_fake  = "flagged_fake"
 
 
+class AlertActionType(str, PyEnum):
+    """Admin/proctor-initiated actions on an alert (audit-backed, persisted)."""
+    dispatch          = "dispatch"           # response team dispatched
+    notify_university = "notify_university"  # tenant admins notified
+    anonymous_call    = "anonymous_call"     # anonymized call bridge initiated
+
+
 class MediaType(str, PyEnum):
     photo    = "photo"
     video    = "video"
@@ -243,6 +250,28 @@ class AlertResponse(Base):
     )
 
     event: Mapped["AlertEvent"] = relationship("AlertEvent", back_populates="responses")
+
+
+# ─── Admin/proctor actions on an alert ───────────────────────────────────────
+
+class AlertAdminAction(Base):
+    __tablename__ = "alert_admin_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("alert_events.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    action_type: Mapped[AlertActionType] = mapped_column(
+        Enum(AlertActionType, name="alertactiontype"), nullable=False,
+    )
+    # SET NULL so the action record survives account deletion
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True,
+    )
 
 
 # ─── Phase 3 evidence ────────────────────────────────────────────────────────

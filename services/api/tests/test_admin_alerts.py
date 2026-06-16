@@ -419,3 +419,99 @@ async def test_stats_moderator_can_access(client: AsyncClient, registered_user, 
     assert resp.status_code == 200
     # Moderator sees stats (possibly scoped to their tenant)
     assert "active_count" in resp.json()
+
+
+# ─── Admin actions: dispatch / notify-university / anonymous-call ─────────────
+
+@pytest.mark.asyncio
+async def test_dispatch_records_action(client: AsyncClient, registered_user, admin_user, db_session, mock_redis):
+    event_id = await _trigger(client, registered_user["tokens"])
+    resp = await client.post(f"/v1/admin/alerts/{event_id}/dispatch",
+                             json={"note": "Team Bravo en route"}, headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action_type"] == "dispatch"
+
+    # Action surfaces in the detail endpoint
+    detail = await client.get(f"/v1/admin/alerts/{event_id}", headers=_auth(admin_user["tokens"]))
+    actions = detail.json()["admin_actions"]
+    assert len(actions) == 1
+    assert actions[0]["action_type"] == "dispatch"
+    assert actions[0]["note"] == "Team Bravo en route"
+    # Actor email is masked, never plaintext
+    assert "***" in actions[0]["actor"]
+
+
+@pytest.mark.asyncio
+async def test_notify_university_and_anonymous_call(client: AsyncClient, registered_user, admin_user, db_session, mock_redis):
+    event_id = await _trigger(client, registered_user["tokens"])
+    r1 = await client.post(f"/v1/admin/alerts/{event_id}/notify-university", json={},
+                           headers=_auth(admin_user["tokens"]))
+    r2 = await client.post(f"/v1/admin/alerts/{event_id}/anonymous-call", json={},
+                           headers=_auth(admin_user["tokens"]))
+    assert r1.status_code == 200 and r1.json()["action_type"] == "notify_university"
+    assert r2.status_code == 200 and r2.json()["action_type"] == "anonymous_call"
+
+    detail = await client.get(f"/v1/admin/alerts/{event_id}", headers=_auth(admin_user["tokens"]))
+    types = {a["action_type"] for a in detail.json()["admin_actions"]}
+    assert types == {"notify_university", "anonymous_call"}
+
+
+@pytest.mark.asyncio
+async def test_moderator_can_dispatch(client: AsyncClient, registered_user, moderator_user, db_session, mock_redis):
+    event_id = await _trigger(client, registered_user["tokens"])
+    resp = await client.post(f"/v1/admin/alerts/{event_id}/dispatch", json={},
+                             headers=_auth(moderator_user["tokens"]))
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_user_cannot_dispatch(client: AsyncClient, registered_user, db_session, mock_redis):
+    event_id = await _trigger(client, registered_user["tokens"])
+    resp = await client.post(f"/v1/admin/alerts/{event_id}/dispatch", json={},
+                             headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_dispatch_unknown_event_404(client: AsyncClient, admin_user, db_session, mock_redis):
+    resp = await client.post(f"/v1/admin/alerts/{uuid.uuid4()}/dispatch", json={},
+                             headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_detail_acked_reflects_ack(client: AsyncClient, registered_user, admin_user, db_session, mock_redis):
+    event_id = await _trigger(client, registered_user["tokens"])
+    before = await client.get(f"/v1/admin/alerts/{event_id}", headers=_auth(admin_user["tokens"]))
+    assert before.json()["acked"] is False
+    await client.post(f"/v1/admin/alerts/{event_id}/ack", headers=_auth(admin_user["tokens"]))
+    after = await client.get(f"/v1/admin/alerts/{event_id}", headers=_auth(admin_user["tokens"]))
+    assert after.json()["acked"] is True
+
+
+# ─── Alert CSV export ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_export_alerts_csv(client: AsyncClient, registered_user, admin_user, db_session, mock_redis):
+    event_id = await _trigger(client, registered_user["tokens"])
+    resp = await client.get("/v1/admin/alerts/export?window=24h", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    assert "attachment" in resp.headers.get("content-disposition", "")
+    body = resp.text
+    assert "event_id,state,created_at" in body
+    assert event_id in body
+
+
+@pytest.mark.asyncio
+async def test_export_alerts_bad_window(client: AsyncClient, admin_user, db_session, mock_redis):
+    resp = await client.get("/v1/admin/alerts/export?window=99y", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_export_route_not_shadowed_by_detail(client: AsyncClient, admin_user, db_session, mock_redis):
+    """Regression: GET /alerts/export must resolve to the export route, not /alerts/{event_id}."""
+    resp = await client.get("/v1/admin/alerts/export", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")

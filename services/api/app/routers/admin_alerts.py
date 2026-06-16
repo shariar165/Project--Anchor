@@ -17,12 +17,13 @@ from app.deps import require_role, TokenData
 from app.limiter import limiter
 from app.models.alert import (
     AlertEvent, AlertNotification, AlertResponse, AlertEvidence,
-    Zone, AlertBan, AlertState, ZoneStatus, ResponseType,
+    AlertAdminAction, Zone, AlertBan, AlertState, ZoneStatus, ResponseType,
+    AlertActionType,
 )
-from app.models.user import Role
+from app.models.user import Role, User
 from app.redis import get_redis
 from app.services import alert_svc
-from app.services.audit import log_event as audit_log
+from app.services.audit import log_event as audit_log, mask_email
 from app.services.device import get_ip
 
 router = APIRouter(prefix="/v1/admin", tags=["admin-alerts"])
@@ -254,6 +255,56 @@ async def get_alert_stats(
     }
 
 
+# ─── Export alert log as CSV ──────────────────────────────────────────────────
+# NOTE: must be declared BEFORE "/alerts/{event_id}" so "export" is not captured
+# as an event_id path param (FastAPI matches in declaration order).
+
+@router.get("/alerts/export")
+@limiter.limit("10/minute")
+async def export_alerts(
+    request: Request,
+    window: str = Query(default="24h", description="Time window: 24h|7d|30d"),
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    """Export alert events within a time window as CSV. Moderators are tenant-scoped."""
+    import csv
+    import io
+    from fastapi.responses import Response
+
+    windows = {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}
+    if window not in windows:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="window must be one of: 24h, 7d, 30d")
+    cutoff = _now() - windows[window]
+
+    q = select(AlertEvent).where(AlertEvent.created_at >= cutoff).order_by(desc(AlertEvent.created_at))
+    if token.role == Role.moderator and token.tenant_id:
+        q = q.where(AlertEvent.tenant_id == token.tenant_id)
+    events = (await db.execute(q)).scalars().all()
+
+    buf = io.StringIO()
+    now_iso = _now().isoformat()
+    buf.write(f"# Anchor AI alert export — window={window} exported_by={token.user_id} at {now_iso}\n")
+    writer = csv.writer(buf)
+    writer.writerow(["event_id", "state", "created_at", "closed_at", "closed_by",
+                     "lat", "lng", "gps_status", "tenant_id"])
+    for ev in events:
+        writer.writerow([
+            str(ev.event_id), ev.state.value, ev.created_at.isoformat(),
+            ev.closed_at.isoformat() if ev.closed_at else "",
+            ev.closed_by or "", ev.lat if ev.lat is not None else "",
+            ev.lng if ev.lng is not None else "", ev.gps_status.value,
+            str(ev.tenant_id) if ev.tenant_id else "",
+        ])
+
+    filename = f"anchor-alerts-{window}-{_now().strftime('%Y%m%d-%H%M%S')}.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ─── Alert detail ────────────────────────────────────────────────────────────
 
 @router.get("/alerts/{event_id}")
@@ -262,9 +313,10 @@ async def get_alert_detail(
     event_id: uuid.UUID,
     request: Request,
     db: AsyncSession = Depends(get_db),
+    redis=Depends(get_redis),
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
-    """Full alert detail including notifications, responses, zone, and evidence count."""
+    """Full alert detail including notifications, responses, zone, admin actions, and evidence count."""
     result = await db.execute(select(AlertEvent).where(AlertEvent.event_id == event_id))
     event = result.scalars().first()
     if not event:
@@ -326,6 +378,26 @@ async def get_alert_detail(
         select(func.count()).select_from(AlertEvidence).where(AlertEvidence.event_id == event.id)
     ) or 0
 
+    # Admin/proctor actions (dispatch, notify-university, anonymous-call) with masked actor
+    aa_result = await db.execute(
+        select(AlertAdminAction, User)
+        .outerjoin(User, AlertAdminAction.actor_user_id == User.id)
+        .where(AlertAdminAction.event_id == event.id)
+        .order_by(AlertAdminAction.created_at)
+    )
+    admin_actions = [
+        {
+            "action_type": a.action_type.value,
+            "actor": mask_email(u.email if u else None),
+            "note": a.note,
+            "created_at": a.created_at.isoformat(),
+        }
+        for a, u in aa_result.all()
+    ]
+
+    # Acknowledgement marker (lightweight, stored in Redis by /ack)
+    acked = bool(await redis.get(f"alert_acked:{event.event_id}"))
+
     return {
         "event_id": str(event.event_id),
         "state": event.state.value,
@@ -339,6 +411,8 @@ async def get_alert_detail(
         "zone": zone_data,
         "notifications": notifications,
         "responses": responses,
+        "admin_actions": admin_actions,
+        "acked": acked,
         "evidence_count": ev_count,
     }
 
@@ -466,6 +540,109 @@ async def mark_false_alert(
         "message": "Alert marked as false. 30-day device ban applied.",
         "state": "false_alert",
         "event_id": str(event_id),
+    }
+
+
+# ─── Admin/proctor actions on an alert (dispatch / notify / call) ────────────
+
+from pydantic import BaseModel
+
+
+class AlertActionBody(BaseModel):
+    note: str | None = None
+
+
+async def _load_event_with_tenant_gate(db, event_id: uuid.UUID, token: TokenData) -> AlertEvent:
+    result = await db.execute(select(AlertEvent).where(AlertEvent.event_id == event_id))
+    event = result.scalars().first()
+    if not event:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    if token.role == Role.moderator and token.tenant_id and event.tenant_id != token.tenant_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Alert is outside your tenant")
+    return event
+
+
+async def _record_admin_action(
+    db, request: Request, token: TokenData,
+    event: AlertEvent, action_type: AlertActionType, note: str | None, audit_event: str,
+) -> AlertAdminAction:
+    action = AlertAdminAction(
+        event_id=event.id,
+        action_type=action_type,
+        actor_user_id=token.user_id,
+        note=note,
+    )
+    db.add(action)
+    await audit_log(db, audit_event, token.user_id, get_ip(request),
+                    {"event_id": str(event.event_id), "action": action_type.value})
+    await db.commit()
+    await db.refresh(action)
+    return action
+
+
+@router.post("/alerts/{event_id}/dispatch")
+@limiter.limit("30/minute")
+async def dispatch_response(
+    event_id: uuid.UUID,
+    request: Request,
+    body: AlertActionBody | None = None,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    """Record that a response team was dispatched for this alert. Audit-logged."""
+    event = await _load_event_with_tenant_gate(db, event_id, token)
+    note = body.note if body else None
+    action = await _record_admin_action(
+        db, request, token, event, AlertActionType.dispatch, note, "alert_dispatched_by_admin")
+    return {
+        "message": "Response dispatched",
+        "event_id": str(event_id),
+        "action_type": action.action_type.value,
+        "created_at": action.created_at.isoformat(),
+    }
+
+
+@router.post("/alerts/{event_id}/notify-university")
+@limiter.limit("30/minute")
+async def notify_university(
+    event_id: uuid.UUID,
+    request: Request,
+    body: AlertActionBody | None = None,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    """Record that the university (tenant admins) were notified about this alert."""
+    event = await _load_event_with_tenant_gate(db, event_id, token)
+    note = body.note if body else None
+    action = await _record_admin_action(
+        db, request, token, event, AlertActionType.notify_university, note, "alert_university_notified")
+    return {
+        "message": "University notified",
+        "event_id": str(event_id),
+        "action_type": action.action_type.value,
+        "created_at": action.created_at.isoformat(),
+    }
+
+
+@router.post("/alerts/{event_id}/anonymous-call")
+@limiter.limit("30/minute")
+async def anonymous_call(
+    event_id: uuid.UUID,
+    request: Request,
+    body: AlertActionBody | None = None,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    """Record that an anonymized call bridge to the reporter was initiated."""
+    event = await _load_event_with_tenant_gate(db, event_id, token)
+    note = body.note if body else None
+    action = await _record_admin_action(
+        db, request, token, event, AlertActionType.anonymous_call, note, "alert_anonymous_call_initiated")
+    return {
+        "message": "Anonymous call initiated",
+        "event_id": str(event_id),
+        "action_type": action.action_type.value,
+        "created_at": action.created_at.isoformat(),
     }
 
 

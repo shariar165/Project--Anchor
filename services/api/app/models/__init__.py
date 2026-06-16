@@ -9,9 +9,10 @@ from app.models.dms import DMSRecord
 from app.models.e2ee import UserE2EEKey
 from app.models.alert import (
     AlertPhase1Record, Zone, AlertEvent, AlertNotification,
-    AlertResponse, AlertEvidence, AlertBan, UserFCMToken, UserLocationSnapshot,
+    AlertResponse, AlertEvidence, AlertBan, AlertAdminAction,
+    UserFCMToken, UserLocationSnapshot,
     GPSStatus, AlertState, RecipientType, NotifChannel, NotifStatus,
-    ResponseType, MediaType, FCMPlatform, ZoneType, ZoneStatus,
+    ResponseType, AlertActionType, MediaType, FCMPlatform, ZoneType, ZoneStatus,
 )
 from app.models.application import (
     ApplicationTemplate, Application, ApplicationAttachment,
@@ -55,9 +56,10 @@ __all__ = [
     "UserE2EEKey",
     # Alert system
     "AlertPhase1Record", "Zone", "AlertEvent", "AlertNotification",
-    "AlertResponse", "AlertEvidence", "AlertBan", "UserFCMToken", "UserLocationSnapshot",
+    "AlertResponse", "AlertEvidence", "AlertBan", "AlertAdminAction",
+    "UserFCMToken", "UserLocationSnapshot",
     "GPSStatus", "AlertState", "RecipientType", "NotifChannel", "NotifStatus",
-    "ResponseType", "MediaType", "FCMPlatform", "ZoneType", "ZoneStatus",
+    "ResponseType", "AlertActionType", "MediaType", "FCMPlatform", "ZoneType", "ZoneStatus",
     # Application system
     "ApplicationTemplate", "Application", "ApplicationAttachment",
     "ApplicationReview", "StudentCampusSettings", "ApplicationState",
