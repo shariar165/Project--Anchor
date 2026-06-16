@@ -624,6 +624,23 @@ async def validate_entries(
                     description=f"Theory class assigned to LAB room {room.name}",
                 ))
 
+    # Check a section's theory and its own lab don't share a slot — lab-group
+    # students also attend the section theory, so it's a real student clash.
+    # (Two different lab groups of the same section may coexist.)
+    section_theory_slot: dict = {}
+    for e in entries:
+        if not e.is_lab:
+            section_theory_slot[(e.section_id, e.day, e.slot)] = e
+    for e in entries:
+        if e.is_lab:
+            theory = section_theory_slot.get((e.section_id, e.day, e.slot))
+            if theory is not None:
+                conflicts.append(ConflictOut(
+                    conflict_type="section_lab_overlap",
+                    entry_ids=[theory.id, e.id],
+                    description=f"Section has a theory and a lab class at the same time on day {e.day} slot {e.slot}",
+                ))
+
     # Check lab entries have a lab_group_id
     for e in entries:
         if e.is_lab and e.lab_group_id is None:

@@ -181,97 +181,127 @@ def solve(
     faculty_idx = {fp.id: i for i, fp in enumerate(faculty_list)}
     room_idx = {r.id: i for i, r in enumerate(room_list)}
 
-    # ── Variables ─────────────────────────────────────────────────────────────
-    # x[o][f][r][d][s] = 1 iff offering o is taught by faculty f in room r on day d slot s
-    x = {}
-    for o_idx in range(offering_count):
-        x[o_idx] = {}
-        for f_idx in range(n_f):
-            x[o_idx][f_idx] = {}
-            for r_idx in range(n_r):
-                x[o_idx][f_idx][r_idx] = {}
-                for d in range(n_d):
-                    x[o_idx][f_idx][r_idx][d] = {}
-                    for s in range(n_s):
-                        x[o_idx][f_idx][r_idx][d][s] = model.new_bool_var(
-                            f"x_{o_idx}_{f_idx}_{r_idx}_{d}_{s}"
-                        )
+    # ── Decision variables: (offering, faculty, day, slot) ────────────────────
+    # Rooms are deliberately NOT part of the decision variable. Every room of a
+    # given type is interchangeable (there are no room-specific constraints), so
+    # pinning a concrete room inside CP-SAT only injects massive symmetry that
+    # defeats the solver even at small scale. Instead we cap the number of
+    # concurrent classes per (day, slot) to the rooms available for that type, and
+    # assign concrete rooms in a trivial post-pass (Hall's theorem guarantees a
+    # clash-free assignment exists once the per-slot capacity holds).
+    #
+    # x[o] = { (f_idx, d, s): BoolVar }, created only for faculty eligible to teach
+    # the course, on days that are not one of that faculty's off-days. This keeps
+    # the model from ~1e9 booleans (dense offering×faculty×room×day×slot) down to a
+    # few hundred-thousand at full scale.
 
-    # Indexed lookups — O(1) access instead of scanning all vars
+    eligible_f_idx_by_course: dict[uuid.UUID, list[int]] = {}
+    for course_id, fac_ids in data.eligible.items():
+        eligible_f_idx_by_course[course_id] = [
+            faculty_idx[fid] for fid in fac_ids if fid in faculty_idx
+        ]
+
+    # Room pools by type. Theory draws from THEORY (preferred) then ONLINE.
+    theory_room_ids = [r.id for r in room_list if r.room_type == "THEORY"]
+    online_room_ids = [r.id for r in room_list if r.room_type == "ONLINE"]
+    lab_room_ids = [r.id for r in room_list if r.room_type == "LAB"]
+    theory_pool = theory_room_ids + online_room_ids
+    n_theory_cap = len(theory_pool)
+    n_lab_cap = len(lab_room_ids)
+
+    x: dict[int, dict[tuple, any]] = {}
+    vars_by_offering: dict[int, list] = {}
     by_faculty_slot: dict[tuple, list] = {}
-    by_room_slot: dict[tuple, list] = {}
     by_section_slot: dict[tuple, list] = {}
+    theory_by_slot: dict[tuple, list] = {}   # (d, s) -> vars of theory offerings
+    lab_by_slot: dict[tuple, list] = {}      # (d, s) -> vars of lab offerings
+    unplaceable: list[str] = []
 
     for o_idx, offering in enumerate(data.offerings):
-        for f_idx, fp in enumerate(faculty_list):
-            for r_idx, room in enumerate(room_list):
-                for d in range(n_d):
-                    for s in range(n_s):
-                        var = x[o_idx][f_idx][r_idx][d][s]
-                        by_faculty_slot.setdefault((f_idx, d, s), []).append(var)
-                        by_room_slot.setdefault((r_idx, d, s), []).append(var)
-                        by_section_slot.setdefault((offering.section.id, d, s, offering.lab_group.id if offering.lab_group else None), []).append(var)
+        is_lab = offering.course.is_lab
+        cell: dict[tuple, any] = {}
+        x[o_idx] = cell
+        vars_by_offering[o_idx] = []
+        # No room of the required type, or no eligible faculty → unplaceable.
+        allowed_f = eligible_f_idx_by_course.get(offering.course.id, [])
+        if (is_lab and n_lab_cap == 0) or (not is_lab and n_theory_cap == 0) or not allowed_f:
+            unplaceable.append(offering.course.code)
+            continue
+        lg_id = offering.lab_group.id if offering.lab_group else None
+        slot_bucket = lab_by_slot if is_lab else theory_by_slot
+        for f_idx in allowed_f:
+            off = set(faculty_list[f_idx].off_days or [])
+            for d in range(n_d):
+                if d in off:
+                    continue
+                for s in range(n_s):
+                    var = model.new_bool_var(f"x_{o_idx}_{f_idx}_{d}_{s}")
+                    cell[(f_idx, d, s)] = var
+                    by_faculty_slot.setdefault((f_idx, d, s), []).append(var)
+                    by_section_slot.setdefault((offering.section.id, d, s, lg_id), []).append(var)
+                    slot_bucket.setdefault((d, s), []).append(var)
+        vars_by_offering[o_idx] = list(cell.values())
+        if not cell:
+            unplaceable.append(offering.course.code)
+
+    # Guard: an offering with no legal placement makes the whole model infeasible
+    # via add_exactly_one([]). Fail loudly instead, naming the offending course(s).
+    if unplaceable:
+        return {
+            "status": "infeasible",
+            "objective": None,
+            "entries": [],
+            "infeasible_core": [f"no_assignment:{c}" for c in sorted(set(unplaceable))],
+        }
 
     # ── Hard constraints ──────────────────────────────────────────────────────
     assumption_map: dict[str, any] = {}  # constraint_id → assumption BoolVar
 
     # Each offering must be assigned exactly once
     for o_idx in range(offering_count):
-        model.add_exactly_one(
-            x[o_idx][f_idx][r_idx][d][s]
-            for f_idx in range(n_f)
-            for r_idx in range(n_r)
-            for d in range(n_d)
-            for s in range(n_s)
-        )
+        model.add_exactly_one(vars_by_offering[o_idx])
 
-    # No room double-booked
-    for key, vars_list in by_room_slot.items():
-        if len(vars_list) > 1:
-            model.add(sum(vars_list) <= 1)
+    # Per-slot room capacity: concurrent classes of a type ≤ rooms of that type
+    for vars_list in theory_by_slot.values():
+        if len(vars_list) > n_theory_cap:
+            model.add(sum(vars_list) <= n_theory_cap)
+    for vars_list in lab_by_slot.values():
+        if len(vars_list) > n_lab_cap:
+            model.add(sum(vars_list) <= n_lab_cap)
 
     # No teacher in two places at once
-    for key, vars_list in by_faculty_slot.items():
+    for vars_list in by_faculty_slot.values():
         if len(vars_list) > 1:
             model.add(sum(vars_list) <= 1)
 
-    # No section in two theory classes at once (lab groups are separate)
-    for key, vars_list in by_section_slot.items():
+    # No section/lab-group double-booked in the same slot
+    for vars_list in by_section_slot.values():
         if len(vars_list) > 1:
             model.add(sum(vars_list) <= 1)
 
-    # Only eligible faculty can teach each offering
-    for o_idx, offering in enumerate(data.offerings):
-        eligible_ids = data.eligible.get(offering.course.id, [])
-        for f_idx, fp in enumerate(faculty_list):
-            if fp.id not in eligible_ids:
-                for r_idx in range(n_r):
-                    for d in range(n_d):
-                        for s in range(n_s):
-                            model.add(x[o_idx][f_idx][r_idx][d][s] == 0)
+    # A section's theory class and one of that section's OWN lab groups must not
+    # collide — the lab-group students also attend the section theory. (Two
+    # different lab groups of the same section may still run concurrently.)
+    section_slot_groups: dict[tuple, dict] = {}
+    for (sec_id, d, s, lg_id), vars_list in by_section_slot.items():
+        section_slot_groups.setdefault((sec_id, d, s), {})[lg_id] = vars_list
+    for bylg in section_slot_groups.values():
+        theory_vars = bylg.get(None)
+        if not theory_vars:
+            continue
+        for lg_id, lab_vars in bylg.items():
+            if lg_id is None:
+                continue
+            model.add(sum(theory_vars) + sum(lab_vars) <= 1)
 
-    # Room type match: lab courses → LAB rooms, theory → THEORY or ONLINE
-    for o_idx, offering in enumerate(data.offerings):
-        for r_idx, room in enumerate(room_list):
-            if offering.course.is_lab and room.room_type == "THEORY":
-                for f_idx in range(n_f):
-                    for d in range(n_d):
-                        for s in range(n_s):
-                            model.add(x[o_idx][f_idx][r_idx][d][s] == 0)
-            elif not offering.course.is_lab and room.room_type == "LAB":
-                for f_idx in range(n_f):
-                    for d in range(n_d):
-                        for s in range(n_s):
-                            model.add(x[o_idx][f_idx][r_idx][d][s] == 0)
-
-    # Off-days from faculty profile
-    for o_idx in range(offering_count):
-        for f_idx, fp in enumerate(faculty_list):
-            for d in (fp.off_days or []):
-                if 0 <= d < n_d:
-                    for r_idx in range(n_r):
-                        for s in range(n_s):
-                            model.add(x[o_idx][f_idx][r_idx][d][s] == 0)
+    # Faculty workload cap — at most fp.max_per_day classes per teacher per day
+    by_faculty_day: dict[tuple, list] = {}
+    for (f_idx, d, _s), vars_list in by_faculty_slot.items():
+        by_faculty_day.setdefault((f_idx, d), []).extend(vars_list)
+    for (f_idx, _d), vars_list in by_faculty_day.items():
+        cap = faculty_list[f_idx].max_per_day or 4
+        if len(vars_list) > cap:
+            model.add(sum(vars_list) <= cap)
 
     # Registry-driven constraints
     for con in data.constraints:
@@ -345,26 +375,39 @@ def solve(
             "infeasible_core": infeasible_core,
         }
 
-    # Extract solution
-    result_entries = []
+    # Extract solution — collect placed classes per (day, slot), grouped by type,
+    # then hand out concrete rooms. Distinct index per slot ⇒ no room double-booking;
+    # the per-slot capacity constraint guarantees index < pool size.
+    placed_theory: dict[tuple, list] = {}
+    placed_lab: dict[tuple, list] = {}
     for o_idx, offering in enumerate(data.offerings):
-        for f_idx, fp in enumerate(faculty_list):
-            for r_idx, room in enumerate(room_list):
-                for d in range(n_d):
-                    for s in range(n_s):
-                        if solver.boolean_value(x[o_idx][f_idx][r_idx][d][s]):
-                            result_entries.append({
-                                "course_id": offering.course.id,
-                                "section_id": offering.section.id,
-                                "lab_group_id": offering.lab_group.id if offering.lab_group else None,
-                                "faculty_id": fp.id,
-                                "room_id": room.id,
-                                "day": d,
-                                "slot": s,
-                                "is_lab": offering.course.is_lab,
-                                "locked": False,
-                                "source": "solver",
-                            })
+        for (f_idx, d, s), var in x[o_idx].items():
+            if solver.boolean_value(var):
+                rec = (offering, faculty_list[f_idx].id, d, s)
+                bucket = placed_lab if offering.course.is_lab else placed_theory
+                bucket.setdefault((d, s), []).append(rec)
+
+    result_entries = []
+
+    def _emit(buckets: dict, pool: list):
+        for recs in buckets.values():
+            for i, (offering, faculty_id, d, s) in enumerate(recs):
+                room_id = pool[i] if i < len(pool) else pool[i % len(pool)]
+                result_entries.append({
+                    "course_id": offering.course.id,
+                    "section_id": offering.section.id,
+                    "lab_group_id": offering.lab_group.id if offering.lab_group else None,
+                    "faculty_id": faculty_id,
+                    "room_id": room_id,
+                    "day": d,
+                    "slot": s,
+                    "is_lab": offering.course.is_lab,
+                    "locked": False,
+                    "source": "solver",
+                })
+
+    _emit(placed_theory, theory_pool)
+    _emit(placed_lab, lab_room_ids)
 
     return {
         "status": status_name.lower(),
@@ -379,8 +422,6 @@ def _add_perturbation(
     base_entries, locked_ids, pinned_change, penalty_terms,
 ):
     """Add warm hints + lock constraints + perturbation penalty."""
-    from ortools.sat.python import cp_model
-
     # Build lookup: (section_id, lab_group_id, course_id, copy_idx) → offering_idx
     offering_key_map: dict[tuple, int] = {}
     for o_idx, offering in enumerate(data.offerings):
@@ -401,11 +442,14 @@ def _add_perturbation(
             continue
 
         f_idx = faculty_idx.get(entry.faculty_id)
-        r_idx = room_idx.get(entry.room_id)
-        if f_idx is None or r_idx is None:
+        if f_idx is None:
             continue
 
-        var = x[o_idx][f_idx][r_idx][entry.day][entry.slot]
+        # The (f, d, s) combo may have been pruned away (e.g. ineligible now).
+        # Rooms are not solver variables, so room is not pinned here.
+        var = x[o_idx].get((f_idx, entry.day, entry.slot))
+        if var is None:
+            continue
 
         if entry.id in locked_ids:
             # Hard-pin locked entry
@@ -426,24 +470,19 @@ def _add_perturbation(
         # Find the entry in base_entries
         for entry in base_entries:
             if entry.id == pinned_change.entry_id:
-                lg_id = entry.lab_group_id
-                for copy_idx in range(10):
-                    key = (entry.section_id, lg_id, entry.course_id, copy_idx)
-                    if key in offering_key_map:
-                        continue
                 # Use new values for pinning
                 new_day = pinned_change.new_day if pinned_change.new_day is not None else entry.day
                 new_slot = pinned_change.new_slot if pinned_change.new_slot is not None else entry.slot
                 new_f_id = pinned_change.new_faculty_id or entry.faculty_id
-                new_r_id = pinned_change.new_room_id or entry.room_id
                 nf_idx = faculty_idx.get(new_f_id)
-                nr_idx = room_idx.get(new_r_id)
                 # Find o_idx for this entry
                 for o_idx, offering in enumerate(data.offerings):
                     if (offering.section.id == entry.section_id and
                             offering.course.id == entry.course_id):
-                        if nf_idx is not None and nr_idx is not None:
-                            model.add(x[o_idx][nf_idx][nr_idx][new_day][new_slot] == 1)
+                        if nf_idx is not None:
+                            var = x[o_idx].get((nf_idx, new_day, new_slot))
+                            if var is not None:
+                                model.add(var == 1)
                         break
                 break
 
@@ -452,13 +491,14 @@ def _add_warm_hints(model, x, data, faculty_list, room_list, faculty_idx, room_i
     """Provide previous solution as hints to speed up re-solve."""
     for entry in data.prev_entries:
         f_idx = faculty_idx.get(entry.faculty_id)
-        r_idx = room_idx.get(entry.room_id)
-        if f_idx is None or r_idx is None:
+        if f_idx is None:
             continue
         for o_idx, offering in enumerate(data.offerings):
             if (offering.section.id == entry.section_id and
                     offering.course.id == entry.course_id):
-                model.add_hint(x[o_idx][f_idx][r_idx][entry.day][entry.slot], 1)
+                var = x[o_idx].get((f_idx, entry.day, entry.slot))
+                if var is not None:
+                    model.add_hint(var, 1)
                 break
 
 
@@ -467,32 +507,33 @@ def _add_warm_hints(model, x, data, faculty_list, room_list, faculty_idx, room_i
 def _build_max_per_day(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
                        scope, params, assumption):
     limit = int(params.get("limit", 4))
-    for f_idx in range(len(faculty_list)):
-        for d in range(data.n_days):
-            day_vars = [
-                x[o_idx][f_idx][r_idx][d][s]
-                for o_idx in range(len(data.offerings))
-                for r_idx in range(len(room_list))
-                for s in range(data.n_slots)
-            ]
-            if day_vars:
-                model.add(sum(day_vars) <= limit).only_enforce_if(assumption)
+    # Group created vars by (faculty, day)
+    by_fd: dict[tuple, list] = {}
+    for cell in x.values():
+        for (f_idx, d, _s), var in cell.items():
+            by_fd.setdefault((f_idx, d), []).append(var)
+    for day_vars in by_fd.values():
+        if day_vars:
+            model.add(sum(day_vars) <= limit).only_enforce_if(assumption)
 
 
 def _build_consecutive_limit(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
                               scope, params, assumption):
     limit = int(params.get("limit", 2))
-    for f_idx in range(len(faculty_list)):
-        for d in range(data.n_days):
-            for s_start in range(data.n_slots - limit):
-                window_vars = [
-                    x[o_idx][f_idx][r_idx][d][s]
-                    for o_idx in range(len(data.offerings))
-                    for r_idx in range(len(room_list))
-                    for s in range(s_start, s_start + limit + 1)
-                ]
-                if window_vars:
-                    model.add(sum(window_vars) <= limit).only_enforce_if(assumption)
+    # Group created vars by (faculty, day) → {slot: [vars]}
+    by_fd_s: dict[tuple, dict] = {}
+    for cell in x.values():
+        for (f_idx, d, s), var in cell.items():
+            by_fd_s.setdefault((f_idx, d), {}).setdefault(s, []).append(var)
+    for slot_map in by_fd_s.values():
+        for s_start in range(data.n_slots - limit):
+            window_vars = [
+                v
+                for s in range(s_start, s_start + limit + 1)
+                for v in slot_map.get(s, [])
+            ]
+            if window_vars:
+                model.add(sum(window_vars) <= limit).only_enforce_if(assumption)
 
 
 CONSTRAINT_BUILDERS = {
@@ -503,29 +544,20 @@ CONSTRAINT_BUILDERS = {
 
 def _soft_pref_slot(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
                     scope, params, weight, penalty_terms):
-    for f_idx, fp in enumerate(faculty_list):
-        if fp.pref_slot is None:
-            continue
-        pref_s = fp.pref_slot
-        for o_idx in range(len(data.offerings)):
-            for r_idx in range(len(room_list)):
-                for d in range(data.n_days):
-                    for s in range(data.n_slots):
-                        if s != pref_s:
-                            penalty_var = model.new_bool_var(f"pref_{f_idx}_{o_idx}_{d}_{s}")
-                            model.add(x[o_idx][f_idx][r_idx][d][s] <= penalty_var)
-                            penalty_terms.append(weight * penalty_var)
+    # Penalise any class a teacher with a preferred slot is given outside it.
+    for cell in x.values():
+        for (f_idx, _d, s), var in cell.items():
+            pref_s = faculty_list[f_idx].pref_slot
+            if pref_s is not None and s != pref_s:
+                penalty_terms.append(weight * var)
 
 
 def _soft_online_penalty(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
                          scope, params, weight, penalty_terms):
-    for r_idx, room in enumerate(room_list):
-        if room.room_type == "ONLINE":
-            for o_idx in range(len(data.offerings)):
-                for f_idx in range(len(faculty_list)):
-                    for d in range(data.n_days):
-                        for s in range(data.n_slots):
-                            penalty_terms.append(weight * x[o_idx][f_idx][r_idx][d][s])
+    # Rooms are assigned in a post-pass (THEORY preferred over ONLINE), so online
+    # usage is already minimised structurally; there are no room decision vars to
+    # penalise here. Kept as a registered no-op so the constraint type stays valid.
+    return
 
 
 SOFT_BUILDERS = {
