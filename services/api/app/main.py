@@ -24,6 +24,7 @@ from app.routers import filings as filings_router
 from app.routers import notices as notices_router
 from app.routers import zones as zones_router
 from app.routers import lawyers as lawyers_router
+from app.routers import legal_rights as legal_rights_router
 from app.routers import routines as routines_router
 from app.routers import dept_ratings as dept_ratings_router
 from app.routers import admin_users as admin_users_router
@@ -43,8 +44,10 @@ async def lifespan(app: FastAPI):
     try:
         from app.database import AsyncSessionLocal
         from app.services.filing_svc import seed_templates
+        from app.services.legal_rights_svc import seed_legal_rights
         async with AsyncSessionLocal() as _db:
             await seed_templates(_db)
+            await seed_legal_rights(_db)
     except Exception:
         pass
     yield
@@ -92,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(notices_router.router)
     app.include_router(zones_router.router)
     app.include_router(lawyers_router.router)
+    app.include_router(legal_rights_router.router)
     app.include_router(routines_router.router)
     app.include_router(dept_ratings_router.router)
     app.include_router(admin_users_router.router)

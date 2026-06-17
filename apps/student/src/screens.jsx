@@ -2267,72 +2267,348 @@ function ComposeScreen({ params = {} }) {
 // ═══════════════════════════════════════════════════════════════
 //  RIGHTS SCREEN — Know your rights (national mode)
 // ═══════════════════════════════════════════════════════════════
+
+// Built-in offline fallback — mirrors the backend shape so the screen always
+// renders even when the API is unreachable.
+const RIGHTS_FALLBACK = [
+  { category: 'personal_safety', illustration: 'shield', accent: '#C44536',
+    citation: 'Penal Code 1860 · §509',
+    title_en: 'Right against harassment in public spaces',
+    title_bn: 'প্রকাশ্য স্থানে হয়রানির বিরুদ্ধে অধিকার',
+    summary_en: 'Insulting the modesty of a woman by word, gesture or act is a criminal offence.',
+    summary_bn: 'কথা, অঙ্গভঙ্গি বা কাজের মাধ্যমে নারীর শ্লীলতাহানি একটি ফৌজদারি অপরাধ।',
+    full_text_en: 'Any word, gesture, or act intended to insult the modesty of a woman is punishable with imprisonment up to one year, or fine, or both.',
+    full_text_bn: 'কোনো নারীর শ্লীলতাহানির উদ্দেশ্যে করা যেকোনো শব্দ, অঙ্গভঙ্গি বা কাজ এক বছর পর্যন্ত কারাদণ্ড, জরিমানা, বা উভয় দণ্ডে দণ্ডনীয়।',
+    penalty_en: 'Up to 1 year imprisonment or fine', penalty_bn: '১ বছর পর্যন্ত কারাদণ্ড বা জরিমানা',
+    where_to_invoke_en: 'File a GD at the nearest thana, or call 999.',
+    where_to_invoke_bn: 'নিকটস্থ থানায় জিডি করুন, অথবা ৯৯৯-এ কল করুন।',
+    steps: [] },
+  { category: 'cyber', illustration: 'lock', accent: '#3A5A8C',
+    citation: 'Cyber Security Act 2023 · §25',
+    title_en: 'Right to lodge a cyber-harassment complaint',
+    title_bn: 'সাইবার হয়রানির অভিযোগ করার অধিকার',
+    summary_en: 'Targeted online harassment is a cognizable offence.',
+    summary_bn: 'লক্ষ্যবস্তু করে অনলাইন হয়রানি আমলযোগ্য অপরাধ।',
+    full_text_en: 'Online harassment, defamation and publishing private images without consent are punishable. File at the Cyber Police Centre or any thana.',
+    full_text_bn: 'অনলাইনে হয়রানি, মানহানি ও সম্মতি ছাড়া ব্যক্তিগত ছবি প্রকাশ শাস্তিযোগ্য। সাইবার পুলিশ সেন্টার বা যেকোনো থানায় অভিযোগ করুন।',
+    penalty_en: 'Varies — fines and imprisonment', penalty_bn: 'অপরাধভেদে — জরিমানা ও কারাদণ্ড',
+    where_to_invoke_en: 'CID Cyber Police Centre, any thana, or 999.',
+    where_to_invoke_bn: 'সিআইডি সাইবার পুলিশ সেন্টার, যেকোনো থানা, অথবা ৯৯৯।',
+    steps: [] },
+  { category: 'custody', illustration: 'gavel', accent: '#7A5230',
+    citation: 'CrPC §60A · Constitution Art. 33',
+    title_en: 'Right to inform a relative on arrest',
+    title_bn: 'গ্রেপ্তারে আত্মীয়কে জানানোর অধিকার',
+    summary_en: 'On arrest you must be told the grounds, allowed a lawyer, and produced before a magistrate within 24 hours.',
+    summary_bn: 'গ্রেপ্তারে কারণ জানাতে হবে, আইনজীবী রাখার সুযোগ ও ২৪ ঘণ্টায় ম্যাজিস্ট্রেটের সামনে হাজির করতে হবে।',
+    full_text_en: 'On arrest, you must be informed of the grounds, allowed to consult a lawyer of your choice, and produced before a magistrate within twenty-four hours.',
+    full_text_bn: 'গ্রেপ্তারে আপনাকে কারণ জানাতে হবে, পছন্দের আইনজীবীর সঙ্গে পরামর্শের সুযোগ দিতে হবে এবং চব্বিশ ঘণ্টার মধ্যে ম্যাজিস্ট্রেটের সামনে হাজির করতে হবে।',
+    penalty_en: 'Violation is grounds for High Court relief', penalty_bn: 'লঙ্ঘন হাইকোর্টে প্রতিকারের ভিত্তি',
+    where_to_invoke_en: 'Insist on these rights at arrest; a lawyer can file habeas corpus.',
+    where_to_invoke_bn: 'গ্রেপ্তারে এই অধিকার দাবি করুন; আইনজীবী হেবিয়াস কর্পাস রিট করতে পারেন।',
+    steps: [] },
+  { category: 'workplace', illustration: 'building', accent: '#4A6B5C',
+    citation: 'High Court Directive 2009',
+    title_en: 'Right to a safe workplace',
+    title_bn: 'নিরাপদ কর্মস্থলের অধিকার',
+    summary_en: 'Every workplace must have a sexual-harassment complaint committee chaired by a woman.',
+    summary_bn: 'প্রতিটি কর্মস্থলে নারীর নেতৃত্বে যৌন হয়রানি অভিযোগ কমিটি থাকতে হবে।',
+    full_text_en: 'Every workplace, including educational institutions, must have a complaint committee for sexual harassment, chaired by a woman.',
+    full_text_bn: 'শিক্ষাপ্রতিষ্ঠানসহ প্রতিটি কর্মস্থলে নারীর সভাপতিত্বে যৌন হয়রানি অভিযোগ কমিটি থাকতে হবে।',
+    penalty_en: 'Non-compliance is contempt of the directive', penalty_bn: 'অমান্য করা নির্দেশনা অবমাননা',
+    where_to_invoke_en: "Complain to your institution's committee; escalate via a writ.",
+    where_to_invoke_bn: 'প্রতিষ্ঠানের কমিটিতে অভিযোগ করুন; উপেক্ষিত হলে রিটে যান।',
+    steps: [] },
+  { category: 'domestic', illustration: 'heart', accent: '#B0436A',
+    citation: 'DV (Prevention & Protection) Act 2010',
+    title_en: 'Right to seek a protection order',
+    title_bn: 'সুরক্ষা আদেশ চাওয়ার অধিকার',
+    summary_en: 'Victims of domestic violence can apply for residence, protection and compensation orders.',
+    summary_bn: 'পারিবারিক সহিংসতার শিকার ব্যক্তি বসবাস, সুরক্ষা ও ক্ষতিপূরণ আদেশ চাইতে পারেন।',
+    full_text_en: 'Victims of domestic violence may apply to a Court of Magistrate for a residence order, protection order, or compensation.',
+    full_text_bn: 'পারিবারিক সহিংসতার শিকার ম্যাজিস্ট্রেট আদালতে বসবাস, সুরক্ষা বা ক্ষতিপূরণ আদেশের জন্য আবেদন করতে পারেন।',
+    penalty_en: 'Breach is punishable with jail and fine', penalty_bn: 'লঙ্ঘন কারাদণ্ড ও জরিমানায় দণ্ডনীয়',
+    where_to_invoke_en: 'Apply through a Court of Magistrate; an NGO can assist.',
+    where_to_invoke_bn: 'ম্যাজিস্ট্রেট আদালতে আবেদন করুন; এনজিও সহায়তা করতে পারে।',
+    steps: [] },
+  { category: 'privacy', illustration: 'eye', accent: '#5B6770',
+    citation: 'Constitution Art. 43',
+    title_en: 'Right to privacy and consent',
+    title_bn: 'গোপনীয়তা ও সম্মতির অধিকার',
+    summary_en: 'Privacy of correspondence and communication is a constitutional right.',
+    summary_bn: 'চিঠিপত্র ও যোগাযোগের গোপনীয়তা একটি সাংবিধানিক অধিকার।',
+    full_text_en: 'Every citizen has the right to privacy of correspondence and communication. Surveillance without due process is unconstitutional.',
+    full_text_bn: 'প্রত্যেক নাগরিকের যোগাযোগের গোপনীয়তার অধিকার রয়েছে। যথাযথ প্রক্রিয়া ছাড়া নজরদারি অসাংবিধানিক।',
+    penalty_en: 'Remediable via High Court writ', penalty_bn: 'হাইকোর্ট রিটে প্রতিকারযোগ্য',
+    where_to_invoke_en: 'Challenge unlawful surveillance via a writ petition.',
+    where_to_invoke_bn: 'বেআইনি নজরদারির বিরুদ্ধে রিট পিটিশন করুন।',
+    steps: [] },
+];
+
+const RIGHTS_CATEGORY_LABELS = {
+  personal_safety: { en: 'Safety',     bn: 'নিরাপত্তা' },
+  cyber:           { en: 'Cyber',      bn: 'সাইবার' },
+  custody:         { en: 'Custody',    bn: 'আটক' },
+  workplace:       { en: 'Workplace',  bn: 'কর্মস্থল' },
+  domestic:        { en: 'Domestic',   bn: 'পারিবারিক' },
+  privacy:         { en: 'Privacy',    bn: 'গোপনীয়তা' },
+  consumer:        { en: 'Consumer',   bn: 'ভোক্তা' },
+  rti:             { en: 'Information', bn: 'তথ্য' },
+  dowry:           { en: 'Dowry',      bn: 'যৌতুক' },
+  child_marriage:  { en: 'Child',      bn: 'শিশু' },
+  road:            { en: 'Road',       bn: 'সড়ক' },
+  labor:           { en: 'Labour',     bn: 'শ্রম' },
+};
+
+function rightsCatLabel(cat, lang) {
+  const m = RIGHTS_CATEGORY_LABELS[cat];
+  if (!m) return (cat || '').replace(/_/g, ' ');
+  return lang === 'BN' ? m.bn : m.en;
+}
+
+// Maps an illustration key → an icon component (all defined in icons.jsx).
+function RightsGlyph({ kind, size = 26, stroke = '#fff' }) {
+  const p = { size, stroke };
+  switch (kind) {
+    case 'shield':   return <IconShield {...p}/>;
+    case 'lock':     return <IconLock {...p}/>;
+    case 'gavel':    return <IconGavel {...p}/>;
+    case 'building': return <IconBuilding {...p}/>;
+    case 'heart':    return <IconHeart {...p}/>;
+    case 'book':     return <IconBook {...p}/>;
+    case 'eye':      return <IconEyeOff {...p}/>;
+    case 'route':    return <IconRoute {...p}/>;
+    case 'doc':      return <IconDoc {...p}/>;
+    case 'scale':    return <IconScale {...p}/>;
+    default:         return <IconScale {...p}/>;
+  }
+}
+
+// Infographic banner — gradient band keyed by the law's accent + glyph, with a
+// decorative SVG motif and the citation chip. Pure SVG/CSS, no image assets.
+function RightInfographic({ kind, accent, citation, catLabel }) {
+  const dark = accent || '#C44536';
+  return (
+    <div style={{
+      position: 'relative', height: 96, overflow: 'hidden',
+      background: `linear-gradient(135deg, ${dark} 0%, ${dark}cc 60%, ${dark}99 100%)`,
+    }}>
+      {/* decorative concentric arcs */}
+      <svg viewBox="0 0 200 96" preserveAspectRatio="xMidYMid slice"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.16 }} aria-hidden="true">
+        <circle cx="172" cy="20" r="46" fill="none" stroke="#fff" strokeWidth="1.4"/>
+        <circle cx="172" cy="20" r="30" fill="none" stroke="#fff" strokeWidth="1.4"/>
+        <circle cx="172" cy="20" r="16" fill="none" stroke="#fff" strokeWidth="1.4"/>
+        <circle cx="18" cy="84" r="3" fill="#fff"/>
+        <circle cx="34" cy="84" r="3" fill="#fff"/>
+        <circle cx="50" cy="84" r="3" fill="#fff"/>
+      </svg>
+      <div style={{ position: 'relative', height: '100%', padding: '14px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{
+            width: 44, height: 44, borderRadius: 12,
+            background: 'rgba(255,255,255,0.18)', border: '1px solid rgba(255,255,255,0.3)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(2px)',
+          }}>
+            <RightsGlyph kind={kind} size={24} stroke="#fff"/>
+          </div>
+          <span style={{
+            fontFamily: 'var(--font-sans)', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
+            textTransform: 'uppercase', color: 'rgba(255,255,255,0.92)',
+            padding: '4px 9px', borderRadius: 999, background: 'rgba(255,255,255,0.16)',
+          }}>{catLabel}</span>
+        </div>
+        <div className="mono" style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.95)' }}>{citation}</div>
+      </div>
+    </div>
+  );
+}
+
+function RightCard({ r, lang, open, onToggle }) {
+  const bn = lang === 'BN';
+  const pick = (field) => {
+    const v = bn ? r[field + '_bn'] : r[field + '_en'];
+    return (v && String(v).trim()) ? v : (r[field + '_en'] || '');
+  };
+  const bnCls = bn ? 'bn' : '';
+  const steps = Array.isArray(r.steps) ? r.steps : [];
+  const where = pick('where_to_invoke');
+  const penalty = pick('penalty');
+
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.78)', border: '1px solid var(--mist)',
+      borderRadius: 16, overflow: 'hidden', marginBottom: 12,
+    }}>
+      <RightInfographic kind={r.illustration} accent={r.accent}
+        citation={r.citation} catLabel={rightsCatLabel(r.category, lang)}/>
+
+      <div style={{ padding: '14px 16px 16px' }}>
+        <div className={`serif ${bnCls}`} style={{ fontSize: 18, fontWeight: 500, color: 'var(--navy)', lineHeight: 1.18, letterSpacing: '-0.005em' }}>
+          {pick('title')}
+        </div>
+        <p className={bnCls} style={{ margin: '7px 0 0', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.55 }}>
+          {pick('summary')}
+        </p>
+
+        {penalty && penalty !== '—' && (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10,
+            padding: '5px 10px', borderRadius: 8, background: 'var(--cream-2)', border: '1px solid var(--mist)' }}>
+            <span style={{ width: 6, height: 6, borderRadius: 999, background: r.accent || 'var(--ember)' }}/>
+            <span className={bnCls} style={{ fontSize: 11.5, color: 'var(--ink-2)', fontWeight: 500 }}>{penalty}</span>
+          </div>
+        )}
+
+        {open && (
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--mist)' }}>
+            <p className={bnCls} style={{ margin: 0, fontSize: 13, color: 'var(--ink)', lineHeight: 1.6 }}>
+              {pick('full_text')}
+            </p>
+
+            {steps.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div className="eyebrow" style={{ color: 'var(--ember-2)', marginBottom: 6 }}>{bn ? 'যা করবেন' : 'What to do'}</div>
+                {steps.map((s, si) => (
+                  <div key={si} style={{ display: 'flex', gap: 9, marginBottom: 7, alignItems: 'flex-start' }}>
+                    <span style={{
+                      flexShrink: 0, width: 18, height: 18, borderRadius: 999, marginTop: 1,
+                      background: r.accent || 'var(--ember)', color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 10.5, fontWeight: 700, fontFamily: 'var(--font-sans)',
+                    }}>{si + 1}</span>
+                    <span className={bnCls} style={{ fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.5 }}>
+                      {bn ? ((s.bn && String(s.bn).trim()) ? s.bn : s.en) : (s.en || s.bn)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {where && (
+              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10,
+                background: 'var(--cream-2)', border: '1px solid var(--mist)', display: 'flex', gap: 9 }}>
+                <span style={{ flexShrink: 0, color: r.accent || 'var(--ember)', marginTop: 1 }}>
+                  <IconMap size={15} stroke={r.accent || 'var(--ember)'}/>
+                </span>
+                <div>
+                  <div className="eyebrow" style={{ color: 'var(--muted)', marginBottom: 2 }}>{bn ? 'কোথায় যাবেন' : 'Where to invoke'}</div>
+                  <div className={bnCls} style={{ fontSize: 12.5, color: 'var(--ink)', lineHeight: 1.5 }}>{where}</div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <button onClick={onToggle} style={{
+          marginTop: 12, width: '100%', padding: '9px 12px', borderRadius: 10,
+          background: open ? 'transparent' : 'var(--navy)', color: open ? 'var(--ink-2)' : '#F7F3EE',
+          border: open ? '1px solid var(--mist)' : 'none', cursor: 'pointer',
+          fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+        }}>
+          {open ? (bn ? 'বন্ধ করুন' : 'Show less') : (bn ? 'বিস্তারিত পড়ুন' : 'Read full text')}
+          <span style={{ transform: open ? 'rotate(-90deg)' : 'rotate(90deg)', transition: 'transform .15s', display: 'inline-flex' }}>
+            <IconChevronRight size={13} stroke={open ? 'var(--ink-2)' : '#F7F3EE'}/>
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function RightsScreen() {
-  const rights = [
-    { tag: 'Personal safety',
-      title: 'Right against harassment in public spaces',
-      cite: 'Penal Code 1860 · § 509',
-      desc: 'Any word, gesture, or act intended to insult the modesty of a woman is punishable with imprisonment up to one year, or fine, or both.',
-    },
-    { tag: 'Cyber',
-      title: 'Right to lodge cyber-harassment complaint',
-      cite: 'Cyber Security Act 2023 · § 25',
-      desc: 'Targeted online harassment is a cognizable offence. You may file at the Cyber Police Centre or any thana, which will forward it to the Cyber Tribunal.',
-    },
-    { tag: 'Custody',
-      title: 'Right to inform a relative on arrest',
-      cite: 'CrPC § 60A · Constitution Art. 33',
-      desc: 'On arrest, you must be informed of the grounds, allowed to consult a lawyer of your choice, and produced before a magistrate within twenty-four hours.',
-    },
-    { tag: 'Workplace',
-      title: 'Right to a safe workplace',
-      cite: 'High Court Directive 2009',
-      desc: 'Every workplace, including educational institutions, must have a complaint committee for sexual harassment, chaired by a woman.',
-    },
-    { tag: 'Domestic',
-      title: 'Right to seek protection order',
-      cite: 'DV (Prevention & Protection) Act 2010',
-      desc: 'Victims of domestic violence may apply for a residence order, protection order, or compensation through a court of magistrate.',
-    },
-    { tag: 'Privacy',
-      title: 'Right to data privacy and consent',
-      cite: 'Constitution Art. 43',
-      desc: 'Every citizen has the right to privacy of correspondence and communication. Surveillance without due process is unconstitutional.',
-    },
-  ];
+  const { lang } = useApp();
+  const [rights, setRights] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [offline, setOffline] = React.useState(false);
+  const [category, setCategory] = React.useState('all');
+  const [openId, setOpenId] = React.useState(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    fetch('http://localhost:8000/v1/legal-rights')
+      .then(r => { if (!r.ok) throw new Error('bad status'); return r.json(); })
+      .then(data => {
+        if (!alive) return;
+        const list = Array.isArray(data) && data.length ? data : RIGHTS_FALLBACK;
+        setRights(list);
+        setOffline(!(Array.isArray(data) && data.length));
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setRights(RIGHTS_FALLBACK);
+        setOffline(true);
+        setLoading(false);
+      });
+    return () => { alive = false; };
+  }, []);
+
+  const bn = lang === 'BN';
+  const cats = Array.from(new Set(rights.map(r => r.category)));
+  const visible = category === 'all' ? rights : rights.filter(r => r.category === category);
+  const keyOf = (r, i) => (r.id || `${r.category}-${i}`);
 
   return (
     <>
-      <Header back/>
-      <div style={{ padding: '4px 20px 4px' }}>
-        <div className="eyebrow">Bangladesh · Civic rights</div>
-        <h1 className="h-display" style={{ margin: '4px 0', fontSize: 26, lineHeight: 1.05 }}>
-          Know your rights.
-        </h1>
-        <div style={{ fontSize: 13, color: 'var(--muted)', fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>
-          Six rights that matter most for daily life. Tap any item for the full text and where to invoke it.
+      <Header back title={bn ? 'আপনার অধিকার জানুন' : 'Know your rights'} subtitle={bn ? 'বাংলাদেশ · নাগরিক অধিকার' : 'Bangladesh · Civic rights'}/>
+
+      <div style={{ padding: '12px 20px 2px' }}>
+        <div className={bn ? 'bn' : ''} style={{ fontSize: 13, color: 'var(--muted)', fontFamily: bn ? 'var(--font-bn)' : 'var(--font-serif)', fontStyle: bn ? 'normal' : 'italic' }}>
+          {bn ? 'দৈনন্দিন জীবনের গুরুত্বপূর্ণ আইনি অধিকার। বিস্তারিত ও কোথায় প্রয়োগ করবেন দেখতে যেকোনো কার্ডে ট্যাপ করুন।'
+              : 'The laws that matter most for daily life. Tap any card for the full text and where to invoke it.'}
         </div>
       </div>
 
-      <div style={{ padding: '16px 20px 28px' }}>
-        {rights.map((r, i) => (
-          <div key={i} style={{
-            padding: '16px 0',
-            borderBottom: i < rights.length - 1 ? '1px solid var(--mist)' : 'none',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <span className="eyebrow" style={{ color: 'var(--ember-2)' }}>{r.tag}</span>
-              <span style={{ width: 3, height: 3, borderRadius: 999, background: 'var(--mist-2)' }}/>
-              <span className="cite" style={{ borderBottom: 'none' }}>{r.cite}</span>
-            </div>
-            <div className="serif" style={{ fontSize: 18, fontWeight: 500, color: 'var(--navy)', lineHeight: 1.15, letterSpacing: '-0.005em' }}>
-              {r.title}
-            </div>
-            <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.55 }}>
-              {r.desc}
-            </p>
+      {/* category filter chips */}
+      {!loading && cats.length > 1 && (
+        <div style={{ display: 'flex', gap: 6, padding: '12px 20px 4px', overflowX: 'auto' }} className="no-scrollbar">
+          {['all', ...cats].map((c) => {
+            const active = category === c;
+            return (
+              <span key={c} onClick={() => setCategory(c)} className={bn ? 'bn' : ''} style={{
+                padding: '6px 11px', borderRadius: 999, whiteSpace: 'nowrap', cursor: 'pointer',
+                background: active ? 'var(--ember)' : 'rgba(255,255,255,0.7)',
+                color: active ? '#F7F3EE' : 'var(--ink-2)',
+                border: '1px solid ' + (active ? 'var(--ember)' : 'var(--mist)'),
+                fontSize: 11.5, fontWeight: 500,
+              }}>{c === 'all' ? (bn ? 'সব' : 'All') : rightsCatLabel(c, lang)}</span>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ padding: '14px 20px 28px' }}>
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            {bn ? 'লোড হচ্ছে…' : 'Loading rights…'}
           </div>
-        ))}
+        )}
+
+        {!loading && offline && (
+          <div className={bn ? 'bn' : ''} style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+            padding: '9px 12px', borderRadius: 10, background: 'var(--cream-2)',
+            border: '1px solid var(--mist)', fontSize: 11.5, color: 'var(--muted)', fontFamily: bn ? 'var(--font-bn)' : 'var(--font-sans)',
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--gold)', flexShrink: 0 }}/>
+            {bn ? 'অফলাইন — অন্তর্নির্মিত গাইড দেখানো হচ্ছে।' : 'Offline — showing the built-in guide.'}
+          </div>
+        )}
+
+        {!loading && visible.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)', fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+            {bn ? 'কিছু পাওয়া যায়নি।' : 'Nothing here yet.'}
+          </div>
+        )}
+
+        {!loading && visible.map((r, i) => {
+          const k = keyOf(r, i);
+          return (
+            <RightCard key={k} r={r} lang={lang}
+              open={openId === k} onToggle={() => setOpenId(openId === k ? null : k)}/>
+          );
+        })}
       </div>
     </>
   );

@@ -33,6 +33,7 @@ from app.models.filing import (
 )
 from app.models.notice import Notice, NoticeScope, NoticeStatus
 from app.models.lawyer import Lawyer
+from app.models.legal_right import LegalRight
 from app.models.routine import AcademicRoutine, RoutineStatus
 from app.models.dept_rating import DepartmentRating
 from app.models.tenant_geofence import TenantGeofence
@@ -78,6 +79,8 @@ __all__ = [
     "Notice", "NoticeScope", "NoticeStatus",
     # Lawyers
     "Lawyer",
+    # Legal rights (Know your rights)
+    "LegalRight",
     # Academic Routines
     "AcademicRoutine", "RoutineStatus",
     # Department Ratings
