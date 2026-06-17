@@ -370,7 +370,6 @@ async def verify_email(body: VerifyEmailRequest, request: Request, db: AsyncSess
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Registration session expired. Please register again.")
 
     data = json.loads(raw)
-    await redis.delete(f"reg_payload:{email}")
 
     tenant_id = uuid.UUID(data["tenant_id"]) if data.get("tenant_id") else None
     user = User(
@@ -389,6 +388,9 @@ async def verify_email(body: VerifyEmailRequest, request: Request, db: AsyncSess
     tokens = await _issue_token_pair(db, redis, request, user)
     await audit_svc.log_event(db, "user_registered", user.id, get_ip(request))
     await audit_svc.log_event(db, "email_verified", user.id, get_ip(request))
+    # Clear the registration session only after tokens are successfully issued,
+    # so a failure mid-issuance leaves the session intact for retry/resend.
+    await redis.delete(f"reg_payload:{email}")
     return tokens
 
 
@@ -403,7 +405,6 @@ async def verify_phone(body: VerifyPhoneRequest, request: Request, db: AsyncSess
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Registration session expired. Please register again.")
 
     data = json.loads(raw)
-    await redis.delete(f"reg_payload:{body.phone}")
 
     tenant_id = uuid.UUID(data["tenant_id"]) if data.get("tenant_id") else None
     user = User(
@@ -422,6 +423,8 @@ async def verify_phone(body: VerifyPhoneRequest, request: Request, db: AsyncSess
     tokens = await _issue_token_pair(db, redis, request, user)
     await audit_svc.log_event(db, "user_registered", user.id, get_ip(request))
     await audit_svc.log_event(db, "phone_verified", user.id, get_ip(request))
+    # Clear the registration session only after tokens are successfully issued.
+    await redis.delete(f"reg_payload:{body.phone}")
     return tokens
 
 

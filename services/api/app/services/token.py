@@ -19,12 +19,23 @@ def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
+def _normalize_pem(content: str) -> bytes:
+    # Railway/Heroku-style env vars often store the PEM with escaped "\n"
+    # instead of real newlines. Restore them so the parser accepts the key.
+    return content.replace("\\n", "\n").strip().encode()
+
+
 def _private_key():
     global _private_key_cache
     if _private_key_cache is None:
         settings = get_settings()
-        with open(settings.jwt_private_key_path, "rb") as f:
-            _private_key_cache = load_pem_private_key(f.read(), password=None)
+        if settings.jwt_private_key_content.strip():
+            _private_key_cache = load_pem_private_key(
+                _normalize_pem(settings.jwt_private_key_content), password=None
+            )
+        else:
+            with open(settings.jwt_private_key_path, "rb") as f:
+                _private_key_cache = load_pem_private_key(f.read(), password=None)
     return _private_key_cache
 
 
@@ -32,8 +43,13 @@ def _public_key():
     global _public_key_cache
     if _public_key_cache is None:
         settings = get_settings()
-        with open(settings.jwt_public_key_path, "rb") as f:
-            _public_key_cache = load_pem_public_key(f.read())
+        if settings.jwt_public_key_content.strip():
+            _public_key_cache = load_pem_public_key(
+                _normalize_pem(settings.jwt_public_key_content)
+            )
+        else:
+            with open(settings.jwt_public_key_path, "rb") as f:
+                _public_key_cache = load_pem_public_key(f.read())
     return _public_key_cache
 
 
