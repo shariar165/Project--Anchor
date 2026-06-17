@@ -20,17 +20,14 @@ function HomeScreen() {
       .catch(() => {});
   }, [mode]);
 
-  // Live verification feed preview — tokens live in localStorage, not AppCtx
+  // Live verification feed preview — refresh-aware via the shared fetch helper
   const [feedPosts, setFeedPosts] = _useS([]);
   _useE(() => {
-    const token = localStorage.getItem('anchor_access_token');
-    if (!token) return;
+    if (typeof apiFetch !== 'function') return;
+    if (!localStorage.getItem('anchor_access_token')) return;
     const hasTenant = !!auth?.user?.tenant_id;
     const scope = (mode === 'campus' && hasTenant) ? 'campus' : 'national';
-    fetch(`${AI_BASE}/v1/feed?scope=${scope}&sort=recent&page_size=3`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(r => r.ok ? r.json() : null)
+    apiFetch(`/v1/feed?scope=${scope}&sort=recent&page_size=3`)
       .then(data => { if (Array.isArray(data) && data.length) setFeedPosts(data); })
       .catch(() => {});
   }, [mode]);

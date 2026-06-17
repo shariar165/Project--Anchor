@@ -10,29 +10,33 @@ function getFilingToken() {
   return localStorage.getItem('anchor_access_token') || '';
 }
 
-async function filingApiFetch(path, opts = {}, _retry = true) {
-  const res = await fetch(FILING_BASE + path, {
-    ...opts,
-    headers: {
-      'Authorization': 'Bearer ' + getFilingToken(),
-      ...(opts.headers || {}),
-    },
-  });
-  if (res.status === 401 && _retry) {
-    localStorage.removeItem('anchor_auth');
-    localStorage.removeItem('anchor_access_token');
-    localStorage.removeItem('anchor_refresh_token');
-    window.location.reload();
-    throw new Error('Session expired');
-  }
-  if (!res.ok) {
-    let detail = 'Request failed';
-    try { const d = await res.json(); detail = d.detail || detail; } catch {}
-    throw new Error(detail);
-  }
-  if (res.status === 204) return null;
-  return res.json();
-}
+// Reuse apiFetch from applications.jsx (loaded earlier) so filings inherit the
+// single-flight refresh + soft-logout behaviour. Fallback kept for safety only.
+const filingApiFetch = (typeof apiFetch === 'function')
+  ? apiFetch
+  : async (path, opts = {}, _retry = true) => {
+      const res = await fetch(FILING_BASE + path, {
+        ...opts,
+        headers: {
+          'Authorization': 'Bearer ' + getFilingToken(),
+          ...(opts.headers || {}),
+        },
+      });
+      if (res.status === 401 && _retry) {
+        localStorage.removeItem('anchor_auth');
+        localStorage.removeItem('anchor_access_token');
+        localStorage.removeItem('anchor_refresh_token');
+        window.dispatchEvent(new CustomEvent('anchor:session-expired'));
+        throw new Error('Session expired');
+      }
+      if (!res.ok) {
+        let detail = 'Request failed';
+        try { const d = await res.json(); detail = d.detail || detail; } catch {}
+        throw new Error(detail);
+      }
+      if (res.status === 204) return null;
+      return res.json();
+    };
 
 // ── State pill meta (using CSS variables) ────────────────────────────────────
 

@@ -14,34 +14,43 @@ function getRefreshToken() {
   return localStorage.getItem('anchor_refresh_token') || '';
 }
 
-async function tryRefreshToken() {
-  const rt = getRefreshToken();
-  if (!rt) return false;
-  try {
-    const res = await fetch(APP_BASE + '/auth/refresh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: rt }),
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    if (data.access_token) {
-      localStorage.setItem('anchor_access_token', data.access_token);
-      if (data.refresh_token) localStorage.setItem('anchor_refresh_token', data.refresh_token);
-      return true;
+// Single-flight refresh: concurrent 401s must share ONE /auth/refresh call.
+// The backend rotates + blacklists the refresh token on use, so two parallel
+// refreshes with the same token trip theft-detection and revoke all sessions.
+let _refreshPromise = null;
+function tryRefreshToken() {
+  if (_refreshPromise) return _refreshPromise;
+  _refreshPromise = (async () => {
+    const rt = getRefreshToken();
+    if (!rt) return false;
+    try {
+      const res = await fetch(APP_BASE + '/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: rt }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data.access_token) {
+        localStorage.setItem('anchor_access_token', data.access_token);
+        if (data.refresh_token) localStorage.setItem('anchor_refresh_token', data.refresh_token);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
     }
-    return false;
-  } catch {
-    return false;
-  }
+  })().finally(() => { _refreshPromise = null; });
+  return _refreshPromise;
 }
 
 function redirectToLogin() {
-  // Clear stale auth and reload — AppProvider will show LoginScreen
+  // Clear stale auth and ask AppProvider to soft-navigate to LoginScreen.
+  // No window.location.reload() — a full reload causes the login-page "flash".
   localStorage.removeItem('anchor_auth');
   localStorage.removeItem('anchor_access_token');
   localStorage.removeItem('anchor_refresh_token');
-  window.location.reload();
+  window.dispatchEvent(new CustomEvent('anchor:session-expired'));
 }
 
 async function apiFetch(path, opts = {}, _retry = true) {

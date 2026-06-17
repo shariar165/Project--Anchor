@@ -131,6 +131,14 @@ function AppProvider({ children }) {
     });
   };
 
+  // Soft logout when a fetch helper detects an unrecoverable 401 (refresh failed
+  // or refresh token gone). Avoids the full-page reload that flashes the login screen.
+  useEffect(() => {
+    const onExpired = () => logout();
+    window.addEventListener('anchor:session-expired', onExpired);
+    return () => window.removeEventListener('anchor:session-expired', onExpired);
+  }, []);
+
   useEffect(() => {
     if (!auth.isAuthenticated || !geofenceConsent) {
       if (watchIdRef.current !== null) {
