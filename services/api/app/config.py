@@ -60,7 +60,8 @@ class Settings(BaseSettings):
 
     # FCM (Firebase Cloud Messaging)
     fcm_project_id: str = ""
-    fcm_service_account_json_path: str = ""
+    fcm_service_account_json_path: str = ""   # local dev: path to JSON file
+    fcm_service_account_json: str = ""        # Railway/prod: full JSON content as string
     fcm_default_ttl_seconds: int = 300
 
     # Alert system — locked values per spec

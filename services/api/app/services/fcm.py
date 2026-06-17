@@ -27,11 +27,14 @@ def _get_app():
         from app.config import get_settings
 
         settings = get_settings()
-        if not settings.fcm_service_account_json_path:
-            logger.warning("[FCM] FCM_SERVICE_ACCOUNT_JSON_PATH not set — push disabled")
+        if settings.fcm_service_account_json:
+            import json
+            cred = credentials.Certificate(json.loads(settings.fcm_service_account_json))
+        elif settings.fcm_service_account_json_path:
+            cred = credentials.Certificate(settings.fcm_service_account_json_path)
+        else:
+            logger.warning("[FCM] FCM not configured — push disabled")
             return None
-
-        cred = credentials.Certificate(settings.fcm_service_account_json_path)
         _firebase_app = firebase_admin.initialize_app(cred)
         logger.info("[FCM] Firebase app initialized for project %s", settings.fcm_project_id)
         return _firebase_app
