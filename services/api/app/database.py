@@ -1,13 +1,23 @@
+import logging
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from typing import AsyncGenerator
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
+
 
 def _make_engine():
     settings = get_settings()
+    url = settings.database_url
+    try:
+        from sqlalchemy.engine.url import make_url
+        u = make_url(url)
+        logger.info("[DB] Connecting to: %s://%s:%s/%s", u.drivername, u.host, u.port, u.database)
+    except Exception:
+        logger.info("[DB] DATABASE_URL starts with: %s", url[:40] if url else "NOT SET")
     return create_async_engine(
-        settings.database_url,
+        url,
         pool_pre_ping=True,
         pool_size=10,
         max_overflow=20,
