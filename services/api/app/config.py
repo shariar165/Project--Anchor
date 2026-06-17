@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from functools import lru_cache
 
 
@@ -8,6 +8,14 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://anchor:anchor_dev_password@localhost/anchor_db"
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, v: str) -> str:
+        # Railway provides postgresql:// but asyncpg requires postgresql+asyncpg://
+        if isinstance(v, str) and v.startswith("postgresql://"):
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
