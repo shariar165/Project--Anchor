@@ -21,7 +21,13 @@ RAG_INTERNAL_SECRET = os.environ.get("RAG_INTERNAL_SECRET", "")
 
 
 def _rag_headers() -> dict[str, str]:
-    h: dict[str, str] = {"Content-Type": "application/json"}
+    h: dict[str, str] = {
+        "Content-Type": "application/json",
+        # When RAG is reached through ngrok (RAG-on-PC topology), this skips
+        # ngrok's HTML interstitial so we always get the JSON body back.
+        # Harmless when RAG is reached directly (unknown header is ignored).
+        "ngrok-skip-browser-warning": "true",
+    }
     if RAG_INTERNAL_SECRET:
         h["X-Internal-Secret"] = RAG_INTERNAL_SECRET
     return h
