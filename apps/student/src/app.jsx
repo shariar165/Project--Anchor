@@ -121,6 +121,15 @@ function AppProvider({ children }) {
   const setAuthPending = (pending) => {
     setAuth(a => ({ ...a, ...pending }));
   };
+  // Patch fields on the logged-in user (e.g. mfa flag after enrollment) and persist.
+  const updateUser = (patch) => {
+    setAuth(a => {
+      if (!a.user) return a;
+      const next = { ...a, user: { ...a.user, ...patch } };
+      try { localStorage.setItem('anchor_auth', JSON.stringify(next)); } catch { /* storage unavailable */ }
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!auth.isAuthenticated || !geofenceConsent) {
@@ -157,7 +166,7 @@ function AppProvider({ children }) {
   }, [auth.isAuthenticated, geofenceConsent]);
 
   const value = { mode, setMode, route, go, back, replace, lang, setLang, auth, login, logout,
-                  setAuthPending, geofenceConsent, setGeofenceConsent };
+                  setAuthPending, updateUser, geofenceConsent, setGeofenceConsent };
   return (
     <AppCtx.Provider value={value}>
       {children}

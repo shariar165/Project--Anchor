@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Anchor AI** is a civic trust platform organized as a monorepo with four layers:
 
 1. **Student app** — React 18 SPA (CDN + Babel Standalone, no build step) in `apps/student/`
-2. **Admin panel** — no-build React prototype in `apps/admin/`; has its own `apps/admin/CLAUDE.md`
+2. **Admin panel** — no-build React prototype in `apps/admin/`
 3. **Core API** — FastAPI + PostgreSQL + Redis in `services/api/`; see `services/api/CLAUDE.md` for full backend guidance
 4. **RAG service** — standalone FastAPI microservice in `services/rag/`; hosts the 7-stage legal AI pipeline
 
@@ -193,8 +193,9 @@ Must be served over HTTP — `file://` breaks relative script imports due to bro
 No module system — each file exposes components via `Object.assign(window, { ... })`. Load order:
 
 ```
-data → primitives → shell → entry → uni-dashboard → uni-complaints →
-uni-routine → uni-timetable → uni-misc → super → settings → tweaks-panel → app
+data → api → primitives → shell → entry → uni-dashboard → uni-complaints →
+uni-applications → uni-routine → uni-timetable → uni-misc → super → settings →
+tweaks-panel → app
 ```
 
 ### Architecture
@@ -315,6 +316,8 @@ cd services/api
 | `/v1/admin/campus-zones/...` | `routers/campus_zones.py` | admin | Campus polygon zones (zone_type=campus only) |
 | `/v1/super-admin/zones/...` | `routers/super_zones.py` | super_admin | Red/purple/black zone CRUD (polygon + circle) |
 | `/v1/admin/timetable/...` | `routers/admin_timetable.py` | admin | CP-SAT timetable CRUD, solver jobs, NL edits |
+| `/v1/admin/applications/...` | `routers/admin_applications.py` | admin | Application review queue + stats (stage-based approval chain) |
+| `/v1/admin/audit...` | `routers/admin_audit.py` | super_admin | Audit log read, hash-chain verify, export |
 | `/health` | `main.py` | none | DB + Redis liveness probe |
 
 ---

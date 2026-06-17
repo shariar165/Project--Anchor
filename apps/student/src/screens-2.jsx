@@ -1563,7 +1563,7 @@ function ProfileScreen() {
         ]}/>
         <SettingsGroup title="Safety" items={[
           { label: "Dead Man's Switch",   value: 'Active · 48h',     Icon: IconShield, accent: 'var(--ember)' },
-          { label: 'Two-factor auth',     value: 'TOTP · enabled',   Icon: IconLock,   onTap: () => go('mfa-setup') },
+          { label: 'Two-factor auth',     value: user && user.mfa ? 'TOTP · enabled' : 'Not set up',   Icon: IconLock,   onTap: () => go('mfa-setup') },
           { label: 'Trusted contacts',    value: contactsCount === 1 ? '1 set' : contactsCount + ' set', Icon: IconPhone, onTap: () => setSheet('contacts') },
         ]}/>
         <SettingsGroup title="Data" items={[

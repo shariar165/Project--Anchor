@@ -2,6 +2,12 @@
 var { useState, useEffect, useCallback, useRef, useMemo } = React;
 function SuperDashboard({ onGo }) {
   const D = window.AnchorData;
+  const [recentAudit, setRecentAudit] = useState([]);
+  useEffect(() => {
+    AnchorAPI.apiGet('/v1/admin/audit?limit=5')
+      .then(d => setRecentAudit(d.items || []))
+      .catch(() => {});
+  }, []);
   return (
     <>
       <PageHeader
@@ -94,11 +100,11 @@ function SuperDashboard({ onGo }) {
           </div>
           <DataTable
             columns={[
-              { key:'t', label:'Time', render:r=><span className="font-mono text-[11px] text-[var(--muted)]">{r.t}</span> },
-              { key:'action', label:'Action', render:r=><MonoChip>{r.action}</MonoChip> },
-              { key:'actor', label:'Actor' },
+              { key:'created_at', label:'Time', render:r=><span className="font-mono text-[11px] text-[var(--muted)]">{new Date(r.created_at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span> },
+              { key:'event_type', label:'Action', render:r=><MonoChip>{r.event_type}</MonoChip> },
+              { key:'actor', label:'Actor', render:r=><span>{(r.actor && r.actor.masked_email) || 'system'}</span> },
             ]}
-            rows={D.audit.slice(0,5)}
+            rows={recentAudit}
             dense
           />
         </Card>
@@ -233,44 +239,179 @@ function SuperTenantDetail({ id, onGo }) {
 }
 
 // ---- Audit Logs ----
+const AUDIT_ACTION_PREFIXES = [
+  ['', 'All actions'],
+  ['login', 'Login'],
+  ['mfa_', 'MFA'],
+  ['alert_', 'Alerts'],
+  ['complaint_', 'Complaints'],
+  ['filing_', 'Filings'],
+  ['feed_', 'Feed'],
+  ['zone_', 'Zones'],
+  ['deanonymize_', 'De-anonymization'],
+  ['user_', 'User management'],
+];
+const AUDIT_ROLES = [
+  ['', 'All roles'],
+  ['super_admin', 'Super Admin'],
+  ['admin', 'Admin'],
+  ['moderator', 'Moderator'],
+  ['student', 'Student'],
+  ['user', 'User'],
+];
+const AUDIT_RANGES = [
+  ['', 'All time'],
+  ['24h', 'Last 24h'],
+  ['7d', 'Last 7 days'],
+  ['30d', 'Last 30 days'],
+];
+const AUDIT_ROLE_TONE = { super_admin:'red', admin:'sage', moderator:'gold', student:'navy', user:'navy' };
+
+function _auditDateFrom(range) {
+  const DAY = 864e5;
+  const ms = range === '24h' ? DAY : range === '7d' ? 7*DAY : range === '30d' ? 30*DAY : 0;
+  return ms ? new Date(Date.now() - ms).toISOString() : null;
+}
+function _auditFmtTs(iso) {
+  try { return new Date(iso).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' }); }
+  catch { return iso; }
+}
+
 function SuperAuditLogs() {
-  const D = window.AnchorData;
+  const PAGE = 50;
+  const [rows, setRows]         = useState([]);
+  const [total, setTotal]       = useState(0);
+  const [offset, setOffset]     = useState(0);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
   const [selected, setSelected] = useState(null);
-  const [q, setQ] = useState('');
-  const rows = useMemo(() => D.audit.filter(a => !q || JSON.stringify(a).toLowerCase().includes(q.toLowerCase())), [q]);
+
+  const [q, setQ]               = useState('');
+  const [qDebounced, setQDebounced] = useState('');
+  const [prefix, setPrefix]     = useState('');
+  const [role, setRole]         = useState('');
+  const [range, setRange]       = useState('');
+
+  const [verifying, setVerifying]       = useState(false);
+  const [verifyResult, setVerifyResult] = useState(null);
+  const [exporting, setExporting]       = useState(false);
+
+  // Debounce the free-text search so we don't fire a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setQDebounced(q.trim()), 350);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  // Any filter change resets to the first page.
+  useEffect(() => { setOffset(0); }, [qDebounced, prefix, role, range]);
+
+  function buildParams(extra) {
+    const p = new URLSearchParams();
+    if (qDebounced) p.set('q', qDebounced);
+    if (prefix) p.set('prefix', prefix);
+    if (role) p.set('role', role);
+    const df = _auditDateFrom(range);
+    if (df) p.set('date_from', df);
+    Object.entries(extra || {}).forEach(([k, v]) => p.set(k, v));
+    return p;
+  }
+
+  // Fetch with a cancellation guard so a slow earlier request can't overwrite a
+  // newer one (e.g. when changing a filter resets the page and refires).
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError('');
+    AnchorAPI.apiGet(`/v1/admin/audit?${buildParams({ limit: PAGE, offset })}`)
+      .then(data => { if (cancelled) return; setRows(data.items || []); setTotal(data.total || 0); })
+      .catch(e => { if (cancelled) return; setError(e.message); setRows([]); setTotal(0); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [qDebounced, prefix, role, range, offset]);
+
+  async function verifyChain() {
+    setVerifying(true); setVerifyResult(null);
+    try { setVerifyResult(await AnchorAPI.apiGet('/v1/admin/audit/verify?limit=5000')); }
+    catch (e) { setVerifyResult({ error: e.message }); }
+    finally { setVerifying(false); }
+  }
+
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+      await AnchorAPI.apiDownload(`/v1/admin/audit/export?${buildParams({ limit: 50000 })}`, `anchor-audit-${stamp}.csv`);
+    } catch (e) { alert(e.message); }
+    finally { setExporting(false); }
+  }
+
   return (
     <>
       <PageHeader
         title="Audit log explorer"
-        description="Every significant action across the platform is permanently logged. Logs cannot be edited or deleted."
-        actions={<GhostButton icon="download" size="sm">Export CSV (watermarked)</GhostButton>}
+        description="Every significant action across the platform is permanently logged in an append-only SHA-256 hash chain. Logs cannot be edited or deleted."
+        actions={<>
+          <GhostButton icon="shield-check" size="sm" onClick={verifyChain} disabled={verifying}>{verifying ? 'Verifying…' : 'Verify integrity'}</GhostButton>
+          <GhostButton icon="download" size="sm" onClick={exportCsv} disabled={exporting}>{exporting ? 'Exporting…' : 'Export CSV'}</GhostButton>
+        </>}
       />
 
+      {verifyResult && (
+        <div className="mb-4">
+          {verifyResult.error
+            ? <AuditNote tone="red" icon="shield-alert">Could not verify chain: {verifyResult.error}</AuditNote>
+            : verifyResult.ok
+              ? <AuditNote tone="sage" icon="shield-check">Hash chain verified — {verifyResult.checked} rows intact, no tampering detected.</AuditNote>
+              : <AuditNote tone="red" icon="shield-alert">Tampering detected — chain breaks at row <span className="font-mono">{verifyResult.first_tampered_id}</span> (checked {verifyResult.checked} rows).</AuditNote>}
+        </div>
+      )}
+
       <Card noPad className="mb-4">
-        <div className="p-4 grid gap-3 hair-b" style={{ gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr' }}>
+        <div className="p-4 grid gap-3 hair-b" style={{ gridTemplateColumns:'2fr 1fr 1fr 1fr' }}>
           <div className="flex items-center gap-2 hair border rounded-sm px-2 bg-white">
             <Icon name="search" size={14} className="text-[var(--muted)]" />
-            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Filter by actor, action, target, IP…" className="flex-1 py-2 outline-none bg-transparent text-[13px]" />
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search action or metadata…" className="flex-1 py-2 outline-none bg-transparent text-[13px]" />
           </div>
-          <select className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]"><option>All actions</option><option>COMPLAINT_*</option><option>DEANONYMIZE_*</option><option>ALERT_*</option><option>LOGIN</option></select>
-          <select className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]"><option>All roles</option><option>Department Head</option><option>Dean</option><option>Proctor</option><option>Super Admin</option></select>
-          <select className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]"><option>All tenants</option><option>DIU</option><option>BUET</option><option>DU</option><option>NSU</option></select>
-          <select className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]"><option>Last 24h</option><option>Last 7 days</option><option>Last 30 days</option><option>All time</option></select>
+          <select value={prefix} onChange={e=>setPrefix(e.target.value)} className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]">
+            {AUDIT_ACTION_PREFIXES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select value={role} onChange={e=>setRole(e.target.value)} className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]">
+            {AUDIT_ROLES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select value={range} onChange={e=>setRange(e.target.value)} className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]">
+            {AUDIT_RANGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
         </div>
-        <DataTable
-          columns={[
-            { key:'t', label:'Timestamp', render:r=><span className="font-mono text-[11.5px] text-[var(--muted)]">{r.t}</span> },
-            { key:'actor', label:'Actor (masked)' },
-            { key:'action', label:'Action', render:r=><MonoChip>{r.action}</MonoChip> },
-            { key:'target', label:'Target', render:r=><span className="font-mono text-[11.5px]">{r.target}</span> },
-            { key:'tenant', label:'Tenant', render:r=><Tag tone="navy">{r.tenant}</Tag> },
-            { key:'ip', label:'IP', render:r=><span className="font-mono text-[11.5px]">{r.ip}</span> },
-            { key:'outcome', label:'Outcome', render:r=><span className="text-[12px]">{r.outcome}</span> },
-          ]}
-          rows={rows}
-          dense
-          onRowClick={setSelected}
-        />
+
+        {loading ? (
+          <div className="px-5 py-12 text-center text-[13px] text-[var(--muted)]">Loading audit events…</div>
+        ) : error ? (
+          <div className="px-5 py-12 text-center text-[13px]" style={{ color:'var(--red)' }}>{error}</div>
+        ) : rows.length === 0 ? (
+          <EmptyState icon="search" title="No matching events" body="No audit events match the current filters." />
+        ) : (
+          <DataTable
+            columns={[
+              { key:'created_at', label:'Timestamp', render:r=><span className="font-mono text-[11.5px] text-[var(--muted)]">{_auditFmtTs(r.created_at)}</span> },
+              { key:'actor', label:'Actor (masked)', render:r=><span>{(r.actor && r.actor.masked_email) || 'system'}</span> },
+              { key:'event_type', label:'Action', render:r=><MonoChip>{r.event_type}</MonoChip> },
+              { key:'role', label:'Role', render:r=> (r.actor && r.actor.role) ? <Tag tone={AUDIT_ROLE_TONE[r.actor.role] || 'navy'}>{r.actor.role}</Tag> : <span className="text-[var(--muted)]">—</span> },
+              { key:'ip', label:'IP', render:r=><span className="font-mono text-[11.5px]">{r.ip_address || '—'}</span> },
+            ]}
+            rows={rows}
+            dense
+            onRowClick={setSelected}
+          />
+        )}
+
+        {!loading && !error && total > 0 && (
+          <div className="p-3 hair-t flex items-center justify-between text-[12px] text-[var(--muted)]">
+            <span>Showing {rows.length ? offset + 1 : 0}–{offset + rows.length} of {total}</span>
+            <div className="flex items-center gap-2">
+              <GhostButton size="sm" disabled={offset === 0} onClick={()=>setOffset(Math.max(0, offset - PAGE))}>Prev</GhostButton>
+              <GhostButton size="sm" disabled={offset + PAGE >= total} onClick={()=>setOffset(offset + PAGE)}>Next</GhostButton>
+            </div>
+          </div>
+        )}
       </Card>
 
       <SlideOver open={!!selected} onClose={()=>setSelected(null)} width={520}>
@@ -280,18 +421,24 @@ function SuperAuditLogs() {
               <SectionLabel className="mb-0">Audit event</SectionLabel>
               <button onClick={()=>setSelected(null)} className="w-7 h-7 rounded-sm hover:bg-[var(--mist)]/40 flex items-center justify-center"><Icon name="x" size={14} /></button>
             </div>
-            <MonoChip tone="navy">{selected.action}</MonoChip>
-            <div className="hair border rounded-sm p-3 bg-[#FBF9F2] font-mono text-[12px] space-y-1">
-              <div><span className="text-[var(--muted)]">timestamp:</span> {selected.t}</div>
-              <div><span className="text-[var(--muted)]">actor:</span> {selected.actor}</div>
-              <div><span className="text-[var(--muted)]">target:</span> {selected.target}</div>
-              <div><span className="text-[var(--muted)]">tenant:</span> {selected.tenant}</div>
-              <div><span className="text-[var(--muted)]">ip:</span> {selected.ip}</div>
-              <div><span className="text-[var(--muted)]">outcome:</span> {selected.outcome}</div>
-              <div><span className="text-[var(--muted)]">hash:</span> 0x{Math.random().toString(16).slice(2, 18)}</div>
+            <MonoChip tone="navy">{selected.event_type}</MonoChip>
+            <div className="hair border rounded-sm p-3 bg-[#FBF9F2] font-mono text-[12px] space-y-1 break-all">
+              <div><span className="text-[var(--muted)]">timestamp:</span> {_auditFmtTs(selected.created_at)}</div>
+              <div><span className="text-[var(--muted)]">actor:</span> {(selected.actor && selected.actor.masked_email) || 'system'}</div>
+              <div><span className="text-[var(--muted)]">role:</span> {(selected.actor && selected.actor.role) || '—'}</div>
+              <div><span className="text-[var(--muted)]">user_id:</span> {(selected.actor && selected.actor.user_id) || '—'}</div>
+              <div><span className="text-[var(--muted)]">tenant_id:</span> {(selected.actor && selected.actor.tenant_id) || '—'}</div>
+              <div><span className="text-[var(--muted)]">ip:</span> {selected.ip_address || '—'}</div>
+              <div><span className="text-[var(--muted)]">row_hash:</span> {selected.row_hash}</div>
             </div>
+            {selected.metadata && Object.keys(selected.metadata).length > 0 && (
+              <div>
+                <SectionLabel>Metadata</SectionLabel>
+                <pre className="hair border rounded-sm p-3 bg-[#FBF9F2] font-mono text-[11.5px] whitespace-pre-wrap break-all">{JSON.stringify(selected.metadata, null, 2)}</pre>
+              </div>
+            )}
             <AuditNote tone="navy" icon="shield-check">
-              This event is part of an append-only Merkle-chained log. Tampering would invalidate downstream hashes.
+              This event is part of an append-only SHA-256 hash chain. Tampering would invalidate every downstream hash — use “Verify integrity” to re-check.
             </AuditNote>
           </div>
         )}

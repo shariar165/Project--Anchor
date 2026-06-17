@@ -123,7 +123,33 @@ const AnchorAPI = (() => {
     }]);
   }
 
-  return { getAccessToken, getRefreshToken, setTokens, getStoredUser, setStoredUser, clearAuth, apiPost, apiGet, apiPostAuth, apiPatch, apiDelete };
+  // Authenticated file download (e.g. CSV export). Streams the response to a
+  // Blob and triggers a browser download. Retries once on 401 like _fetch.
+  async function apiDownload(path, filename, retried = false) {
+    const res = await fetch(BASE + path, { headers: _authHeaders() });
+    if (res.status === 401 && !retried) {
+      const ok = await _tryRefresh();
+      if (ok) return apiDownload(path, filename, true);
+      clearAuth();
+      throw new Error('Session expired — please log in again');
+    }
+    if (!res.ok) {
+      let msg = 'Download failed';
+      try { msg = _detailMsg(await res.json()); } catch { /* non-JSON error body */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  return { getAccessToken, getRefreshToken, setTokens, getStoredUser, setStoredUser, clearAuth, apiPost, apiGet, apiPostAuth, apiPatch, apiDelete, apiDownload };
 })();
 
 Object.assign(window, { AnchorAPI });

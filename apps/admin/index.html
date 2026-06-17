@@ -1242,7 +1242,33 @@ const AnchorAPI = (() => {
     }]);
   }
 
-  return { getAccessToken, getRefreshToken, setTokens, getStoredUser, setStoredUser, clearAuth, apiPost, apiGet, apiPostAuth, apiPatch, apiDelete };
+  // Authenticated file download (e.g. CSV export). Streams the response to a
+  // Blob and triggers a browser download. Retries once on 401 like _fetch.
+  async function apiDownload(path, filename, retried = false) {
+    const res = await fetch(BASE + path, { headers: _authHeaders() });
+    if (res.status === 401 && !retried) {
+      const ok = await _tryRefresh();
+      if (ok) return apiDownload(path, filename, true);
+      clearAuth();
+      throw new Error('Session expired — please log in again');
+    }
+    if (!res.ok) {
+      let msg = 'Download failed';
+      try { msg = _detailMsg(await res.json()); } catch { /* non-JSON error body */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  return { getAccessToken, getRefreshToken, setTokens, getStoredUser, setStoredUser, clearAuth, apiPost, apiGet, apiPostAuth, apiPatch, apiDelete, apiDownload };
 })();
 
 Object.assign(window, { AnchorAPI });
@@ -3911,45 +3937,13 @@ function UniHostel() {
   );
 }
 
-// ---- Step-up modal (uni admin) ----
-function UniStepUpModal({ onDone, onCancel }) {
-  const [pw, setPw] = React.useState('');
-  const [err, setErr] = React.useState('');
-  const [loading, setLoading] = React.useState(false);
-  async function submit() {
-    setLoading(true); setErr('');
-    try {
-      const data = await AnchorAPI.apiPostAuth('/auth/stepup', { password: pw });
-      onDone(data.stepup_token);
-    } catch (e) { setErr(e.message || 'Authentication failed'); }
-    setLoading(false);
-  }
-  return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(11,29,53,0.55)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}>
-      <div style={{ background:'var(--paper)', borderRadius:12, padding:'28px 24px', width:340, boxShadow:'0 8px 32px rgba(0,0,0,0.18)' }}>
-        <div style={{ fontWeight:700, fontSize:15, color:'var(--navy)', marginBottom:6 }}>Confirm your identity</div>
-        <div style={{ fontSize:13, color:'var(--graphite)', marginBottom:16 }}>This action requires your password.</div>
-        <input type="password" value={pw} onChange={e => setPw(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && submit()} placeholder="Password"
-          style={{ width:'100%', padding:'10px 12px', borderRadius:8, fontSize:13, border:'1.5px solid var(--mist)', marginBottom:10, boxSizing:'border-box' }} autoFocus />
-        {err && <div style={{ color:'var(--ember)', fontSize:12, marginBottom:8 }}>{err}</div>}
-        <div style={{ display:'flex', gap:8 }}>
-          <GhostButton size="sm" onClick={onCancel} style={{ flex:1 }}>Cancel</GhostButton>
-          <PrimaryButton size="sm" mode="sage" onClick={submit} disabled={loading || !pw} style={{ flex:1 }}>
-            {loading ? 'Verifying…' : 'Confirm'}
-          </PrimaryButton>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ---- Verification feed (university admin) ----
 function UniFeedCard({ v, onDefer, onConfirm, onMarkFake, onDetail, busy, isDone, msg }) {
   const sc = v.signal_counts || {};
   const corrob = sc.corroborate ?? 0;
   const chall = sc.challenge ?? 0;
   const flags = sc.flags ?? 0;
+  const isStepUpErr = msg && (msg.toLowerCase().includes('step') || msg.includes('401') || msg.includes('403'));
 
   return (
     <div className={`hair border rounded-sm p-4 space-y-3 ${isDone ? 'opacity-60' : ''}`}
@@ -3981,12 +3975,21 @@ function UniFeedCard({ v, onDefer, onConfirm, onMarkFake, onDetail, busy, isDone
         )}
       </div>
 
-      {msg && !isDone && <div className="text-[11.5px]" style={{color:'var(--red)'}}>{msg}</div>}
+      {isStepUpErr && (
+        <div className="px-3 py-2 rounded-sm text-[12px]" style={{ background:'rgba(184,137,58,0.10)', color:'#8A6520', border:'1px solid rgba(184,137,58,0.25)' }}>
+          <Icon name="shield-alert" size={12} className="inline mr-1" />
+          Step-up authentication required. Re-authenticate with your password in the Anchor app to confirm or mark-fake this post.
+        </div>
+      )}
+      {msg && !isDone && !isStepUpErr && (
+        <div className="text-[11.5px]" style={{color:'var(--red)'}}>{msg}</div>
+      )}
       {isDone && (
         <div className="inline-flex items-center gap-1 text-[11.5px]" style={{color:'var(--sage)'}}>
           <Icon name="check" size={11} />Action recorded: {msg}
         </div>
       )}
+
       <div className="flex items-center gap-2 pt-1">
         <GhostButton size="sm" icon="eye" onClick={onDetail}>View</GhostButton>
         <span className="flex-1" />
@@ -4015,7 +4018,6 @@ function UniVerificationFeed() {
   const [actionMsg, setActionMsg] = useState({});
   const [actionLoading, setActionLoading] = useState({});
   const [detail, setDetail] = useState(null);
-  const [stepUp, setStepUp] = useState(null);
 
   function loadPosts(activeTab) {
     setLoading(true); setError('');
@@ -4043,23 +4045,25 @@ function UniVerificationFeed() {
     } finally { setActionLoading(a => ({...a, [postId]: false})); }
   }
 
-  function handleConfirm(postId) { setStepUp({ postId, action: 'confirm' }); }
-  function handleMarkFake(postId) { setStepUp({ postId, action: 'fake' }); }
-
-  async function doActionWithToken(postId, action, stepupToken) {
+  async function handleConfirm(postId) {
     setActionLoading(a => ({...a, [postId]: true})); setActionMsg(m => ({...m, [postId]: ''}));
     try {
-      const path = action === 'confirm' ? 'confirm' : 'mark-fake';
-      const body = action === 'confirm'
-        ? { internal_note: 'Confirmed by admin.' }
-        : { public_note: 'Post marked as inaccurate by university admin after review.', internal_note: 'Marked fake by admin.' };
-      const r = await fetch(`http://localhost:8000/v1/feed/admin/${postId}/${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + stepupToken },
-        body: JSON.stringify(body),
+      await AnchorAPI.apiPostAuth(`/v1/feed/admin/${postId}/confirm`, { internal_note: 'Confirmed by admin.' });
+      setActionMsg(m => ({...m, [postId]: 'confirmed'}));
+      setTimeout(() => loadPosts(tab), 400);
+    } catch (err) {
+      setActionMsg(m => ({...m, [postId]: err.message || 'Confirm failed'}));
+    } finally { setActionLoading(a => ({...a, [postId]: false})); }
+  }
+
+  async function handleMarkFake(postId) {
+    setActionLoading(a => ({...a, [postId]: true})); setActionMsg(m => ({...m, [postId]: ''}));
+    try {
+      await AnchorAPI.apiPostAuth(`/v1/feed/admin/${postId}/mark-fake`, {
+        public_note: 'Post marked as inaccurate by university admin after review.',
+        internal_note: 'Marked fake by admin.',
       });
-      if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'Action failed'); }
-      setActionMsg(m => ({...m, [postId]: action === 'confirm' ? 'confirmed' : 'marked fake'}));
+      setActionMsg(m => ({...m, [postId]: 'marked fake'}));
       setTimeout(() => loadPosts(tab), 400);
     } catch (err) {
       setActionMsg(m => ({...m, [postId]: err.message || 'Failed'}));
@@ -4080,12 +4084,6 @@ function UniVerificationFeed() {
 
   return (
     <>
-      {stepUp && (
-        <UniStepUpModal
-          onDone={token => { setStepUp(null); doActionWithToken(stepUp.postId, stepUp.action, token); }}
-          onCancel={() => setStepUp(null)}
-        />
-      )}
       <PageHeader
         title="Verification feed"
         bn="যাচাইকরণ ফিড"
@@ -4109,7 +4107,7 @@ function UniVerificationFeed() {
       />
 
       <AuditNote tone="navy" icon="shield-check" className="mb-4">
-        Approving and marking-fake require step-up authentication — you'll be prompted for your password. Send-back does not.
+        Approving and marking-fake require step-up authentication (re-auth via Anchor app). Send-back does not.
       </AuditNote>
 
       <Card noPad>
@@ -4264,13 +4262,18 @@ function StubScreen({ title, description, items=[], icon='construction', bn }) {
 }
 
 Object.assign(window, { UniNotices, UniGeofence, UniClassrooms, UniTeacherGrievances, UniDeptGrievances, UniHostel, StubScreen, UniFeedCard, UniVerificationFeed });
-
 </script>
 <script type="text/babel">
 // Super Admin screens
 var { useState, useEffect, useCallback, useRef, useMemo } = React;
 function SuperDashboard({ onGo }) {
   const D = window.AnchorData;
+  const [recentAudit, setRecentAudit] = useState([]);
+  useEffect(() => {
+    AnchorAPI.apiGet('/v1/admin/audit?limit=5')
+      .then(d => setRecentAudit(d.items || []))
+      .catch(() => {});
+  }, []);
   return (
     <>
       <PageHeader
@@ -4363,11 +4366,11 @@ function SuperDashboard({ onGo }) {
           </div>
           <DataTable
             columns={[
-              { key:'t', label:'Time', render:r=><span className="font-mono text-[11px] text-[var(--muted)]">{r.t}</span> },
-              { key:'action', label:'Action', render:r=><MonoChip>{r.action}</MonoChip> },
-              { key:'actor', label:'Actor' },
+              { key:'created_at', label:'Time', render:r=><span className="font-mono text-[11px] text-[var(--muted)]">{new Date(r.created_at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span> },
+              { key:'event_type', label:'Action', render:r=><MonoChip>{r.event_type}</MonoChip> },
+              { key:'actor', label:'Actor', render:r=><span>{(r.actor && r.actor.masked_email) || 'system'}</span> },
             ]}
-            rows={D.audit.slice(0,5)}
+            rows={recentAudit}
             dense
           />
         </Card>
@@ -4502,44 +4505,179 @@ function SuperTenantDetail({ id, onGo }) {
 }
 
 // ---- Audit Logs ----
+const AUDIT_ACTION_PREFIXES = [
+  ['', 'All actions'],
+  ['login', 'Login'],
+  ['mfa_', 'MFA'],
+  ['alert_', 'Alerts'],
+  ['complaint_', 'Complaints'],
+  ['filing_', 'Filings'],
+  ['feed_', 'Feed'],
+  ['zone_', 'Zones'],
+  ['deanonymize_', 'De-anonymization'],
+  ['user_', 'User management'],
+];
+const AUDIT_ROLES = [
+  ['', 'All roles'],
+  ['super_admin', 'Super Admin'],
+  ['admin', 'Admin'],
+  ['moderator', 'Moderator'],
+  ['student', 'Student'],
+  ['user', 'User'],
+];
+const AUDIT_RANGES = [
+  ['', 'All time'],
+  ['24h', 'Last 24h'],
+  ['7d', 'Last 7 days'],
+  ['30d', 'Last 30 days'],
+];
+const AUDIT_ROLE_TONE = { super_admin:'red', admin:'sage', moderator:'gold', student:'navy', user:'navy' };
+
+function _auditDateFrom(range) {
+  const DAY = 864e5;
+  const ms = range === '24h' ? DAY : range === '7d' ? 7*DAY : range === '30d' ? 30*DAY : 0;
+  return ms ? new Date(Date.now() - ms).toISOString() : null;
+}
+function _auditFmtTs(iso) {
+  try { return new Date(iso).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' }); }
+  catch { return iso; }
+}
+
 function SuperAuditLogs() {
-  const D = window.AnchorData;
+  const PAGE = 50;
+  const [rows, setRows]         = useState([]);
+  const [total, setTotal]       = useState(0);
+  const [offset, setOffset]     = useState(0);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
   const [selected, setSelected] = useState(null);
-  const [q, setQ] = useState('');
-  const rows = useMemo(() => D.audit.filter(a => !q || JSON.stringify(a).toLowerCase().includes(q.toLowerCase())), [q]);
+
+  const [q, setQ]               = useState('');
+  const [qDebounced, setQDebounced] = useState('');
+  const [prefix, setPrefix]     = useState('');
+  const [role, setRole]         = useState('');
+  const [range, setRange]       = useState('');
+
+  const [verifying, setVerifying]       = useState(false);
+  const [verifyResult, setVerifyResult] = useState(null);
+  const [exporting, setExporting]       = useState(false);
+
+  // Debounce the free-text search so we don't fire a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setQDebounced(q.trim()), 350);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  // Any filter change resets to the first page.
+  useEffect(() => { setOffset(0); }, [qDebounced, prefix, role, range]);
+
+  function buildParams(extra) {
+    const p = new URLSearchParams();
+    if (qDebounced) p.set('q', qDebounced);
+    if (prefix) p.set('prefix', prefix);
+    if (role) p.set('role', role);
+    const df = _auditDateFrom(range);
+    if (df) p.set('date_from', df);
+    Object.entries(extra || {}).forEach(([k, v]) => p.set(k, v));
+    return p;
+  }
+
+  // Fetch with a cancellation guard so a slow earlier request can't overwrite a
+  // newer one (e.g. when changing a filter resets the page and refires).
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError('');
+    AnchorAPI.apiGet(`/v1/admin/audit?${buildParams({ limit: PAGE, offset })}`)
+      .then(data => { if (cancelled) return; setRows(data.items || []); setTotal(data.total || 0); })
+      .catch(e => { if (cancelled) return; setError(e.message); setRows([]); setTotal(0); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [qDebounced, prefix, role, range, offset]);
+
+  async function verifyChain() {
+    setVerifying(true); setVerifyResult(null);
+    try { setVerifyResult(await AnchorAPI.apiGet('/v1/admin/audit/verify?limit=5000')); }
+    catch (e) { setVerifyResult({ error: e.message }); }
+    finally { setVerifying(false); }
+  }
+
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+      await AnchorAPI.apiDownload(`/v1/admin/audit/export?${buildParams({ limit: 50000 })}`, `anchor-audit-${stamp}.csv`);
+    } catch (e) { alert(e.message); }
+    finally { setExporting(false); }
+  }
+
   return (
     <>
       <PageHeader
         title="Audit log explorer"
-        description="Every significant action across the platform is permanently logged. Logs cannot be edited or deleted."
-        actions={<GhostButton icon="download" size="sm">Export CSV (watermarked)</GhostButton>}
+        description="Every significant action across the platform is permanently logged in an append-only SHA-256 hash chain. Logs cannot be edited or deleted."
+        actions={<>
+          <GhostButton icon="shield-check" size="sm" onClick={verifyChain} disabled={verifying}>{verifying ? 'Verifying…' : 'Verify integrity'}</GhostButton>
+          <GhostButton icon="download" size="sm" onClick={exportCsv} disabled={exporting}>{exporting ? 'Exporting…' : 'Export CSV'}</GhostButton>
+        </>}
       />
 
+      {verifyResult && (
+        <div className="mb-4">
+          {verifyResult.error
+            ? <AuditNote tone="red" icon="shield-alert">Could not verify chain: {verifyResult.error}</AuditNote>
+            : verifyResult.ok
+              ? <AuditNote tone="sage" icon="shield-check">Hash chain verified — {verifyResult.checked} rows intact, no tampering detected.</AuditNote>
+              : <AuditNote tone="red" icon="shield-alert">Tampering detected — chain breaks at row <span className="font-mono">{verifyResult.first_tampered_id}</span> (checked {verifyResult.checked} rows).</AuditNote>}
+        </div>
+      )}
+
       <Card noPad className="mb-4">
-        <div className="p-4 grid gap-3 hair-b" style={{ gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr' }}>
+        <div className="p-4 grid gap-3 hair-b" style={{ gridTemplateColumns:'2fr 1fr 1fr 1fr' }}>
           <div className="flex items-center gap-2 hair border rounded-sm px-2 bg-white">
             <Icon name="search" size={14} className="text-[var(--muted)]" />
-            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Filter by actor, action, target, IP…" className="flex-1 py-2 outline-none bg-transparent text-[13px]" />
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search action or metadata…" className="flex-1 py-2 outline-none bg-transparent text-[13px]" />
           </div>
-          <select className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]"><option>All actions</option><option>COMPLAINT_*</option><option>DEANONYMIZE_*</option><option>ALERT_*</option><option>LOGIN</option></select>
-          <select className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]"><option>All roles</option><option>Department Head</option><option>Dean</option><option>Proctor</option><option>Super Admin</option></select>
-          <select className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]"><option>All tenants</option><option>DIU</option><option>BUET</option><option>DU</option><option>NSU</option></select>
-          <select className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]"><option>Last 24h</option><option>Last 7 days</option><option>Last 30 days</option><option>All time</option></select>
+          <select value={prefix} onChange={e=>setPrefix(e.target.value)} className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]">
+            {AUDIT_ACTION_PREFIXES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select value={role} onChange={e=>setRole(e.target.value)} className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]">
+            {AUDIT_ROLES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select value={range} onChange={e=>setRange(e.target.value)} className="hair border rounded-sm px-2 py-2 bg-white text-[12.5px]">
+            {AUDIT_RANGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
         </div>
-        <DataTable
-          columns={[
-            { key:'t', label:'Timestamp', render:r=><span className="font-mono text-[11.5px] text-[var(--muted)]">{r.t}</span> },
-            { key:'actor', label:'Actor (masked)' },
-            { key:'action', label:'Action', render:r=><MonoChip>{r.action}</MonoChip> },
-            { key:'target', label:'Target', render:r=><span className="font-mono text-[11.5px]">{r.target}</span> },
-            { key:'tenant', label:'Tenant', render:r=><Tag tone="navy">{r.tenant}</Tag> },
-            { key:'ip', label:'IP', render:r=><span className="font-mono text-[11.5px]">{r.ip}</span> },
-            { key:'outcome', label:'Outcome', render:r=><span className="text-[12px]">{r.outcome}</span> },
-          ]}
-          rows={rows}
-          dense
-          onRowClick={setSelected}
-        />
+
+        {loading ? (
+          <div className="px-5 py-12 text-center text-[13px] text-[var(--muted)]">Loading audit events…</div>
+        ) : error ? (
+          <div className="px-5 py-12 text-center text-[13px]" style={{ color:'var(--red)' }}>{error}</div>
+        ) : rows.length === 0 ? (
+          <EmptyState icon="search" title="No matching events" body="No audit events match the current filters." />
+        ) : (
+          <DataTable
+            columns={[
+              { key:'created_at', label:'Timestamp', render:r=><span className="font-mono text-[11.5px] text-[var(--muted)]">{_auditFmtTs(r.created_at)}</span> },
+              { key:'actor', label:'Actor (masked)', render:r=><span>{(r.actor && r.actor.masked_email) || 'system'}</span> },
+              { key:'event_type', label:'Action', render:r=><MonoChip>{r.event_type}</MonoChip> },
+              { key:'role', label:'Role', render:r=> (r.actor && r.actor.role) ? <Tag tone={AUDIT_ROLE_TONE[r.actor.role] || 'navy'}>{r.actor.role}</Tag> : <span className="text-[var(--muted)]">—</span> },
+              { key:'ip', label:'IP', render:r=><span className="font-mono text-[11.5px]">{r.ip_address || '—'}</span> },
+            ]}
+            rows={rows}
+            dense
+            onRowClick={setSelected}
+          />
+        )}
+
+        {!loading && !error && total > 0 && (
+          <div className="p-3 hair-t flex items-center justify-between text-[12px] text-[var(--muted)]">
+            <span>Showing {rows.length ? offset + 1 : 0}–{offset + rows.length} of {total}</span>
+            <div className="flex items-center gap-2">
+              <GhostButton size="sm" disabled={offset === 0} onClick={()=>setOffset(Math.max(0, offset - PAGE))}>Prev</GhostButton>
+              <GhostButton size="sm" disabled={offset + PAGE >= total} onClick={()=>setOffset(offset + PAGE)}>Next</GhostButton>
+            </div>
+          </div>
+        )}
       </Card>
 
       <SlideOver open={!!selected} onClose={()=>setSelected(null)} width={520}>
@@ -4549,18 +4687,24 @@ function SuperAuditLogs() {
               <SectionLabel className="mb-0">Audit event</SectionLabel>
               <button onClick={()=>setSelected(null)} className="w-7 h-7 rounded-sm hover:bg-[var(--mist)]/40 flex items-center justify-center"><Icon name="x" size={14} /></button>
             </div>
-            <MonoChip tone="navy">{selected.action}</MonoChip>
-            <div className="hair border rounded-sm p-3 bg-[#FBF9F2] font-mono text-[12px] space-y-1">
-              <div><span className="text-[var(--muted)]">timestamp:</span> {selected.t}</div>
-              <div><span className="text-[var(--muted)]">actor:</span> {selected.actor}</div>
-              <div><span className="text-[var(--muted)]">target:</span> {selected.target}</div>
-              <div><span className="text-[var(--muted)]">tenant:</span> {selected.tenant}</div>
-              <div><span className="text-[var(--muted)]">ip:</span> {selected.ip}</div>
-              <div><span className="text-[var(--muted)]">outcome:</span> {selected.outcome}</div>
-              <div><span className="text-[var(--muted)]">hash:</span> 0x{Math.random().toString(16).slice(2, 18)}</div>
+            <MonoChip tone="navy">{selected.event_type}</MonoChip>
+            <div className="hair border rounded-sm p-3 bg-[#FBF9F2] font-mono text-[12px] space-y-1 break-all">
+              <div><span className="text-[var(--muted)]">timestamp:</span> {_auditFmtTs(selected.created_at)}</div>
+              <div><span className="text-[var(--muted)]">actor:</span> {(selected.actor && selected.actor.masked_email) || 'system'}</div>
+              <div><span className="text-[var(--muted)]">role:</span> {(selected.actor && selected.actor.role) || '—'}</div>
+              <div><span className="text-[var(--muted)]">user_id:</span> {(selected.actor && selected.actor.user_id) || '—'}</div>
+              <div><span className="text-[var(--muted)]">tenant_id:</span> {(selected.actor && selected.actor.tenant_id) || '—'}</div>
+              <div><span className="text-[var(--muted)]">ip:</span> {selected.ip_address || '—'}</div>
+              <div><span className="text-[var(--muted)]">row_hash:</span> {selected.row_hash}</div>
             </div>
+            {selected.metadata && Object.keys(selected.metadata).length > 0 && (
+              <div>
+                <SectionLabel>Metadata</SectionLabel>
+                <pre className="hair border rounded-sm p-3 bg-[#FBF9F2] font-mono text-[11.5px] whitespace-pre-wrap break-all">{JSON.stringify(selected.metadata, null, 2)}</pre>
+              </div>
+            )}
             <AuditNote tone="navy" icon="shield-check">
-              This event is part of an append-only Merkle-chained log. Tampering would invalidate downstream hashes.
+              This event is part of an append-only SHA-256 hash chain. Tampering would invalidate every downstream hash — use “Verify integrity” to re-check.
             </AuditNote>
           </div>
         )}
@@ -4670,45 +4814,13 @@ function SuperDeanonymization() {
   );
 }
 
-// ---- Step-up modal (super admin) ----
-function AdminStepUpModal({ onDone, onCancel }) {
-  const [pw, setPw] = React.useState('');
-  const [err, setErr] = React.useState('');
-  const [loading, setLoading] = React.useState(false);
-  async function submit() {
-    setLoading(true); setErr('');
-    try {
-      const data = await AnchorAPI.apiPostAuth('/auth/stepup', { password: pw });
-      onDone(data.stepup_token);
-    } catch (e) { setErr(e.message || 'Authentication failed'); }
-    setLoading(false);
-  }
-  return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(11,29,53,0.55)', zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}>
-      <div style={{ background:'var(--paper)', borderRadius:12, padding:'28px 24px', width:340, boxShadow:'0 8px 32px rgba(0,0,0,0.18)' }}>
-        <div style={{ fontWeight:700, fontSize:15, color:'var(--navy)', marginBottom:6 }}>Confirm your identity</div>
-        <div style={{ fontSize:13, color:'var(--graphite)', marginBottom:16 }}>This action requires your password.</div>
-        <input type="password" value={pw} onChange={e => setPw(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && submit()} placeholder="Password"
-          style={{ width:'100%', padding:'10px 12px', borderRadius:8, fontSize:13, border:'1.5px solid var(--mist)', marginBottom:10, boxSizing:'border-box' }} autoFocus />
-        {err && <div style={{ color:'var(--ember)', fontSize:12, marginBottom:8 }}>{err}</div>}
-        <div style={{ display:'flex', gap:8 }}>
-          <GhostButton size="sm" onClick={onCancel} style={{ flex:1 }}>Cancel</GhostButton>
-          <PrimaryButton size="sm" mode="ember" onClick={submit} disabled={loading || !pw} style={{ flex:1 }}>
-            {loading ? 'Verifying…' : 'Confirm'}
-          </PrimaryButton>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ---- Verification feed (super) ----
 function FeedPostCard({ v, onDefer, onConfirm, busy, isDone, msg }) {
   const sc = v.signal_counts || {};
   const corrob = sc.corroborate ?? 0;
   const chall = sc.challenge ?? 0;
   const flags = sc.flags ?? 0;
+  const isStepUpErr = msg && (msg.toLowerCase().includes('step') || msg.includes('401') || msg.includes('403'));
 
   return (
     <div className={`hair border rounded-sm p-4 space-y-3 ${isDone ? 'opacity-60' : ''}`}
@@ -4744,7 +4856,13 @@ function FeedPostCard({ v, onDefer, onConfirm, busy, isDone, msg }) {
       </div>
 
       {/* Feedback row */}
-      {msg && !isDone && (
+      {isStepUpErr && (
+        <div className="px-3 py-2 rounded-sm text-[12px]" style={{ background:'rgba(184,137,58,0.10)', color:'#8A6520', border:'1px solid rgba(184,137,58,0.25)' }}>
+          <Icon name="shield-alert" size={12} className="inline mr-1" />
+          Step-up authentication required. Re-authenticate with your password in the Anchor mobile app to unlock sensitive moderation actions.
+        </div>
+      )}
+      {msg && !isDone && !isStepUpErr && (
         <div className="text-[11.5px]" style={{color:'var(--red)'}}>{msg}</div>
       )}
       {isDone && (
@@ -4776,7 +4894,6 @@ function SuperVerificationFeed() {
   const [error, setError] = useState('');
   const [actionMsg, setActionMsg] = useState({});
   const [actionLoading, setActionLoading] = useState({});
-  const [stepUp, setStepUp] = useState(null); // { postId }
 
   function loadPosts(activeTab) {
     setLoading(true); setError('');
@@ -4804,35 +4921,20 @@ function SuperVerificationFeed() {
     } finally { setActionLoading(a => ({...a, [postId]: false})); }
   }
 
-  function handleConfirm(postId) {
-    setStepUp({ postId });
-  }
-
-  async function doConfirmWithToken(postId, stepupToken) {
-    setStepUp(null);
+  async function handleConfirm(postId) {
     setActionLoading(a => ({...a, [postId]: true})); setActionMsg(m => ({...m, [postId]: ''}));
     try {
-      const res = await fetch(`http://localhost:8000/v1/feed/admin/${postId}/confirm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${stepupToken}` },
-        body: JSON.stringify({ internal_note: 'Confirmed by super admin.' }),
-      });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `Error ${res.status}`); }
+      await AnchorAPI.apiPostAuth(`/v1/feed/admin/${postId}/confirm`, { internal_note: 'Confirmed by super admin.' });
       setActionMsg(m => ({...m, [postId]: 'confirmed'}));
       loadPosts(tab);
     } catch (err) {
-      setActionMsg(m => ({...m, [postId]: err.message || 'Confirm failed'}));
+      const msg = err.message || '';
+      setActionMsg(m => ({...m, [postId]: msg || 'Confirm failed'}));
     } finally { setActionLoading(a => ({...a, [postId]: false})); }
   }
 
   return (
     <>
-      {stepUp && (
-        <AdminStepUpModal
-          onDone={token => doConfirmWithToken(stepUp.postId, token)}
-          onCancel={() => setStepUp(null)}
-        />
-      )}
       <PageHeader
         title="Verification feed"
         description="Posts escalated by university admins for platform-public visibility. Approve, deny, or send back."
@@ -7769,7 +7871,8 @@ const EMPTY_HINTS = {
   eligibility: { icon:"check-square",  msg:"Specify which teachers can teach which courses." },
 };
 
-function TTSectionLabel({ children, right }) {
+// ── SectionLabel helper ───────────────────────────────────────────────────────
+function SectionLabel({ children, right }) {
   return (
     <div className="flex items-center justify-between mb-3">
       <div className="smallcaps text-[var(--muted)]">{children}</div>
@@ -7778,6 +7881,7 @@ function TTSectionLabel({ children, right }) {
   );
 }
 
+// ── TermStatusBar — always visible across all tabs ────────────────────────────
 function TermStatusBar({ terms, termId, onTermChange, version, onVersionChange, onAddTerm }) {
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
@@ -7829,6 +7933,7 @@ function TermStatusBar({ terms, termId, onTermChange, version, onVersionChange, 
   );
 }
 
+// ── ProgressStepper — visual guide with completed-step check marks ────────────
 function ProgressStepper({ currentTab, tabs, onClick }) {
   const icons = ["database", "clock", "sliders", "cpu", "layout-grid", "send"];
   return (
@@ -7859,6 +7964,7 @@ function ProgressStepper({ currentTab, tabs, onClick }) {
   );
 }
 
+// ── UniTimetable root — shared term + version state ───────────────────────────
 function UniTimetable({ onGo }) {
   const [tab, setTab] = useState(0);
   const [terms, setTerms] = useState([]);
@@ -7892,6 +7998,7 @@ function UniTimetable({ onGo }) {
       />
       <PageHeader
         title="Timetable Generator"
+        bn="ক্লাস সময়সূচী তৈরি করুন"
         description="Data → Schedule → Rules → Generate → Grid → Publish."
       />
       <ProgressStepper currentTab={tab} tabs={tabs} onClick={setTab} />
@@ -7906,6 +8013,7 @@ function UniTimetable({ onGo }) {
   );
 }
 
+// ── Tab 0: Data ───────────────────────────────────────────────────────────────
 function TimetableData({ termId }) {
   const [sub, setSub] = useState("courses");
   const [items, setItems] = useState([]);
@@ -7938,7 +8046,7 @@ function TimetableData({ termId }) {
         `http://localhost:8000${TT_BASE}/import?entity=${sub}`,
         { method:"POST", headers:{ Authorization:`Bearer ${localStorage.getItem("anchor_admin_access_token")}` }, body:fd }
       ).then(r => r.json());
-      setImportMsg(`Imported ${res.created} rows${res.errors && res.errors.length ? ` · ${res.errors.length} errors` : ""}`);
+      setImportMsg(`Imported ${res.created} rows${res.errors?.length ? ` · ${res.errors.length} errors` : ""}`);
       load();
     } catch { setImportMsg("Import failed"); }
     fileRef.current.value = "";
@@ -7946,6 +8054,7 @@ function TimetableData({ termId }) {
 
   return (
     <Card noPad>
+      {/* Sub-tab strip */}
       <div className="flex items-center gap-0.5 px-3 pt-2 hair-b flex-wrap">
         {subTabs.map(t => (
           <button key={t} onClick={() => setSub(t)}
@@ -8116,6 +8225,7 @@ function GenerateSectionsButton({ batchId }) {
   );
 }
 
+// User search for faculty add form
 function UserSearchField({ value, onChange }) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState([]);
@@ -8152,7 +8262,7 @@ function UserSearchField({ value, onChange }) {
         <div className="absolute top-full left-0 right-0 z-20 mt-0.5 bg-[var(--paper)] hair border rounded-sm shadow-lg">
           {results.map(u => (
             <button key={u.id} onClick={() => { setSelected(u); onChange(u.id); setResults([]); }}
-              className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-[var(--mist)] flex items-center gap-2">
+              className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-[var(--mist)]/40 flex items-center gap-2">
               <span className="font-medium">{u.full_name}</span>
               <span className="text-[var(--muted)] text-[11.5px]">{u.email}</span>
             </button>
@@ -8163,6 +8273,7 @@ function UserSearchField({ value, onChange }) {
   );
 }
 
+// Generic add form for courses/rooms/faculty/batches
 function AddEntitySlideOver({ sub, onClose, onDone }) {
   const [form, setForm] = useState({});
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -8237,6 +8348,7 @@ function AddEntitySlideOver({ sub, onClose, onDone }) {
   );
 }
 
+// Specialized offering form — course + batch dropdowns, no UUID typing
 function AddOfferingSlideOver({ termId, onClose, onDone }) {
   const [courses, setCourses] = useState([]);
   const [batches, setBatches] = useState([]);
@@ -8293,6 +8405,7 @@ function AddOfferingSlideOver({ termId, onClose, onDone }) {
   );
 }
 
+// Specialized eligibility form — faculty + course dropdowns
 function AddEligibilitySlideOver({ onClose, onDone }) {
   const [faculty, setFaculty] = useState([]);
   const [courses, setCourses] = useState([]);
@@ -8343,6 +8456,7 @@ function AddEligibilitySlideOver({ onClose, onDone }) {
   );
 }
 
+// ── Tab 1: Schedule Config ────────────────────────────────────────────────────
 function ScheduleConfig({ termId, onDone }) {
   const ALL_DAYS = ["Sat","Sun","Mon","Tue","Wed","Thu","Fri"];
   const DEFAULT_DAYS = ["Sat","Sun","Mon","Tue","Wed","Thu"];
@@ -8391,7 +8505,7 @@ function ScheduleConfig({ termId, onDone }) {
       )}
 
       <Card>
-        <TTSectionLabel>Working days</TTSectionLabel>
+        <SectionLabel>Working days</SectionLabel>
         <div className="flex flex-wrap gap-2 mb-2">
           {ALL_DAYS.map(d => (
             <button key={d} onClick={() => toggleDay(d)}
@@ -8409,11 +8523,11 @@ function ScheduleConfig({ termId, onDone }) {
       </Card>
 
       <Card>
-        <TTSectionLabel right={
+        <SectionLabel right={
           <GhostButton size="sm" icon="plus" onClick={addSlot}>Add slot</GhostButton>
         }>
           Time slots
-        </TTSectionLabel>
+        </SectionLabel>
         <div className="space-y-2">
           {slots.map((s, i) => (
             <div key={i} className="flex items-center gap-2">
@@ -8434,7 +8548,7 @@ function ScheduleConfig({ termId, onDone }) {
       <div className="flex items-center gap-3">
         <PrimaryButton mode="sage" icon={saving ? "loader" : saved ? "check" : "save"}
           onClick={save} disabled={saving || !termId}>
-          {saving ? "Saving…" : saved ? "Saved — moving to Rules" : "Save and continue"}
+          {saving ? "Saving…" : saved ? "Saved — moving to Rules →" : "Save & continue"}
         </PrimaryButton>
         {fromServer && (
           <span className="text-[11.5px] text-[var(--sage)] flex items-center gap-1">
@@ -8446,6 +8560,7 @@ function ScheduleConfig({ termId, onDone }) {
   );
 }
 
+// ── Tab 2: Rules ──────────────────────────────────────────────────────────────
 function TimetableRules({ termId, onNext }) {
   const [constraints, setConstraints] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
@@ -8471,7 +8586,7 @@ function TimetableRules({ termId, onNext }) {
     try {
       await AnchorAPI.apiPatch(`${TT_BASE}/constraints/${con.id}`, { weight: w });
       setConstraints(cs => cs.map(c => c.id === con.id ? { ...c, weight: w } : c));
-    } catch (e) { alert(e.message); }
+    } catch {}
   }
 
   async function del(con) {
@@ -8591,7 +8706,7 @@ function AddConstraintSlideOver({ termId, onClose, onDone }) {
   async function submit() {
     setErr("");
     let params;
-    try { params = JSON.parse(paramStr); } catch (e) { setErr("Invalid JSON in params"); return; }
+    try { params = JSON.parse(paramStr); } catch { setErr("Invalid JSON in params"); return; }
     try {
       const con = await AnchorAPI.apiPostAuth(`${TT_BASE}/constraints`, {
         constraint_type: type, scope: {}, params,
@@ -8616,13 +8731,13 @@ function AddConstraintSlideOver({ termId, onClose, onDone }) {
         <div>
           <label className="smallcaps text-[var(--muted)] mb-1 block">Enforcement</label>
           <div className="flex gap-4">
-            {["hard", "soft"].map(en => (
-              <label key={en} className="flex items-center gap-2 text-[13px] cursor-pointer">
-                <input type="radio" name="enf" value={en} checked={enforcement === en}
-                  onChange={() => setEnforcement(en)} className="accent-[var(--sage)]" />
-                <span>{en}</span>
+            {["hard", "soft"].map(e => (
+              <label key={e} className="flex items-center gap-2 text-[13px] cursor-pointer">
+                <input type="radio" name="enf" value={e} checked={enforcement === e}
+                  onChange={() => setEnforcement(e)} className="accent-[var(--sage)]" />
+                <span>{e}</span>
                 <span className="text-[11px] text-[var(--muted)]">
-                  {en === "hard" ? "— solver cannot violate" : "— penalised, may relax"}
+                  {e === "hard" ? "— solver cannot violate" : "— penalised, may relax"}
                 </span>
               </label>
             ))}
@@ -8647,6 +8762,7 @@ function AddConstraintSlideOver({ termId, onClose, onDone }) {
   );
 }
 
+// ── Tab 3: Generate ───────────────────────────────────────────────────────────
 function TimetableGenerate({ termId, onSolved }) {
   const [timeLimit, setTimeLimit] = useState(60);
   const [jobId, setJobId] = useState(null);
@@ -8682,7 +8798,7 @@ function TimetableGenerate({ termId, onSolved }) {
             setTimeout(() => onSolved(j.result_version), 1200);
           }
         }
-      } catch (e) { clearInterval(pollRef.current); setPolling(false); }
+      } catch { clearInterval(pollRef.current); setPolling(false); }
     }, 1500);
     return () => clearInterval(pollRef.current);
   }, [jobId]);
@@ -8705,10 +8821,8 @@ function TimetableGenerate({ termId, onSolved }) {
   }
 
   async function handleRelaxAll() {
-    if (!job || !job.infeasible_core || !job.infeasible_core.length) return;
-    for (const id of job.infeasible_core) {
-      try { await makeSoft(id); } catch (e) {}
-    }
+    if (!job?.infeasible_core?.length) return;
+    for (const id of job.infeasible_core) { await makeSoft(id).catch(() => {}); }
     handleSolve();
   }
 
@@ -8730,7 +8844,7 @@ function TimetableGenerate({ termId, onSolved }) {
             <input type="range" min="10" max="300" step="10" value={timeLimit}
               className="w-full accent-[var(--sage)]" onChange={e => setTimeLimit(+e.target.value)} />
             <div className="flex justify-between text-[10.5px] text-[var(--muted)] mt-0.5">
-              <span>10s (fast)</span><span>300s (thorough)</span>
+              <span>10s (fast, fewer options)</span><span>300s (thorough)</span>
             </div>
           </div>
         </div>
@@ -8767,22 +8881,22 @@ function TimetableGenerate({ termId, onSolved }) {
           <div>
             <div className="text-[11px] text-[var(--muted)] mb-1 flex justify-between">
               <span>Solver progress</span>
-              <span className="font-mono">{(job && job.progress) || 0}%</span>
+              <span className="font-mono">{job?.progress || 0}%</span>
             </div>
             <div className="h-1.5 bg-[var(--mist)] rounded-sm overflow-hidden">
               <div className="h-full bg-[var(--sage)] transition-all duration-500"
-                style={{ width: `${(job && job.progress) || 8}%` }} />
+                style={{ width: `${job?.progress || 8}%` }} />
             </div>
           </div>
         )}
 
-        {job && job.status === "optimal" && (
+        {job?.status === "optimal" && (
           <div className="flex items-center gap-2 text-[var(--sage)] text-[13px]">
             <Icon name="check-circle" size={14} /> Optimal solution found — opening Grid editor…
           </div>
         )}
 
-        {job && job.status === "infeasible" && (
+        {job?.status === "infeasible" && (
           <div className="rounded-sm p-4 space-y-3"
             style={{ border:"1px solid rgba(232,49,42,0.3)", background:"rgba(232,49,42,0.04)" }}>
             <div className="text-[var(--red)] font-medium text-[13px] flex items-center gap-2">
@@ -8792,17 +8906,17 @@ function TimetableGenerate({ termId, onSolved }) {
               These constraints cannot all be satisfied at once. Make them soft so the solver can trade them off:
             </div>
             <div className="space-y-1.5">
-              {(job.infeasible_core || []).map(function(id) {
-                var info = constraintMap[id];
+              {(job.infeasible_core || []).map(id => {
+                const info = constraintMap[id];
                 return (
                   <div key={id} className="flex items-center justify-between gap-2 py-1">
                     <span className="text-[12.5px] text-[var(--ink)]">
-                      {info ? info.label : id.slice(0,12) + "…"}
+                      {info?.label || <span className="font-mono text-[11px]">{id.slice(0,12)}…</span>}
                     </span>
-                    {info && info.enforcement !== "soft" && (
+                    {info?.enforcement !== "soft" && (
                       <GhostButton size="sm" onClick={() => makeSoft(id)}>Make soft</GhostButton>
                     )}
-                    {info && info.enforcement === "soft" && (
+                    {info?.enforcement === "soft" && (
                       <Tag tone="gold">already soft</Tag>
                     )}
                   </div>
@@ -8810,12 +8924,12 @@ function TimetableGenerate({ termId, onSolved }) {
               })}
             </div>
             <GhostButton icon="refresh-cw" onClick={handleRelaxAll}>
-              Make all soft and re-solve
+              Make all soft &amp; re-solve
             </GhostButton>
           </div>
         )}
 
-        {job && job.status === "failed" && (
+        {job?.status === "failed" && (
           <div className="text-[var(--red)] text-[12.5px] flex items-center gap-2">
             <Icon name="x-circle" size={14} /> Solver failed. Check that schedule config and data are set up correctly.
           </div>
@@ -8825,6 +8939,7 @@ function TimetableGenerate({ termId, onSolved }) {
   );
 }
 
+// ── Tab 4: Grid — rooms × slots per day tab ───────────────────────────────────
 function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
   const [entries, setEntries] = useState([]);
   const [config, setConfig] = useState(null);
@@ -8838,8 +8953,8 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
   const [loading, setLoading] = useState(false);
   const pollRef = useRef(null);
 
-  const days = (config && config.days) || DAY_NAMES;
-  const slots = (config && config.slots) || [];
+  const days = config?.days || DAY_NAMES;
+  const slots = config?.slots || [];
 
   useEffect(() => {
     if (!termId) return;
@@ -8856,29 +8971,21 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
     setLoading(true);
     try {
       const data = await AnchorAPI.apiGet(`${TT_BASE}/entries?term_id=${termId}&version=${version}`);
-      const list = Array.isArray(data) ? data : [];
-      setEntries(list);
-      const secs = [];
-      const seen = new Map();
-      list.forEach(e => {
-        if (!seen.has(e.section_id)) {
-          seen.set(e.section_id, true);
-          secs.push({ id: e.section_id, name: `${e.batch_name} ${e.section_name}` });
-        }
-      });
+      setEntries(Array.isArray(data) ? data : []);
+      const secs = [...new Map(data.map(e => [
+        e.section_id, { id: e.section_id, name: `${e.batch_name} ${e.section_name}` }
+      ])).values()];
       setSections(secs);
       loadValidation();
-    } catch (e) { setEntries([]); }
+    } catch { setEntries([]); }
     finally { setLoading(false); }
   }
 
   async function loadValidation() {
     try {
       const v = await AnchorAPI.apiGet(`${TT_BASE}/validate?term_id=${termId}&version=${version}`);
-      const ids = new Set();
-      (v.conflicts || []).forEach(c => { (c.entry_ids || []).forEach(id => ids.add(id)); });
-      setConflictIds(ids);
-    } catch (e) {}
+      setConflictIds(new Set((v.conflicts || []).flatMap(c => c.entry_ids || [])));
+    } catch {}
   }
 
   async function toggleLock(entry) {
@@ -8901,7 +9008,7 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
             onVersionChange(j.result_version);
           }
         }
-      } catch (e) { clearInterval(pollRef.current); setResolving(false); }
+      } catch { clearInterval(pollRef.current); setResolving(false); }
     }, 1500);
   }
 
@@ -8924,26 +9031,28 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
     } catch (e) { alert(e.message); }
   }
 
+  // Derive grid data for active day
   const dayEntries = entries.filter(e =>
     e.day === activeDay && (!filterSection || e.section_id === filterSection)
   );
   const roomsMap = new Map();
   dayEntries.forEach(e => { if (!roomsMap.has(e.room_id)) roomsMap.set(e.room_id, e.room_name); });
-  const gridRooms = [];
-  roomsMap.forEach(function(name, id) { gridRooms.push([id, name]); });
+  const gridRooms = [...roomsMap.entries()];
   const cellMap = {};
-  dayEntries.forEach(e => { cellMap[e.room_id + "-" + e.slot] = e; });
+  dayEntries.forEach(e => { cellMap[`${e.room_id}-${e.slot}`] = e; });
 
-  const changedIds = new Set();
-  entries.forEach(e => {
-    const prev = prevEntries.find(p => p.id === e.id);
-    if (prev && (prev.day !== e.day || prev.slot !== e.slot)) changedIds.add(e.id);
-  });
+  const changedIds = new Set(
+    entries.filter(e => {
+      const prev = prevEntries.find(p => p.id === e.id);
+      return prev && (prev.day !== e.day || prev.slot !== e.slot);
+    }).map(e => e.id)
+  );
 
   const noEntries = !loading && entries.length === 0;
 
   return (
     <div className="space-y-4">
+      {/* Controls */}
       <Card>
         <div className="flex items-center gap-3 flex-wrap">
           <span className="smallcaps text-[var(--muted)]">Filter</span>
@@ -8960,7 +9069,7 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
           )}
           {changedIds.size > 0 && (
             <span className="text-[11.5px]" style={{ color:"var(--sage)" }}>
-              {changedIds.size} cell(s) moved
+              {changedIds.size} cell(s) moved ▣
             </span>
           )}
           {conflictIds.size > 0 && (
@@ -8970,7 +9079,7 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
           )}
           <GhostButton size="sm" icon="refresh-cw" onClick={handleResolve} disabled={resolving}>Re-solve</GhostButton>
           <GhostButton size="sm" icon="shield-check" onClick={loadValidation}>Validate</GhostButton>
-          <PrimaryButton size="sm" icon="send" mode="sage" onClick={onPublish}>Publish</PrimaryButton>
+          <PrimaryButton size="sm" icon="send" mode="sage" onClick={onPublish}>Publish →</PrimaryButton>
         </div>
       </Card>
 
@@ -8989,12 +9098,15 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
 
       {!noEntries && termId && (
         <Card noPad>
+          {/* Day tabs */}
           <div className="flex gap-0.5 px-2 pt-2">
-            {days.map(function(d, i) {
-              var hasConflict = entries.some(e => e.day === i && conflictIds.has(e.id));
+            {days.map((d, i) => {
+              const hasConflict = entries.some(e => e.day === i && conflictIds.has(e.id));
               return (
                 <button key={d} onClick={() => setActiveDay(i)}
-                  className={`px-3 py-2 text-[12.5px] rounded-t-sm transition relative ${activeDay === i ? "font-medium" : "text-[var(--graphite)]"}`}
+                  className={`px-3 py-2 text-[12.5px] rounded-t-sm transition relative ${
+                    activeDay === i ? "font-medium" : "text-[var(--graphite)]"
+                  }`}
                   style={activeDay === i
                     ? { background:"white", border:"1px solid var(--mist)", borderBottom:"1px solid white", marginBottom:-1, color:"var(--sage)" }
                     : { border:"1px solid transparent" }}>
@@ -9018,50 +9130,51 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
             ) : (
               <div style={{
                 display:"grid",
-                gridTemplateColumns: "130px repeat(" + slots.length + ", minmax(100px, 1fr))",
+                gridTemplateColumns: `130px repeat(${slots.length}, minmax(100px, 1fr))`,
                 gap: 3,
                 minWidth: Math.max(700, 130 + slots.length * 110),
               }}>
+                {/* Header row */}
                 <div className="text-[10px] text-[var(--muted)] font-mono pb-1 flex items-end pl-1">Room</div>
-                {slots.map(function(s, i) {
-                  return <div key={i} className="text-[10px] text-[var(--muted)] font-mono text-center pb-1 truncate px-1">{s}</div>;
-                })}
-                {gridRooms.map(function(pair) {
-                  var roomId = pair[0], roomName = pair[1];
-                  return (
-                    <React.Fragment key={roomId}>
-                      <div className="font-mono text-[11px] text-[var(--graphite)] flex items-center pr-2 min-h-[72px] pl-1 truncate"
-                        title={roomName}>{roomName}</div>
-                      {slots.map(function(_, si) {
-                        var entry = cellMap[roomId + "-" + si];
-                        if (!entry) return (
-                          <div key={si} className="min-h-[72px] rounded-sm"
-                            style={{ border:"1px dashed var(--mist)", background:"#FBF9F3" }} />
-                        );
-                        return (
-                          <RoutineCell key={si}
-                            entry={entry}
-                            moved={changedIds.has(entry.id)}
-                            conflict={conflictIds.has(entry.id)}
-                            onLockToggle={() => toggleLock(entry)}
-                            onClick={() => setEditEntry(entry)} />
-                        );
-                      })}
-                    </React.Fragment>
-                  );
-                })}
+                {slots.map((s, i) => (
+                  <div key={i} className="text-[10px] text-[var(--muted)] font-mono text-center pb-1 truncate px-1">{s}</div>
+                ))}
+                {/* Room rows */}
+                {gridRooms.map(([roomId, roomName]) => (
+                  <React.Fragment key={roomId}>
+                    <div className="font-mono text-[11px] text-[var(--graphite)] flex items-center pr-2 min-h-[72px] pl-1 truncate"
+                      title={roomName}>{roomName}</div>
+                    {slots.map((_, si) => {
+                      const entry = cellMap[`${roomId}-${si}`];
+                      if (!entry) return (
+                        <div key={si} className="min-h-[72px] rounded-sm"
+                          style={{ border:"1px dashed var(--mist)", background:"#FBF9F3" }} />
+                      );
+                      return (
+                        <RoutineCell key={si}
+                          entry={entry}
+                          moved={changedIds.has(entry.id)}
+                          conflict={conflictIds.has(entry.id)}
+                          onLockToggle={() => toggleLock(entry)}
+                          onClick={() => setEditEntry(entry)} />
+                      );
+                    })}
+                  </React.Fragment>
+                ))}
               </div>
             )}
           </div>
 
+          {/* Legend */}
           <div className="px-4 pb-3 pt-2 hair-t flex flex-wrap items-center gap-4 text-[11px] text-[var(--muted)]">
             <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm border-2" style={{ borderColor:"var(--gold)" }} /> Locked</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm" style={{ background:"rgba(74,107,92,0.12)", border:"1px solid var(--sage)" }} /> Changed</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm border-2" style={{ borderColor:"var(--red)" }} /> Conflict</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm" style={{ background:"rgba(74,107,92,0.12)", border:"1px solid var(--sage)" }} /> Changed ▣</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm border-2" style={{ borderColor:"var(--red)" }} /> Conflict ‼</span>
           </div>
         </Card>
       )}
 
+      {/* CommandBar */}
       {termId && !noEntries && (
         <CommandBar
           termId={termId}
@@ -9084,12 +9197,13 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
   );
 }
 
+// Individual grid cell
 function RoutineCell({ entry, moved, conflict, onLockToggle, onClick }) {
-  var borderStyle = conflict
+  const borderStyle = conflict
     ? "2px solid var(--red)"
     : entry.locked ? "2px solid var(--gold)"
     : "1px solid var(--mist)";
-  var bg = conflict ? "rgba(232,49,42,0.05)"
+  const bg = conflict ? "rgba(232,49,42,0.05)"
     : moved ? "rgba(74,107,92,0.10)"
     : entry.locked ? "rgba(184,137,58,0.05)"
     : "rgba(255,255,255,0.85)";
@@ -9099,23 +9213,23 @@ function RoutineCell({ entry, moved, conflict, onLockToggle, onClick }) {
       className="text-left rounded-sm p-2 min-h-[72px] relative w-full"
       style={{ border: borderStyle, background: bg }}>
       {entry.locked && (
-        <button onClick={function(e) { e.stopPropagation(); onLockToggle(); }}
+        <button onClick={e => { e.stopPropagation(); onLockToggle(); }}
           className="absolute top-1 right-1 hover:opacity-70"
           style={{ color:"var(--gold)" }}>
           <Icon name="lock" size={10} />
         </button>
       )}
       {conflict && (
-        <span className="absolute top-1 left-1 font-bold text-[9px]" style={{ color:"var(--red)" }}>!</span>
+        <span className="absolute top-1 left-1 font-bold text-[9px]" style={{ color:"var(--red)" }}>‼</span>
       )}
       {moved && (
-        <span className="absolute bottom-1 right-1 text-[9px]" style={{ color:"var(--sage)" }}>+</span>
+        <span className="absolute bottom-1 right-1 text-[9px]" style={{ color:"var(--sage)" }}>▣</span>
       )}
       <div className="font-mono text-[11.5px] font-semibold leading-tight" style={{ color:"var(--ink)" }}>
         {entry.course_code}
       </div>
       <div className="text-[10.5px] leading-tight mt-0.5 truncate" style={{ color:"var(--graphite)" }}>
-        {entry.section_name}{entry.lab_group_name ? "." + entry.lab_group_name : ""}
+        {entry.section_name}{entry.lab_group_name ? `·${entry.lab_group_name}` : ""}
       </div>
       <div className="text-[10px] leading-tight mt-0.5 truncate" style={{ color:"var(--muted)" }}>
         {entry.faculty_name}
@@ -9124,6 +9238,7 @@ function RoutineCell({ entry, moved, conflict, onLockToggle, onClick }) {
   );
 }
 
+// Cell detail & edit modal
 function CellEditModal({ entry, onClose, onLock, onApply }) {
   const [rooms, setRooms] = useState([]);
   const [faculty, setFaculty] = useState([]);
@@ -9150,7 +9265,7 @@ function CellEditModal({ entry, onClose, onLock, onApply }) {
             <div className="text-[11.5px] text-[var(--muted)] mt-0.5">{entry.faculty_name} · {entry.room_name}</div>
           </div>
           <button onClick={onLock}
-            className="flex items-center gap-1.5 text-[12px] px-2 py-1 hair border rounded-sm hover:bg-[var(--mist)]">
+            className="flex items-center gap-1.5 text-[12px] px-2 py-1 hair border rounded-sm hover:bg-[var(--mist)]/40">
             <Icon name={entry.locked ? "unlock" : "lock"} size={12} />
             {entry.locked ? "Unlock" : "Lock"}
           </button>
@@ -9165,7 +9280,7 @@ function CellEditModal({ entry, onClose, onLock, onApply }) {
               </select>
             </div>
             <div>
-              <label className="smallcaps text-[var(--muted)] mb-1 block">Slot index</label>
+              <label className="smallcaps text-[var(--muted)] mb-1 block">Slot (0-indexed)</label>
               <input type="number" min="0" value={newSlot}
                 onChange={e => setNewSlot(+e.target.value)}
                 className="w-full px-2 py-1.5 hair border rounded-sm bg-white" />
@@ -9182,7 +9297,7 @@ function CellEditModal({ entry, onClose, onLock, onApply }) {
             <label className="smallcaps text-[var(--muted)] mb-1 block">Teacher</label>
             <select className="w-full px-2 py-1.5 hair border rounded-sm bg-white"
               value={newFacultyId} onChange={e => setNewFacultyId(e.target.value)}>
-              {faculty.map(f => <option key={f.id} value={f.id}>{f.rank} — {String(f.user_id).slice(0,8)}</option>)}
+              {faculty.map(f => <option key={f.id} value={f.id}>{f.rank} · {String(f.user_id).slice(0,8)}</option>)}
             </select>
           </div>
         </div>
@@ -9190,7 +9305,7 @@ function CellEditModal({ entry, onClose, onLock, onApply }) {
           <GhostButton onClick={onClose}>Cancel</GhostButton>
           <PrimaryButton icon="check" mode="sage"
             onClick={() => onApply(entry, newDay, newSlot, newFacultyId, newRoomId)}>
-            Apply and lock
+            Apply &amp; lock
           </PrimaryButton>
         </div>
       </div>
@@ -9198,6 +9313,7 @@ function CellEditModal({ entry, onClose, onLock, onApply }) {
   );
 }
 
+// Command bar — slash commands + NL free text
 function CommandBar({ termId, version, entries, onEntryLockChange, onResolved }) {
   const [text, setText] = useState("");
   const [preview, setPreview] = useState(null);
@@ -9206,8 +9322,8 @@ function CommandBar({ termId, version, entries, onEntryLockChange, onResolved })
   const [showHelp, setShowHelp] = useState(false);
 
   const SLASH_HELP = [
-    { cmd:"/move SE223 A Mon 1",    desc:"Move course+section to day and slot index" },
-    { cmd:"/lock SE223 A",          desc:"Pin cell — solver will not move it on re-solve" },
+    { cmd:"/move SE223 A → Mon 1",  desc:"Move course+section to day (Mon/Tue/…) + slot index" },
+    { cmd:"/lock SE223 A",          desc:"Pin cell — solver won't move it on re-solve" },
     { cmd:"/unlock SE223 A",        desc:"Unpin cell" },
   ];
 
@@ -9220,57 +9336,57 @@ function CommandBar({ termId, version, entries, onEntryLockChange, onResolved })
 
   function buildPreview(t) {
     t = t.trim();
-    var m;
+    let m;
 
     m = t.match(/^\/lock\s+(\S+)\s+(\S+)/i);
     if (m) {
-      var code = m[1], sec = m[2];
-      var e = resolveEntry(code, sec);
-      if (!e) return { label:"No entry found for " + code + " section " + sec, action:null };
+      const [,code,sec] = m;
+      const e = resolveEntry(code, sec);
+      if (!e) return { label:`No entry found for ${code} section ${sec}`, action:null };
       return {
-        label: "Lock " + code + " section " + sec + " — solver will not move this cell on re-solve.",
-        action: async function() {
+        label: `Lock ${code} section ${sec} — solver will not move this cell on re-solve.`,
+        action: async () => {
           await AnchorAPI.apiPatch(`${TT_BASE}/entries/${e.id}`, { lock:true });
           onEntryLockChange(e.id, true);
-          addHistory("/lock " + code + " " + sec);
+          addHistory(`/lock ${code} ${sec}`);
         }
       };
     }
 
     m = t.match(/^\/unlock\s+(\S+)\s+(\S+)/i);
     if (m) {
-      var code = m[1], sec = m[2];
-      var e = resolveEntry(code, sec);
-      if (!e) return { label:"No entry found for " + code + " section " + sec, action:null };
+      const [,code,sec] = m;
+      const e = resolveEntry(code, sec);
+      if (!e) return { label:`No entry found for ${code} section ${sec}`, action:null };
       return {
-        label: "Unlock " + code + " section " + sec + " — solver can freely place this cell.",
-        action: async function() {
+        label: `Unlock ${code} section ${sec} — solver can freely place this cell.`,
+        action: async () => {
           await AnchorAPI.apiPatch(`${TT_BASE}/entries/${e.id}`, { lock:false });
           onEntryLockChange(e.id, false);
-          addHistory("/unlock " + code + " " + sec);
+          addHistory(`/unlock ${code} ${sec}`);
         }
       };
     }
 
-    m = t.match(/^\/move\s+(\S+)\s+(\S+)\s+(\w+)\s+(\d+)/i);
+    m = t.match(/^\/move\s+(\S+)\s+(\S+)\s*[→->]\s*(\w+)\s+(\d+)/i);
     if (m) {
-      var code = m[1], sec = m[2], dayStr = m[3], slotStr = m[4];
-      var dayKey = dayStr.toLowerCase();
-      var dayIdx = DAY_IDX_MAP[dayKey];
-      if (dayIdx === undefined) return { label:"Unknown day \"" + dayStr + "\". Use: Sat, Sun, Mon, Tue, Wed, Thu.", action:null };
-      var slot = +slotStr;
-      var e = resolveEntry(code, sec);
-      if (!e) return { label:"No entry found for " + code + " section " + sec, action:null };
+      const [,code,sec,dayStr,slotStr] = m;
+      const dayKey = dayStr.toLowerCase();
+      const dayIdx = DAY_IDX_MAP[dayKey];
+      if (dayIdx === undefined) return { label:`Unknown day "${dayStr}". Use: Sat, Sun, Mon, Tue, Wed, Thu.`, action:null };
+      const slot = +slotStr;
+      const e = resolveEntry(code, sec);
+      if (!e) return { label:`No entry found for ${code} section ${sec}`, action:null };
       return {
-        label: "Move " + code + " section " + sec + " to " + DAY_NAMES[dayIdx] + ", slot " + slot + ". All locked cells stay put.",
-        action: async function() {
-          var job = await AnchorAPI.apiPostAuth(`${TT_BASE}/resolve`, {
+        label: `Move ${code} section ${sec} → ${DAY_NAMES[dayIdx]}, slot ${slot}. All locked cells stay put.`,
+        action: async () => {
+          const job = await AnchorAPI.apiPostAuth(`${TT_BASE}/resolve`, {
             term_id: termId, base_version: version,
             change: { entry_id: e.id, new_day: dayIdx, new_slot: slot, lock: true },
             keep_locked: true, time_limit_s: 60,
           });
           onResolved(job.job_id);
-          addHistory("/move " + code + " " + sec + " " + DAY_NAMES[dayIdx] + " " + slot);
+          addHistory(`/move ${code} ${sec} → ${DAY_NAMES[dayIdx]} ${slot}`);
         }
       };
     }
@@ -9279,72 +9395,74 @@ function CommandBar({ termId, version, entries, onEntryLockChange, onResolved })
       return { label:"Unknown slash command. Type / to see available commands.", action:null };
     }
 
-    return null;
+    return null; // NL path
   }
 
-  function addHistory(cmd) { setHistory(h => ["✓ " + cmd, ...h.slice(0,4)]); }
+  function addHistory(cmd) { setHistory(h => [`✓ ${cmd}`, ...h.slice(0,4)]); }
 
   function onChange(val) {
     setText(val);
     if (val === "/") { setShowHelp(true); setPreview(null); return; }
     setShowHelp(false);
     if (val.startsWith("/")) {
-      setPreview(buildPreview(val));
+      const p = buildPreview(val);
+      setPreview(p);
     } else {
       setPreview(null);
     }
   }
 
   async function apply() {
-    if (preview && preview.action) {
+    if (preview?.action) {
       setBusy(true);
       try { await preview.action(); setText(""); setPreview(null); }
       catch (e) { alert(e.message || "Command failed"); }
       finally { setBusy(false); }
       return;
     }
-    var t = text.trim();
+    // NL free-text path
+    const t = text.trim();
     if (!t || t.startsWith("/")) return;
     setBusy(true);
     try {
-      var job = await AnchorAPI.apiPostAuth(`${TT_BASE}/nl-edit`, {
+      const job = await AnchorAPI.apiPostAuth(`${TT_BASE}/nl-edit`, {
         term_id: termId, base_version: version, text: t,
       });
       addHistory(t.slice(0, 40));
       onResolved(job.job_id);
       setText(""); setPreview(null);
     } catch (e) {
-      alert(e.message || "NL parse failed — try rephrasing or use the cell editor directly.");
+      alert(e.message || "NL parse failed — try rephrasing or use the popover to edit a cell directly.");
     } finally { setBusy(false); }
   }
 
-  var canSubmit = !busy && text.trim() && (!preview || !!preview.action);
+  const canSubmit = !busy && text.trim() && (!preview || !!preview.action);
 
   return (
     <Card>
-      <TTSectionLabel right={
+      <SectionLabel right={
         <span className="text-[10.5px] text-[var(--muted)]">slash command or free text EN/BN</span>
-      }>Command</TTSectionLabel>
+      }>Command</SectionLabel>
 
+      {/* Slash help dropdown */}
       {showHelp && (
-        <div className="mb-3 p-3 rounded-sm space-y-2" style={{ background:"var(--mist)" }}>
-          {SLASH_HELP.map(function(item) {
-            return (
-              <div key={item.cmd} className="flex items-start gap-3">
-                <span className="font-mono text-[11.5px] text-[var(--ink)] whitespace-nowrap">{item.cmd}</span>
-                <span className="text-[11.5px] text-[var(--muted)]">{item.desc}</span>
-              </div>
-            );
-          })}
+        <div className="mb-3 p-3 rounded-sm space-y-2" style={{ background:"var(--mist)", opacity:0.9 }}>
+          {SLASH_HELP.map(({ cmd, desc }) => (
+            <div key={cmd} className="flex items-start gap-3">
+              <span className="font-mono text-[11.5px] text-[var(--ink)] whitespace-nowrap">{cmd}</span>
+              <span className="text-[11.5px] text-[var(--muted)]">{desc}</span>
+            </div>
+          ))}
           <div className="text-[11px] text-[var(--muted)] pt-1">Or type any sentence in English or Bangla for the AI to interpret.</div>
         </div>
       )}
 
+      {/* Confirm chip */}
       {preview && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-sm mb-3"
           style={{
             background: preview.action ? "rgba(74,107,92,0.06)" : "rgba(232,49,42,0.05)",
-            border: "1px solid " + (preview.action ? "rgba(74,107,92,0.2)" : "rgba(232,49,42,0.2)"),
+            border: `1px solid ${preview.action ? "rgba(74,107,92,0.2)" : "rgba(232,49,42,0.2)"}`,
           }}>
           <Icon name={preview.action ? "info" : "alert-circle"} size={13}
             style={{ color: preview.action ? "var(--sage)" : "var(--red)" }} />
@@ -9362,8 +9480,8 @@ function CommandBar({ termId, version, entries, onEntryLockChange, onResolved })
 
       <div className="flex gap-2">
         <input type="text" value={text} onChange={e => onChange(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter" && canSubmit && !(preview && preview.action)) apply(); }}
-          placeholder="SE223 A ke Monday 1st slot e niye jao or /lock SE223 A"
+          onKeyDown={e => { if (e.key === "Enter" && canSubmit && !preview?.action) apply(); }}
+          placeholder="SE223 A ke Monday 1st slot e niye jao… or /lock SE223 A"
           className="flex-1 px-3 py-2 hair border rounded-sm text-[13px] bg-white" />
         <PrimaryButton mode="sage" icon={busy ? "loader" : "send"}
           disabled={!canSubmit} onClick={apply}>
@@ -9371,20 +9489,21 @@ function CommandBar({ termId, version, entries, onEntryLockChange, onResolved })
         </PrimaryButton>
       </div>
       <div className="text-[11px] text-[var(--muted)] mt-1.5 flex items-center gap-1">
-        <Icon name="zap" size={10} /> Type <span className="font-mono">/</span> to see slash commands or describe the change in plain text
+        <Icon name="zap" size={10} /> Type <span className="font-mono">/</span> to see slash commands · or describe the change in plain text
       </div>
 
       {history.length > 0 && (
         <div className="mt-2.5 space-y-0.5 border-t hair-t pt-2">
-          {history.map(function(h, i) {
-            return <div key={i} className="font-mono text-[10.5px] text-[var(--muted)]">{h}</div>;
-          })}
+          {history.map((h, i) => (
+            <div key={i} className="font-mono text-[10.5px] text-[var(--muted)]">{h}</div>
+          ))}
         </div>
       )}
     </Card>
   );
 }
 
+// ── Tab 5: Publish ────────────────────────────────────────────────────────────
 function TimetablePublish({ termId, version, onGo }) {
   const [validation, setValidation] = useState(null);
   const [publishing, setPublishing] = useState(false);
@@ -9411,7 +9530,7 @@ function TimetablePublish({ termId, version, onGo }) {
     finally { setPublishing(false); }
   }
 
-  var canPublish = validation && validation.hard_count === 0;
+  const canPublish = validation && validation.hard_count === 0;
 
   return (
     <div className="max-w-[680px] space-y-4">
@@ -9436,7 +9555,7 @@ function TimetablePublish({ termId, version, onGo }) {
 
       {validation && (
         <Card>
-          <TTSectionLabel>Validation — version {validation.version}</TTSectionLabel>
+          <SectionLabel>Validation — version {validation.version}</SectionLabel>
           {validation.hard_count === 0 ? (
             <div className="flex items-center gap-2 text-[13px]" style={{ color:"var(--sage)" }}>
               <Icon name="check-circle" size={14} /> All hard constraints satisfied — ready to publish.
@@ -9446,18 +9565,16 @@ function TimetablePublish({ termId, version, onGo }) {
               <div className="flex items-center gap-1.5 text-[13px]" style={{ color:"var(--red)" }}>
                 <Icon name="alert-triangle" size={14} /> {validation.hard_count} conflict(s) — resolve before publishing.
               </div>
-              {(validation.conflicts || []).map(function(c, i) {
-                return (
-                  <div key={i} className="hair border rounded-sm p-2.5 text-[12.5px]"
-                    style={{ borderColor:"rgba(232,49,42,0.3)", background:"rgba(232,49,42,0.03)" }}>
-                    <div className="font-medium">{c.conflict_type.replace(/_/g," ")}</div>
-                    <div className="text-[var(--muted)]">{c.description}</div>
-                  </div>
-                );
-              })}
+              {(validation.conflicts || []).map((c, i) => (
+                <div key={i} className="hair border rounded-sm p-2.5 text-[12.5px]"
+                  style={{ borderColor:"rgba(232,49,42,0.3)", background:"rgba(232,49,42,0.03)" }}>
+                  <div className="font-medium">{c.conflict_type.replace(/_/g," ")}</div>
+                  <div className="text-[var(--muted)]">{c.description}</div>
+                </div>
+              ))}
               {validation.soft_count > 0 && (
                 <div className="text-[11.5px] text-[var(--muted)]">
-                  + {validation.soft_count} soft violation(s) — these are acceptable and will not block publish.
+                  + {validation.soft_count} soft violation(s) — these are acceptable and won't block publish.
                 </div>
               )}
             </div>
@@ -9498,7 +9615,7 @@ function TimetablePublish({ termId, version, onGo }) {
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
         onConfirm={handlePublish}
-        title={"Publish version " + version + "?"}
+        title={`Publish version ${version}?`}
         body="This writes the timetable to the student-facing routine feed. Students with the app will see their class schedule immediately."
         confirmWord="PUBLISH"
         confirmLabel={publishing ? "Publishing…" : "Publish"}
@@ -9622,6 +9739,7 @@ function UniApplications({ onGo }) {
         </div>
       )}
 
+      {/* Stage tabs */}
       <div className="flex flex-wrap items-center gap-1 mb-4">
         {APP_TABS.map(t => {
           const c = t.key === 'mine' ? null : (t.key === 'decided' ? statCount('decided') : statCount(t.key));
@@ -9726,6 +9844,7 @@ function ApplicationStepper({ detail }) {
   const current = detail.current_approver_level;
   const done = detail.state === 'approved';
   const rejected = detail.state === 'rejected';
+  // Index of current stage; if approved, everything is complete
   const curIdx = done ? stages.length : stages.indexOf(current);
   const labels = [...stages.map(s => APP_STAGE_LABEL[s] || s), 'Approved'];
   return (

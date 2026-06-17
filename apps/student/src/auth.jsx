@@ -78,6 +78,46 @@ async function apiGet(path) {
   return data;
 }
 
+// Authenticated POST — used by MFA enrollment (carries the current access token).
+async function apiPostAuth(path, body) {
+  const res = await fetch(AUTH_API + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAccessToken() },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.detail || data.message || 'Request failed');
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+// Finishes a successful login from a TokenResponse: persists tokens, loads the
+// profile, hydrates the auth context, and registers the push token. Shared by the
+// password-login path and the MFA-verify path so both produce an identical session.
+async function finishLogin(tokens, login) {
+  saveTokens(tokens.access_token, tokens.refresh_token);
+  const me = await apiGet('/auth/me');
+  login({
+    id:               String(me.id),
+    name:             me.full_name,
+    role:             me.role,
+    tenant_id:        me.tenant_id ? String(me.tenant_id) : null,
+    mfa:              me.mfa_enabled,
+    email:            me.email || null,
+    phone:            me.phone || null,
+    email_verified:   me.email_verified,
+    phone_verified:   me.phone_verified,
+    total_filings:    me.total_filings ?? 0,
+    resolved_filings: me.resolved_filings ?? 0,
+    department:       me.department || null,
+  });
+  registerFCMToken();
+}
+
 // ─────────────────────────────────────────────────────────────
 // SHARED UTILITIES
 // ─────────────────────────────────────────────────────────────
@@ -242,23 +282,7 @@ function LoginScreen() {
         go('mfa-verify');
         return;
       }
-      saveTokens(data.access_token, data.refresh_token);
-      const me = await apiGet('/auth/me');
-      login({
-        id:               String(me.id),
-        name:             me.full_name,
-        role:             me.role,
-        tenant_id:        me.tenant_id ? String(me.tenant_id) : null,
-        mfa:              me.mfa_enabled,
-        email:            me.email || null,
-        phone:            me.phone || null,
-        email_verified:   me.email_verified,
-        phone_verified:   me.phone_verified,
-        total_filings:    me.total_filings ?? 0,
-        resolved_filings: me.resolved_filings ?? 0,
-        department:       me.department || null,
-      });
-      registerFCMToken();
+      await finishLogin(data, login);
       go('home');
     } catch (err) {
       if (err.status === 403 && err.message === 'Email/phone not verified') {
@@ -1057,32 +1081,53 @@ function MFAVerifyScreen() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState('');
 
-  const complete = () => {
-    login({
-      id: 'usr_mfa_' + Math.random().toString(36).slice(2, 6),
-      name: 'MFA User',
-      role: 'user',
-      tenant_id: null,
-      mfa: true,
-    });
-    registerFCMToken();
+  const mfaToken = sessionStorage.getItem('anchor_mfa_token');
+
+  // Guard: this screen is only reachable mid-login, when a pending MFA token exists.
+  // If someone lands here directly (refresh, deep link), send them back to sign in.
+  useEffect(() => {
+    if (!mfaToken) go('login');
+  }, []);
+
+  const complete = async (tokens) => {
+    sessionStorage.removeItem('anchor_mfa_token');
+    await finishLogin(tokens, login);
     go('home');
   };
 
-  const verify = (val) => {
-    const c = val || code;
-    if (c.replace(/ /g, '').length < 6) return;
+  const verify = async (val) => {
+    const c = (val || code).replace(/ /g, '');
+    if (c.length < 6 || loading) return;
+    if (!mfaToken) { setError('Your session expired. Please sign in again.'); return; }
     setLoading(true);
     setError('');
-    // BACKEND INTEGRATION POINT: POST /auth/mfa/verify
-    setTimeout(() => { setLoading(false); complete(); }, 900);
+    try {
+      const tokens = await apiPost('/auth/mfa/verify', { mfa_token: mfaToken, code: c });
+      await complete(tokens);
+    } catch (err) {
+      setCode('');
+      if (err.status === 429) setError('Too many attempts. Wait a minute and try again.');
+      else if (err.status === 401) { setError('Your session expired. Please sign in again.'); setTimeout(() => go('login'), 1200); }
+      else setError(err.message === 'Invalid TOTP code' ? "That code didn't match. Check your app and try again." : (err.message || 'Verification failed.'));
+      setLoading(false);
+    }
   };
 
-  const useRecovery = () => {
-    if (!recoveryCode.trim()) return;
+  const useRecovery = async () => {
+    const rc = recoveryCode.trim();
+    if (!rc || loading) return;
+    if (!mfaToken) { setError('Your session expired. Please sign in again.'); return; }
     setLoading(true);
-    // BACKEND INTEGRATION POINT: POST /auth/mfa/recovery
-    setTimeout(() => { setLoading(false); complete(); }, 900);
+    setError('');
+    try {
+      const tokens = await apiPost('/auth/mfa/recovery', { mfa_token: mfaToken, recovery_code: rc });
+      await complete(tokens);
+    } catch (err) {
+      if (err.status === 429) setError('Too many attempts. Wait a minute and try again.');
+      else if (err.status === 401) { setError('Your session expired. Please sign in again.'); setTimeout(() => go('login'), 1200); }
+      else setError(err.message === 'Invalid recovery code' ? "That recovery code isn't valid or was already used." : (err.message || 'Could not verify recovery code.'));
+      setLoading(false);
+    }
   };
 
   return (
@@ -1165,34 +1210,97 @@ function MFAVerifyScreen() {
 // ─────────────────────────────────────────────────────────────
 // MFA SETUP — from Profile → Security  (spec §13.3–13.4)
 // ─────────────────────────────────────────────────────────────
-const MOCK_TOTP_SECRET = 'JBSW Y3DP EHPK 3PXP';
-const MOCK_RECOVERY_CODES = [
-  'A1B2-C3D4-E5F6', 'G7H8-I9J0-K1L2',
-  'M3N4-O5P6-Q7R8', 'S9T0-U1V2-W3X4',
-  'Y5Z6-A7B8-C9D0', 'E1F2-G3H4-I5J6',
-  'K7L8-M9N0-O1P2', 'Q3R4-S5T6-U7V8',
-  'W9X0-Y1Z2-A3B4', 'C5D6-E7F8-G9H0',
-];
+// Group a base32 TOTP secret into 4-char blocks for readable manual entry.
+function formatSecret(s) {
+  return (s || '').replace(/\s/g, '').replace(/(.{4})/g, '$1 ').trim();
+}
 
 function MFASetupScreen() {
-  const { back } = useApp();
+  const { back, updateUser } = useApp();
   const [step, setStep] = useState(1);
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // Enrollment state — populated by POST /auth/mfa/enroll/totp on mount.
+  const [methodId, setMethodId] = useState(null);
+  const [secret, setSecret] = useState('');
+  const [qrUrl, setQrUrl] = useState('');
+  const [enrolling, setEnrolling] = useState(true);
+  const [enrollError, setEnrollError] = useState('');
+  const [verifyError, setVerifyError] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState([]);
+  const [savedCopied, setSavedCopied] = useState(false);
+
+  const startEnroll = () => {
+    setEnrolling(true);
+    setEnrollError('');
+    apiPostAuth('/auth/mfa/enroll/totp', {})
+      .then(d => {
+        setMethodId(d.method_id);
+        setSecret(d.secret);
+        setQrUrl(d.qr_data_url);
+      })
+      .catch(err => {
+        setEnrollError(
+          err.status === 401
+            ? 'Your session expired. Please sign in again to set up 2FA.'
+            : (err.message || 'Could not start setup. Check your connection and try again.')
+        );
+      })
+      .finally(() => setEnrolling(false));
+  };
+
+  useEffect(() => { startEnroll(); }, []);
+
   const verifyCode = (val) => {
-    const c = val || code;
-    if (c.replace(/ /g, '').length < 6) return;
+    const c = (val || code).replace(/ /g, '');
+    if (c.length < 6 || loading) return;
+    if (!methodId) { setVerifyError('Setup is not ready yet. Please wait a moment.'); return; }
     setLoading(true);
-    // BACKEND INTEGRATION POINT: POST /auth/mfa/enroll/verify
-    setTimeout(() => { setLoading(false); setStep(3); }, 900);
+    setVerifyError('');
+    apiPostAuth('/auth/mfa/enroll/verify', { method_id: methodId, code: c })
+      .then(d => {
+        setRecoveryCodes(d.recovery_codes || []);
+        updateUser({ mfa: true });
+        setStep(3);
+      })
+      .catch(err => {
+        setCode('');
+        if (err.status === 429) setVerifyError('Too many attempts. Wait a minute and try again.');
+        else setVerifyError(
+          err.message === 'Invalid TOTP code'
+            ? "That code didn't match. Enter the current 6-digit code from your app."
+            : (err.message || 'Verification failed.')
+        );
+      })
+      .finally(() => setLoading(false));
   };
 
   const copySecret = () => {
-    try { navigator.clipboard.writeText(MOCK_TOTP_SECRET.replace(/\s/g, '')); } catch (e) {}
+    try { navigator.clipboard.writeText((secret || '').replace(/\s/g, '')); } catch (e) {}
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const copyRecoveryCodes = () => {
+    try { navigator.clipboard.writeText(recoveryCodes.join('\n')); } catch (e) {}
+    setSavedCopied(true);
+    setTimeout(() => setSavedCopied(false), 2000);
+  };
+
+  const downloadRecoveryCodes = () => {
+    try {
+      const body = 'Anchor AI — two-factor recovery codes\n'
+        + 'Each code works once. Keep them somewhere safe.\n\n'
+        + recoveryCodes.join('\n') + '\n';
+      const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'anchor-recovery-codes.txt';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { /* ignore */ }
   };
 
   const StepDot = ({ n }) => (
@@ -1235,33 +1343,45 @@ function MFASetupScreen() {
               Use Aegis, Google Authenticator, or any TOTP app.
             </p>
           </div>
-          <div className="qr-placeholder">
-            <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="square">
-              <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
-              <rect x="3" y="14" width="7" height="7" />
-              <path d="M14 14h2m2 0h1m-3 2v1m0 2h2m1 0v2m-4-2h1" />
-            </svg>
-            <span>QR code renders<br />in production</span>
-          </div>
+          {enrolling ? (
+            <div className="qr-placeholder">
+              <Spinner />
+              <span>Preparing your<br />secure key…</span>
+            </div>
+          ) : enrollError ? (
+            <div className="qr-placeholder" style={{ borderColor: 'rgba(232,49,42,0.3)' }}>
+              <span style={{ color: 'var(--red)' }}>{enrollError}</span>
+              <button onClick={startEnroll} style={{
+                marginTop: 10, border: '1px solid var(--mist-2)', borderRadius: 8, padding: '5px 12px',
+                background: '#fff', cursor: 'pointer', fontSize: 12, color: 'var(--navy)',
+              }}>Try again</button>
+            </div>
+          ) : (
+            <div className="qr-placeholder" style={{ padding: 6, background: '#fff', borderStyle: 'solid', borderColor: 'var(--mist-2)' }}>
+              <img src={qrUrl} alt="Scan this QR code with your authenticator app"
+                style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+            </div>
+          )}
           <div style={{ width: '100%', background: 'var(--cream-2)', borderRadius: 12, padding: '12px 14px' }}>
             <div className="eyebrow" style={{ marginBottom: 7 }}>Manual entry key</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <div style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 14, letterSpacing: '0.1em', color: 'var(--navy)' }}>
-                {MOCK_TOTP_SECRET}
+                {enrolling ? '····  ····  ····  ····' : formatSecret(secret)}
               </div>
               <button
                 onClick={copySecret}
+                disabled={!secret}
                 style={{
                   border: '1px solid var(--mist-2)', borderRadius: 8, padding: '5px 10px',
-                  background: '#fff', cursor: 'pointer', fontSize: 12,
-                  fontFamily: 'var(--font-sans)', color: 'var(--navy)', flexShrink: 0,
+                  background: '#fff', cursor: secret ? 'pointer' : 'not-allowed', fontSize: 12,
+                  fontFamily: 'var(--font-sans)', color: 'var(--navy)', flexShrink: 0, opacity: secret ? 1 : 0.5,
                 }}>
                 {copied ? '✓ Copied' : 'Copy'}
               </button>
             </div>
           </div>
-          <button onClick={() => setStep(2)} className="btn btn-primary"
-            style={{ width: '100%', height: 48, fontSize: 15, fontWeight: 600, borderRadius: 12 }}>
+          <button onClick={() => setStep(2)} disabled={!secret} className="btn btn-primary"
+            style={{ width: '100%', height: 48, fontSize: 15, fontWeight: 600, borderRadius: 12, opacity: secret ? 1 : 0.6 }}>
             I've scanned it
           </button>
         </div>
@@ -1277,7 +1397,10 @@ function MFASetupScreen() {
               Enter the 6-digit code your app shows now.
             </p>
           </div>
-          <OTPInput value={code} onChange={setCode} onComplete={verifyCode} />
+          <OTPInput value={code} onChange={(v) => { setCode(v); if (verifyError) setVerifyError(''); }} onComplete={verifyCode} />
+          {verifyError && (
+            <div style={{ fontSize: 12.5, color: 'var(--red)', textAlign: 'center', marginTop: -6 }}>{verifyError}</div>
+          )}
           <button
             onClick={() => verifyCode()}
             disabled={loading || code.replace(/ /g, '').length < 6}
@@ -1310,9 +1433,19 @@ function MFASetupScreen() {
             </p>
           </div>
           <div className="recovery-grid">
-            {MOCK_RECOVERY_CODES.map(c => (
+            {recoveryCodes.map(c => (
               <div key={c} className="recovery-code">{c}</div>
             ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button onClick={copyRecoveryCodes} className="btn btn-ghost"
+              style={{ flex: 1, height: 42, borderRadius: 10, fontSize: 13 }}>
+              {savedCopied ? '✓ Copied' : 'Copy all'}
+            </button>
+            <button onClick={downloadRecoveryCodes} className="btn btn-ghost"
+              style={{ flex: 1, height: 42, borderRadius: 10, fontSize: 13 }}>
+              Download .txt
+            </button>
           </div>
           <div style={{
             marginTop: 14, padding: '10px 14px', borderRadius: 10,
