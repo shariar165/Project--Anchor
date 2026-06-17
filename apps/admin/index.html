@@ -16,6 +16,8 @@
 <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js" crossorigin="anonymous"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- API base URL — auto-detects localhost vs production -->
+<script src="config.js"></script>
 <style>
   :root {
     --navy:#0B1D35;
@@ -1119,7 +1121,7 @@ Object.assign(window, { AdminShell, ROLES, ROLE_SUBTITLE });
 <script type="text/babel">
 // Anchor AI Admin — API client
 const AnchorAPI = (() => {
-  const BASE = 'http://localhost:8000';
+  const BASE = window.ANCHOR_API_URL || 'http://localhost:8000';
   const K = {
     access: 'anchor_admin_access_token',
     refresh: 'anchor_admin_refresh_token',
@@ -8043,7 +8045,7 @@ function TimetableData({ termId }) {
     fd.append("file", file);
     try {
       const res = await fetch(
-        `http://localhost:8000${TT_BASE}/import?entity=${sub}`,
+        `${window.ANCHOR_API_URL || 'http://localhost:8000'}${TT_BASE}/import?entity=${sub}`,
         { method:"POST", headers:{ Authorization:`Bearer ${localStorage.getItem("anchor_admin_access_token")}` }, body:fd }
       ).then(r => r.json());
       setImportMsg(`Imported ${res.created} rows${res.errors?.length ? ` · ${res.errors.length} errors` : ""}`);

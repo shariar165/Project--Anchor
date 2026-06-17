@@ -5,6 +5,8 @@
 //  (no backend exists for these; mirrors the anchor_geofence_consent pattern)
 // ═══════════════════════════════════════════════════════════════
 
+const _API = window.ANCHOR_API_URL || 'http://localhost:8000';
+
 var NOTIF_PREF_DEFAULTS = { alerts: true, cases: true, notices: true, feed: true, marketing: false };
 
 function loadNotifPrefs() {
@@ -488,12 +490,12 @@ function MapScreen() {
     setZonesError(null);
     let url;
     if (km && lat != null) {
-      url = `http://localhost:8000/v1/zones/nearby?lat=${lat}&lng=${lng}&radius_km=${km}`;
+      url = `${_API}/v1/zones/nearby?lat=${lat}&lng=${lng}&radius_km=${km}`;
     } else if (km == null && lat != null) {
       // "All" mode — get all active zones
-      url = 'http://localhost:8000/v1/zones';
+      url = `${_API}/v1/zones`;
     } else {
-      url = 'http://localhost:8000/v1/zones';
+      url = `${_API}/v1/zones`;
     }
     fetch(url)
       .then(r => { if (!r.ok) throw new Error('Server error ' + r.status); return r.json(); })
@@ -787,7 +789,7 @@ function FeedScreen() {
     const sort = tab === 'recent' ? 'recent' : 'corroborate';
     const token = localStorage.getItem('anchor_access_token');
     const headers = token ? { Authorization: 'Bearer ' + token } : {};
-    fetch(`http://localhost:8000/v1/feed?scope=${scope}&sort=${sort}&page=1&page_size=30`, { headers })
+    fetch(`${_API}/v1/feed?scope=${scope}&sort=${sort}&page=1&page_size=30`, { headers })
       .then(r => {
         if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
         return r.json();
@@ -1060,7 +1062,7 @@ function LawyersScreen() {
   const [error, setError]   = React.useState('');
 
   React.useEffect(() => {
-    fetch('http://localhost:8000/v1/lawyers')
+    fetch(`${_API}/v1/lawyers`)
       .then(r => { if (!r.ok) throw new Error('Failed to load'); return r.json(); })
       .then(data => { setLawyers(data); setLoading(false); })
       .catch(() => { setError('Could not load lawyers. Check your connection.'); setLoading(false); });
@@ -1190,7 +1192,7 @@ function NoticesScreen() {
     const qs = scope ? `?scope=${scope}&page=1` : '?page=1';
     const token = localStorage.getItem('anchor_access_token');
     const headers = token ? { Authorization: 'Bearer ' + token } : {};
-    fetch('http://localhost:8000/v1/notices' + qs, { headers })
+    fetch(`${_API}/v1/notices${qs}`, { headers })
       .then(r => {
         if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
         return r.json();
@@ -1350,7 +1352,7 @@ function ProfileScreen() {
     setSaveError('');
     try {
       const token = localStorage.getItem('anchor_access_token');
-      const res = await fetch('http://localhost:8000/auth/me', {
+      const res = await fetch(`${_API}/auth/me`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1972,7 +1974,7 @@ function RoutinesScreen() {
       : (function() {
           var token = localStorage.getItem('anchor_access_token');
           var headers = token ? { Authorization: 'Bearer ' + token } : {};
-          return fetch('http://localhost:8000/v1/routines?page=1', { headers })
+          return fetch(`${_API}/v1/routines?page=1`, { headers })
             .then(function(r) {
               if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Request failed'); });
               return r.json();
@@ -2183,7 +2185,7 @@ function DeptRatingScreen() {
     setAlreadyRated(false);
     setOverall(0); setTeaching(0); setResources(0); setEnvironment(0); setFeedback('');
 
-    fetch('http://localhost:8000/v1/departments/' + encodeURIComponent(selectedDept) + '/summary')
+    fetch(`${_API}/v1/departments/${encodeURIComponent(selectedDept)}/summary`)
       .then(r => {
         if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
         return r.json();
@@ -2199,7 +2201,7 @@ function DeptRatingScreen() {
     setAlreadyRated(false);
     try {
       const token = localStorage.getItem('anchor_access_token');
-      const r = await fetch('http://localhost:8000/v1/departments/ratings', {
+      const r = await fetch(`${_API}/v1/departments/ratings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2222,7 +2224,7 @@ function DeptRatingScreen() {
         throw new Error(d.detail || 'Submission failed.');
       }
       setSubmitted(true);
-      fetch('http://localhost:8000/v1/departments/' + encodeURIComponent(selectedDept) + '/summary')
+      fetch(`${_API}/v1/departments/${encodeURIComponent(selectedDept)}/summary`)
         .then(res => res.ok ? res.json() : null)
         .then(data => { if (data) setSummary(data); });
     } catch (err) {

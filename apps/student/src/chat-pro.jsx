@@ -3,7 +3,7 @@
 
 const { useState, useEffect, useRef } = React;
 
-const AI_BASE_PRO = window.ANCHOR_AI_URL || 'http://localhost:8000';
+const AI_BASE_PRO = window.ANCHOR_API_URL || 'http://localhost:8000';
 
 // ─── LocalStorage helpers ────────────────────────────────────────────────────
 

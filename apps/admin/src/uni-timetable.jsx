@@ -208,7 +208,7 @@ function TimetableData({ termId }) {
     fd.append("file", file);
     try {
       const res = await fetch(
-        `http://localhost:8000${TT_BASE}/import?entity=${sub}`,
+        `${window.ANCHOR_API_URL || 'http://localhost:8000'}${TT_BASE}/import?entity=${sub}`,
         { method:"POST", headers:{ Authorization:`Bearer ${localStorage.getItem("anchor_admin_access_token")}` }, body:fd }
       ).then(r => r.json());
       setImportMsg(`Imported ${res.created} rows${res.errors?.length ? ` · ${res.errors.length} errors` : ""}`);

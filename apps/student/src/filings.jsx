@@ -4,7 +4,7 @@
 
 const { useState, useEffect, useRef, useCallback } = React;
 
-const FILING_BASE = 'http://localhost:8000';
+const FILING_BASE = window.ANCHOR_API_URL || 'http://localhost:8000';
 
 function getFilingToken() {
   return localStorage.getItem('anchor_access_token') || '';

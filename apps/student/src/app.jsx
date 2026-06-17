@@ -148,7 +148,7 @@ function AppProvider({ children }) {
         lastLocationPostRef.current = now;
         const accessToken = localStorage.getItem('anchor_access_token');
         if (!accessToken) return;
-        fetch('http://localhost:8000/v1/users/me/location', {
+        fetch((window.ANCHOR_API_URL || 'http://localhost:8000') + '/v1/users/me/location', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + accessToken },
           body: JSON.stringify({ lat: pos.coords.latitude, lng: pos.coords.longitude, geofence_consent: true }),

@@ -2,7 +2,7 @@
 // Depends on: icons.jsx, app.jsx (useApp, Header), applications.jsx (apiFetch, getToken)
 // Load order: after applications.jsx, before app.jsx
 
-const VF_BASE = 'http://localhost:8000';
+const VF_BASE = window.ANCHOR_API_URL || 'http://localhost:8000';
 
 // Re-use apiFetch from applications.jsx (already global)
 // If not available, define local version

@@ -5,7 +5,7 @@
 
 const { useState, useEffect, useRef } = React;
 
-const AUTH_API = 'http://localhost:8000';
+const AUTH_API = window.ANCHOR_API_URL || 'http://localhost:8000';
 
 async function apiPost(path, body) {
   const res = await fetch(AUTH_API + path, {

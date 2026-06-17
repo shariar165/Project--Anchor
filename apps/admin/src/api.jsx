@@ -1,6 +1,6 @@
 // Anchor AI Admin — API client
 const AnchorAPI = (() => {
-  const BASE = 'http://localhost:8000';
+  const BASE = window.ANCHOR_API_URL || 'http://localhost:8000';
   const K = {
     access: 'anchor_admin_access_token',
     refresh: 'anchor_admin_refresh_token',

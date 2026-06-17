@@ -27,7 +27,7 @@ function HomeScreen() {
     if (!token) return;
     const hasTenant = !!auth?.user?.tenant_id;
     const scope = (mode === 'campus' && hasTenant) ? 'campus' : 'national';
-    fetch(`http://localhost:8000/v1/feed?scope=${scope}&sort=recent&page_size=3`, {
+    fetch(`${AI_BASE}/v1/feed?scope=${scope}&sort=recent&page_size=3`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.ok ? r.json() : null)
@@ -352,7 +352,7 @@ function FeedRow({ item }) {
 // ═══════════════════════════════════════════════════════════════
 
 // Change this if your backend runs on a different port
-const AI_BASE = (typeof window !== 'undefined' && window.ANCHOR_AI_URL) || 'http://localhost:8000';
+const AI_BASE = window.ANCHOR_API_URL || 'http://localhost:8000';
 
 // ── Simple inline-markdown renderer (no library needed) ─────────
 function _renderLine(line, i, accentColor) {
@@ -718,7 +718,7 @@ function ChatScreen() {
 //  ALERT SCREEN — 3-phase emergency (spec-compliant)
 // ═══════════════════════════════════════════════════════════════
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = window.ANCHOR_API_URL || 'http://localhost:8000';
 
 async function alertApiPost(path, body, token) {
   const headers = { 'Content-Type': 'application/json' };
@@ -1377,7 +1377,7 @@ function AlertBefore({ token }) {
   const [zones, setZones] = _useS([]);
 
   React.useEffect(() => {
-    fetch('http://localhost:8000/v1/zones')
+    fetch(`${API_BASE}/v1/zones`)
       .then(r => r.json())
       .then(d => setZones(Array.isArray(d) ? d.filter(z => z.status === 'active') : []))
       .catch(() => {});
@@ -2526,7 +2526,7 @@ function RightsScreen() {
 
   React.useEffect(() => {
     let alive = true;
-    fetch('http://localhost:8000/v1/legal-rights')
+    fetch(`${API_BASE}/v1/legal-rights`)
       .then(r => { if (!r.ok) throw new Error('bad status'); return r.json(); })
       .then(data => {
         if (!alive) return;

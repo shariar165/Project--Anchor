@@ -4,7 +4,7 @@
 
 const { useState, useEffect, useRef, useCallback } = React;
 
-const APP_BASE = 'http://localhost:8000';
+const APP_BASE = window.ANCHOR_API_URL || 'http://localhost:8000';
 
 function getToken() {
   return localStorage.getItem('anchor_access_token') || '';
