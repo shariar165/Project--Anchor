@@ -12,8 +12,14 @@ if config.config_file_name is not None:
 # Import all models so Alembic can see them
 from app.database import Base
 import app.models  # noqa: F401 — registers all ORM classes
+from app.config import get_settings
 
 target_metadata = Base.metadata
+
+# Prefer the app's DATABASE_URL (e.g. Railway-injected) over the hardcoded
+# local-dev value in alembic.ini. get_settings().database_url already
+# normalizes postgres:// / postgresql:// → postgresql+asyncpg://.
+config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
 
 def run_migrations_offline() -> None:
