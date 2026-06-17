@@ -12,9 +12,13 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="before")
     @classmethod
     def normalize_database_url(cls, v: str) -> str:
-        # Railway provides postgresql:// but asyncpg requires postgresql+asyncpg://
-        if isinstance(v, str) and v.startswith("postgresql://"):
-            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        # Railway's PostgreSQL plugin provides postgres:// or postgresql://;
+        # SQLAlchemy 2.x requires postgresql+asyncpg:// for the async driver.
+        if isinstance(v, str):
+            if v.startswith("postgres://"):
+                return v.replace("postgres://", "postgresql+asyncpg://", 1)
+            if v.startswith("postgresql://"):
+                return v.replace("postgresql://", "postgresql+asyncpg://", 1)
         return v
 
     # Redis
