@@ -94,7 +94,16 @@ async def ingest(
 @app.get("/health")
 async def health() -> dict[str, Any]:
     """Check RAG subsystem component availability."""
+    from app.config import get_settings
+    settings = get_settings()
+
     status: dict[str, Any] = {"pipeline": "ok"}
+
+    if settings.disable_ai_warmup:
+        status["embedder"] = "disabled"
+        status["chromadb"] = "disabled"
+        status["ollama"] = "disabled"
+        return status
 
     try:
         from app.pipeline import embeddings as emb_mod
