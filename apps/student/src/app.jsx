@@ -108,6 +108,9 @@ function AppProvider({ children }) {
     }
   };
   const logout = () => {
+    // Best-effort: stop this device receiving pushes for the signed-out user.
+    // Must run before the access token is cleared (the DELETE call needs it).
+    try { window.deregisterPushToken && window.deregisterPushToken(); } catch (_) { /* best-effort */ }
     setAuth({ isAuthenticated: false, user: null, authStep: null, pendingIdentifier: null });
     localStorage.removeItem('anchor_auth');
     localStorage.removeItem('anchor_access_token');
@@ -138,6 +141,15 @@ function AppProvider({ children }) {
     window.addEventListener('anchor:session-expired', onExpired);
     return () => window.removeEventListener('anchor:session-expired', onExpired);
   }, []);
+
+  // Refresh / heal this device's FCM push token on every authenticated load,
+  // including a restored session (the login call sites only fire on a fresh
+  // login). Silent — never prompts; only registers when permission is already
+  // granted. First-time opt-in happens at login or via the Profile toggle.
+  useEffect(() => {
+    if (!auth.isAuthenticated) return;
+    if (window.syncPushToken) window.syncPushToken({ interactive: false });
+  }, [auth.isAuthenticated]);
 
   useEffect(() => {
     if (!auth.isAuthenticated || !geofenceConsent) {

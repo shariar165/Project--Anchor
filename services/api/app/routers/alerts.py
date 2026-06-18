@@ -634,6 +634,35 @@ async def register_fcm_token(
     return {"message": "FCM token registered"}
 
 
+@router.delete("/v1/users/me/fcm-token")
+@limiter.limit("10/minute")
+async def deregister_fcm_token(
+    request: Request,
+    device_id: str = Query(..., min_length=1, max_length=200),
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(get_current_user),
+):
+    """Disable the current user's active FCM token(s) for a device (e.g. on logout)."""
+    from datetime import datetime, timezone
+
+    result = await db.execute(
+        select(UserFCMToken).where(
+            and_(
+                UserFCMToken.user_id == token.user_id,
+                UserFCMToken.device_id == device_id,
+                UserFCMToken.disabled_at.is_(None),
+            )
+        )
+    )
+    now = datetime.now(tz=timezone.utc)
+    disabled = 0
+    for row in result.scalars().all():
+        row.disabled_at = now
+        disabled += 1
+    await db.commit()
+    return {"message": "FCM token de-registered", "disabled": disabled}
+
+
 @router.post("/v1/users/me/location")
 @limiter.limit("60/minute")
 async def update_location(

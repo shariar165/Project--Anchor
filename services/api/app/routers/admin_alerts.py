@@ -33,6 +33,75 @@ def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
+# ─── Push / fan-out health ───────────────────────────────────────────────────
+# Registered before /alerts/{event_id} so "push-health" isn't parsed as a UUID.
+
+@router.get("/alerts/push-health")
+@limiter.limit("60/minute")
+async def push_health(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "super_admin")),
+):
+    """
+    Push-notification + fan-out health for operators (aggregates only, no PII).
+    Secure, admin-gated replacement for the temporary unauthenticated _diag
+    endpoints used during deployment bring-up.
+    """
+    from app.config import get_settings
+    from app.models.alert import (
+        UserFCMToken, UserLocationSnapshot, NotifChannel, NotifStatus,
+    )
+    from app.services import fcm as fcm_svc
+
+    settings = get_settings()
+    fcm_app = fcm_svc._get_app()
+    cutoff = _now() - timedelta(minutes=settings.alert_location_staleness_minutes)
+    day_ago = _now() - timedelta(hours=24)
+
+    active_tokens = await db.scalar(
+        select(func.count()).select_from(UserFCMToken).where(UserFCMToken.disabled_at.is_(None))
+    )
+    disabled_tokens = await db.scalar(
+        select(func.count()).select_from(UserFCMToken).where(UserFCMToken.disabled_at.is_not(None))
+    )
+    consenting_recent = await db.scalar(
+        select(func.count()).select_from(UserLocationSnapshot).where(
+            and_(
+                UserLocationSnapshot.geofence_consent == True,  # noqa: E712
+                UserLocationSnapshot.last_seen_at >= cutoff,
+            )
+        )
+    )
+    sent_24h = await db.scalar(
+        select(func.count()).select_from(AlertNotification).where(
+            and_(
+                AlertNotification.channel == NotifChannel.push,
+                AlertNotification.status == NotifStatus.sent,
+                AlertNotification.last_attempt_at >= day_ago,
+            )
+        )
+    )
+    failed_24h = await db.scalar(
+        select(func.count()).select_from(AlertNotification).where(
+            and_(
+                AlertNotification.channel == NotifChannel.push,
+                AlertNotification.status == NotifStatus.failed,
+                AlertNotification.last_attempt_at >= day_ago,
+            )
+        )
+    )
+    return {
+        "fcm_configured": fcm_app is not None,
+        "fcm_project_id": settings.fcm_project_id or None,
+        "active_tokens": active_tokens or 0,
+        "disabled_tokens": disabled_tokens or 0,
+        "consenting_recent_devices": consenting_recent or 0,
+        "staleness_minutes": settings.alert_location_staleness_minutes,
+        "recent_push": {"sent": sent_24h or 0, "failed": failed_24h or 0},
+    }
+
+
 # ─── List alerts ─────────────────────────────────────────────────────────────
 
 @router.get("/alerts")

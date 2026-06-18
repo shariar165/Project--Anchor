@@ -1292,6 +1292,27 @@ function ProfileScreen() {
   const [draftPhone, setDraftPhone] = React.useState('');
   const [draftDept, setDraftDept] = React.useState('');
 
+  // Push-notification opt-in. 'default' | 'granted' | 'denied' | 'unsupported'.
+  const [pushState, setPushState] = React.useState(
+    typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
+  );
+  const pushEnabled = pushState === 'granted';
+  const enablePush = async () => {
+    if (!window.syncPushToken) { setPushState('unsupported'); return; }
+    const r = await window.syncPushToken({ interactive: true });  // user-gesture call
+    setPushState(
+      r === 'granted' ? 'granted'
+      : r === 'blocked' ? 'denied'
+      : r === 'unsupported' ? 'unsupported'
+      : (typeof Notification !== 'undefined' ? Notification.permission : 'error')
+    );
+  };
+  const pushSubtext =
+    pushState === 'granted'     ? 'Enabled on this device'
+    : pushState === 'denied'    ? 'Blocked — allow notifications in browser settings'
+    : pushState === 'unsupported' ? 'Not supported on this browser'
+    : 'Tap to receive emergency push alerts';
+
   const enterEditMode = () => {
     setDraftName(user ? user.name || '' : '');
     setDraftPhone(user ? user.phone || '' : '');
@@ -1596,6 +1617,33 @@ function ProfileScreen() {
                        background: geofenceConsent ? 'var(--sage)' : 'var(--mist)', position:'relative',
                        transition:'background 0.2s' }}>
               <span style={{ position:'absolute', top:3, left: geofenceConsent ? 21 : 3,
+                             width:20, height:20, borderRadius:999, background:'#fff',
+                             boxShadow:'0 1px 3px rgba(0,0,0,0.18)', transition:'left 0.2s' }}/>
+            </button>
+          </div>
+        </div>
+        {/* Push notifications consent */}
+        <div style={{ marginBottom: 16 }}>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>Notifications</div>
+          <div style={{ background:'rgba(255,255,255,0.7)', border:'1px solid var(--mist)',
+                        borderRadius:14, padding:'12px 14px',
+                        display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <div>
+              <div style={{ fontSize:14, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-sans)' }}>
+                Safety alert notifications
+              </div>
+              <div style={{ fontSize:12, color: pushState === 'denied' ? 'var(--red)' : 'var(--muted)',
+                            fontFamily:'var(--font-sans)', marginTop:2 }}>
+                {pushSubtext}
+              </div>
+            </div>
+            <button onClick={enablePush} disabled={pushState === 'unsupported'}
+              style={{ width:44, height:26, borderRadius:999, border:'none', flexShrink:0,
+                       cursor: pushState === 'unsupported' ? 'not-allowed' : 'pointer',
+                       opacity: pushState === 'unsupported' ? 0.5 : 1,
+                       background: pushEnabled ? 'var(--sage)' : 'var(--mist)', position:'relative',
+                       transition:'background 0.2s' }}>
+              <span style={{ position:'absolute', top:3, left: pushEnabled ? 21 : 3,
                              width:20, height:20, borderRadius:999, background:'#fff',
                              boxShadow:'0 1px 3px rgba(0,0,0,0.18)', transition:'left 0.2s' }}/>
             </button>

@@ -15,7 +15,7 @@ import string
 import uuid
 from datetime import datetime, timezone, timedelta
 
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -332,7 +332,7 @@ async def notify_proctor(event_id: uuid.UUID) -> None:
                     )
                 )
                 for tok in tok_result.scalars().all():
-                    msg_id = await fcm_svc.send_to_token(
+                    res = await fcm_svc.send_to_token(
                         tok.fcm_token,
                         title="Anchor: Active alert — your campus",
                         body=f"An active alert has been triggered on campus at {ts}.",
@@ -344,6 +344,10 @@ async def notify_proctor(event_id: uuid.UUID) -> None:
                             "lng": lng_str,
                         },
                     )
+                    msg_id = res["message_id"]
+                    # Permanently-invalid token → disable so future fan-outs skip it
+                    if res["error"] in fcm_svc.PERMANENT_ERRORS:
+                        tok.disabled_at = _now()
                     notif = AlertNotification(
                         event_id=event.id,
                         recipient_type=RecipientType.proctor,
@@ -440,7 +444,11 @@ async def notify_nearby_users(event_id: uuid.UUID, zone_id: uuid.UUID) -> None:
                             "lng": lng_str,
                         },
                     )
-                    for tok, msg_id in results.items():
+                    dead_tokens: list[str] = []
+                    for tok, res in results.items():
+                        msg_id = res["message_id"]
+                        if res["error"] in fcm_svc.PERMANENT_ERRORS:
+                            dead_tokens.append(tok)
                         notif = AlertNotification(
                             event_id=event.id,
                             recipient_type=RecipientType.nearby_user,
@@ -453,6 +461,21 @@ async def notify_nearby_users(event_id: uuid.UUID, zone_id: uuid.UUID) -> None:
                             sent_at=_now() if msg_id else None,
                         )
                         db.add(notif)
+
+                    # Self-heal: disable permanently-invalid tokens so they are
+                    # excluded from get_nearby_users on subsequent fan-outs.
+                    if dead_tokens:
+                        from app.models.alert import UserFCMToken
+                        await db.execute(
+                            update(UserFCMToken)
+                            .where(
+                                and_(
+                                    UserFCMToken.fcm_token.in_(dead_tokens),
+                                    UserFCMToken.disabled_at.is_(None),
+                                )
+                            )
+                            .values(disabled_at=_now())
+                        )
 
             await db.commit()
     except Exception as exc:

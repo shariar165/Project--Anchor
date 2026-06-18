@@ -39,50 +39,109 @@ const FIREBASE_CONFIG = {
 };
 const FIREBASE_VAPID_KEY = window.ENV?.FIREBASE_VAPID_KEY;
 
-async function registerFCMToken() {
-  if (typeof firebase === 'undefined') return;
-  if (!FIREBASE_VAPID_KEY || FIREBASE_VAPID_KEY === 'YOUR_VAPID_KEY_HERE') return;
-  if (!('serviceWorker' in navigator) || !('Notification' in window)) return;
+let _fcmForegroundBound = false;  // bind messaging.onMessage only once per page
+
+function _ensureDeviceId() {
+  let deviceId = localStorage.getItem('anchor_device_id');
+  if (!deviceId) {
+    deviceId = 'web-' + Math.random().toString(36).slice(2, 18);
+    localStorage.setItem('anchor_device_id', deviceId);
+  }
+  return deviceId;
+}
+
+// Registers / refreshes this device's FCM push token with the backend.
+//   { interactive: true }  → may show the permission prompt (call from a user
+//                            gesture: login, or the Profile "enable" toggle)
+//   { interactive: false } → silent refresh; only proceeds if permission is
+//                            already granted (call on every authenticated load)
+// Returns one of: 'granted' | 'denied' | 'blocked' | 'unsupported' | 'error'.
+async function syncPushToken({ interactive = false } = {}) {
+  if (typeof firebase === 'undefined') return 'unsupported';
+  if (!FIREBASE_VAPID_KEY || FIREBASE_VAPID_KEY === 'YOUR_VAPID_KEY_HERE') return 'unsupported';
+  if (!('serviceWorker' in navigator) || !('Notification' in window)) return 'unsupported';
   try {
     if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     const messaging = firebase.messaging();
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') return;
-    const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
-    const fcmToken = await messaging.getToken({ vapidKey: FIREBASE_VAPID_KEY, serviceWorkerRegistration: swReg });
-    if (!fcmToken) return;
 
-    // Foreground messages: the service worker's onBackgroundMessage only fires
-    // when the tab is NOT focused. When the app is open/focused, FCM delivers
-    // here instead — without this handler the push would arrive silently. Show
-    // it via the SW registration so a real OS notification still appears.
-    try {
-      messaging.onMessage((payload) => {
-        const n = payload.notification || {};
-        const data = payload.data || {};
-        swReg.showNotification(n.title || 'Anchor Alert', {
-          body: n.body || 'Someone nearby needs help.',
-          tag: 'anchor-alert-' + (data.event_id || 'general'),
-          data: { url: data.deep_link || '/', event_id: data.event_id },
-          renotify: true,
-        }).catch(() => {});
-      });
-    } catch (e) { console.warn('[FCM] onMessage setup failed:', e); }
-    let deviceId = localStorage.getItem('anchor_device_id');
-    if (!deviceId) {
-      deviceId = 'web-' + Math.random().toString(36).slice(2, 18);
-      localStorage.setItem('anchor_device_id', deviceId);
+    // Only request permission on an interactive (user-gesture) call — Chrome
+    // Android / Safari silently suppress auto-requested prompts.
+    let permission = Notification.permission;
+    if (permission === 'default' && interactive) {
+      permission = await Notification.requestPermission();
     }
-    await fetch(AUTH_API + '/v1/users/me/fcm-token', {
+    if (permission === 'denied') return 'blocked';
+    if (permission !== 'granted') return 'denied';
+
+    const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+
+    // If the Firebase project changed (e.g. a project migration), the cached
+    // token belongs to the old sender and FCM rejects it ("SenderId mismatch").
+    // Delete it so getToken() mints a fresh token for the current project.
+    const lastProject = localStorage.getItem('anchor_fcm_project');
+    if (lastProject && lastProject !== FIREBASE_CONFIG.projectId) {
+      try { await messaging.deleteToken(); } catch (_) {}
+    }
+
+    const fcmToken = await messaging.getToken({ vapidKey: FIREBASE_VAPID_KEY, serviceWorkerRegistration: swReg });
+    if (!fcmToken) return 'error';
+    localStorage.setItem('anchor_fcm_project', FIREBASE_CONFIG.projectId);
+
+    // Foreground messages: the SW's onBackgroundMessage only fires when the tab
+    // is unfocused. When the app is open, FCM delivers here instead — without
+    // this the push would arrive silently. Bind once via the SW registration.
+    if (!_fcmForegroundBound) {
+      _fcmForegroundBound = true;
+      try {
+        messaging.onMessage((payload) => {
+          const n = payload.notification || {};
+          const data = payload.data || {};
+          swReg.showNotification(n.title || 'Anchor Alert', {
+            body: n.body || 'Someone nearby needs help.',
+            tag: 'anchor-alert-' + (data.event_id || 'general'),
+            data: { url: data.deep_link || '/', event_id: data.event_id },
+            renotify: true,
+          }).catch(() => {});
+        });
+      } catch (e) { console.warn('[FCM] onMessage setup failed:', e); }
+    }
+
+    const deviceId = _ensureDeviceId();
+    const res = await fetch(AUTH_API + '/v1/users/me/fcm-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAccessToken() },
       body: JSON.stringify({ fcm_token: fcmToken, device_id: deviceId, platform: 'web' }),
     });
+    if (!res.ok) { console.warn('[FCM] token POST failed:', res.status); return 'error'; }
     console.info('[FCM] Token registered');
+    return 'granted';
   } catch (err) {
     console.warn('[FCM] Registration failed:', err);
+    return 'error';
   }
 }
+
+// Best-effort de-registration of this device's token (e.g. on logout) so a
+// shared device stops receiving pushes for the signed-out account.
+async function deregisterPushToken() {
+  const deviceId = localStorage.getItem('anchor_device_id');
+  const jwt = getAccessToken();
+  if (!deviceId || !jwt) return;
+  try {
+    await fetch(AUTH_API + '/v1/users/me/fcm-token?device_id=' + encodeURIComponent(deviceId), {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + jwt },
+    });
+  } catch (_) { /* best-effort */ }
+}
+
+// Back-compat: login paths call registerFCMToken(). Login is a user gesture, so
+// allow the first-time permission prompt there.
+function registerFCMToken() { return syncPushToken({ interactive: true }); }
+
+// Expose for app.jsx (auto-refresh on load) and ProfileScreen (enable toggle).
+window.syncPushToken = syncPushToken;
+window.deregisterPushToken = deregisterPushToken;
 function getAccessToken() {
   return localStorage.getItem('anchor_access_token');
 }

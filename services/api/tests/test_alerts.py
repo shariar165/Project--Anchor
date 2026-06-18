@@ -463,6 +463,88 @@ async def test_update_location(client: AsyncClient, registered_user, db_session,
     assert snapshots[0].geofence_consent is False
 
 
+@pytest.mark.asyncio
+async def test_register_fcm_token_replaces_same_device(client: AsyncClient, registered_user, db_session, mock_redis):
+    """Re-registering the same device disables the previous token, keeps one active."""
+    h = _auth(registered_user["tokens"])
+    await client.post("/v1/users/me/fcm-token", json={
+        "fcm_token": "tok-old", "device_id": "dev-1", "platform": "web"}, headers=h)
+    await client.post("/v1/users/me/fcm-token", json={
+        "fcm_token": "tok-new", "device_id": "dev-1", "platform": "web"}, headers=h)
+    rows = (await db_session.execute(select(UserFCMToken))).scalars().all()
+    active = [t for t in rows if t.disabled_at is None]
+    assert len(rows) == 2
+    assert len(active) == 1
+    assert active[0].fcm_token == "tok-new"
+
+
+@pytest.mark.asyncio
+async def test_deregister_fcm_token(client: AsyncClient, registered_user, db_session, mock_redis):
+    """DELETE disables the device's active token (used on logout)."""
+    h = _auth(registered_user["tokens"])
+    await client.post("/v1/users/me/fcm-token", json={
+        "fcm_token": "tok-x", "device_id": "dev-9", "platform": "web"}, headers=h)
+    resp = await client.delete("/v1/users/me/fcm-token", params={"device_id": "dev-9"}, headers=h)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["disabled"] == 1
+    rows = (await db_session.execute(select(UserFCMToken))).scalars().all()
+    assert len(rows) == 1 and rows[0].disabled_at is not None
+
+
+def test_fcm_classify_and_permanent_errors():
+    """Send-error classification maps the permanently-invalid token cases."""
+    from app.services.fcm import _classify, PERMANENT_ERRORS
+
+    class UnregisteredError(Exception): pass
+    class SenderIdMismatchError(Exception): pass
+
+    assert _classify(UnregisteredError("x")) == "unregistered"
+    assert _classify(SenderIdMismatchError("x")) == "sender_id_mismatch"
+    assert _classify(Exception("Requested entity was not found")) == "unregistered"
+    assert _classify(ValueError("transient boom")) == "error"
+    assert {"unregistered", "sender_id_mismatch"} <= PERMANENT_ERRORS
+
+
+@pytest.mark.asyncio
+async def test_fcm_send_unconfigured_returns_structured_result(monkeypatch):
+    """When FCM is unconfigured, sends degrade to a structured result."""
+    from app.services import fcm
+    monkeypatch.setattr(fcm, "_get_app", lambda: None)  # force the unconfigured path
+    one = await fcm.send_to_token("tok", "title", "body")
+    assert one == {"message_id": None, "ok": False, "error": "unconfigured"}
+    batch = await fcm.send_batch(["a", "b"], "title", "body")
+    assert batch["a"] == {"message_id": None, "ok": False, "error": "unconfigured"}
+    assert batch["b"]["ok"] is False
+
+
+async def _make_admin_and_relogin(client, db_session, email: str, password: str) -> dict:
+    from sqlalchemy import update
+    from app.models.user import User
+    await db_session.execute(update(User).where(User.email == email).values(role="admin"))
+    await db_session.commit()
+    resp = await client.post("/auth/login", json={"identifier": email, "password": password})
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+
+
+@pytest.mark.asyncio
+async def test_push_health_requires_admin(client: AsyncClient, registered_user, db_session, mock_redis):
+    resp = await client.get("/v1/admin/alerts/push-health", headers=_auth(registered_user["tokens"]))
+    assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_push_health_admin_shape(client: AsyncClient, registered_user, db_session, mock_redis):
+    headers = await _make_admin_and_relogin(
+        client, db_session, registered_user["email"], registered_user["password"])
+    resp = await client.get("/v1/admin/alerts/push-health", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    for key in ("fcm_configured", "active_tokens", "disabled_tokens",
+                "consenting_recent_devices", "staleness_minutes", "recent_push"):
+        assert key in body
+    assert set(body["recent_push"].keys()) == {"sent", "failed"}
+
+
 # ─── Unit tests for alert_svc helpers ────────────────────────────────────────
 
 def test_haversine():

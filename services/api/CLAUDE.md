@@ -58,9 +58,10 @@ Always use the **venv** — all dependencies are isolated there:
 | `/ai/chat` | `routers/ai.py` | required | 7-stage RAG pipeline (POST) |
 | `/ai/health` | `routers/ai.py` | none | AI subsystem status |
 | `/v1/alerts/...` | `routers/alerts.py` | varies | Alert events, responses, evidence |
-| `/v1/users/me/fcm-token` | `routers/alerts.py` | required | Register FCM push token (POST) |
+| `/v1/users/me/fcm-token` | `routers/alerts.py` | required | Register (POST) / de-register (DELETE) FCM push token |
 | `/v1/users/me/location` | `routers/alerts.py` | required | Upsert location snapshot + geofence consent (POST) |
 | `/v1/admin/alerts/...` | `routers/admin_alerts.py` | admin | Alert management, stats, zone CRUD |
+| `/v1/admin/alerts/push-health` | `routers/admin_alerts.py` | admin | Push/fan-out health aggregates (GET) |
 | `/v1/admin/geofence` | `routers/geofence.py` | admin | Campus boundary polygon (GET/POST) |
 | `/v1/applications/...` | `routers/applications.py` | required | Campus application submissions |
 | `/v1/feed/...` | `routers/feed.py` | varies | Verification feed posts, signals, flags |
@@ -208,6 +209,19 @@ Use forward slashes in the path — backslashes are treated as escape sequences 
 - `ALERT_ZONE_RADIUS_M=1000` — initial nearby-user search radius
 - `ALERT_LOCATION_STALENESS_MINUTES=10` — max age of location snapshot for fan-out targeting
 - `ALERT_NEARBY_PAUSE_THRESHOLD=3` — responders needed to pause fan-out
+
+**Push delivery — design constraints & lifecycle** (web FCM):
+- A recipient is only targeted if it has a location snapshot newer than
+  `ALERT_LOCATION_STALENESS_MINUTES`. The web client only posts location while the app is
+  **foregrounded** (`watchPosition` in `apps/student/src/app.jsx`, throttled to one POST/90s),
+  so a closed/backgrounded device ages out of the fan-out. This is inherent to web push for
+  "nearby" targeting, not a bug — widen the window via env if needed.
+- **Token lifecycle / self-heal:** `services/fcm.py` returns a structured `SendResult`
+  (`{message_id, ok, error}`); `error` is a category from `_classify()`. During fan-out
+  (`alert_svc.py`), tokens that come back `unregistered` / `sender_id_mismatch` (see
+  `fcm.PERMANENT_ERRORS`) are auto-disabled (`UserFCMToken.disabled_at`) so future fan-outs skip
+  them. The web client refreshes its token on every authenticated load and re-mints it when the
+  Firebase `projectId` changes (project migration) — see `syncPushToken()` in `src/auth.jsx`.
 
 **Known `.env` issue** — the pre-existing `CLAUDE MESSAGE=` line (space in key name) causes a python-dotenv warning on every startup. It is cosmetic and does not break config loading.
 
