@@ -438,25 +438,51 @@ async def alert_test_push(db: AsyncSession = Depends(get_db)):
     actor-exclusion logic. Isolates 'is delivery working?' from 'is targeting
     working?'. Returns per-token success (token redacted). Remove after debugging.
     """
+    import asyncio
     from app.services import fcm as fcm_svc
 
     rows = await db.execute(
         select(UserFCMToken).where(UserFCMToken.disabled_at.is_(None))
     )
-    tokens = [t.fcm_token for t in rows.scalars().all()]
-    if not tokens:
+    toks = list(rows.scalars().all())
+    if not toks:
         return {"sent": 0, "failed": 0, "detail": "no active FCM tokens registered", "results": []}
 
-    results = await fcm_svc.send_batch(
-        tokens,
-        title="Anchor test push ✅",
-        body="If you can read this, push delivery works on this device.",
-        data={"category": "test", "deep_link": "anchor://test"},
-    )
-    out = [
-        {"token": t[:12] + "…", "platform": None, "message_id": mid, "ok": mid is not None}
-        for t, mid in results.items()
-    ]
+    app = fcm_svc._get_app()
+    if app is None:
+        return {"sent": 0, "failed": len(toks), "detail": "FCM app not initialized", "results": []}
+
+    from firebase_admin import messaging
+
+    def _send_one(token: str):
+        msg = messaging.Message(
+            notification=messaging.Notification(
+                title="Anchor test push ✅",
+                body="If you can read this, push delivery works on this device.",
+            ),
+            data={"category": "test", "deep_link": "anchor://test"},
+            token=token,
+            webpush=messaging.WebpushConfig(
+                notification=messaging.WebpushNotification(
+                    title="Anchor test push ✅",
+                    body="If you can read this, push delivery works.",
+                ),
+            ),
+        )
+        try:
+            mid = messaging.send(msg)
+            return {"message_id": mid, "ok": True, "error": None, "error_type": None}
+        except Exception as exc:
+            return {"message_id": None, "ok": False,
+                    "error": str(exc), "error_type": type(exc).__name__}
+
+    loop = asyncio.get_event_loop()
+    out = []
+    for t in toks:
+        r = await loop.run_in_executor(None, _send_one, t.fcm_token)
+        r["token"] = t.fcm_token[:12] + "…"
+        r["platform"] = t.platform.value if hasattr(t.platform, "value") else str(t.platform)
+        out.append(r)
     return {
         "sent": sum(1 for r in out if r["ok"]),
         "failed": sum(1 for r in out if not r["ok"]),
