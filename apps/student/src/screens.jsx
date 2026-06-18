@@ -747,6 +747,7 @@ function AlertScreen() {
   const [safeMarked, setSafeMarked] = _useS(false);
   const [sending, setSending] = _useS(false);
   const [gpsResult, setGpsResult] = _useS(null);
+  const [noticeMsg, setNoticeMsg] = _useS(null);
   const startRef = _useR(null);
   const rafRef = _useR(null);
   const token = localStorage.getItem('anchor_access_token');
@@ -797,6 +798,15 @@ function AlertScreen() {
       // Use cached GPS result from the pre-check that ran when the modal opened
       const gpsPayload = gpsResult || { gps_status: 'unavailable' };
       const data = await alertApiPost('/v1/alerts/trigger', gpsPayload, token);
+      // The backend returns 200 with state='rate_limited' (and a throwaway
+      // event_id that is never persisted) when the per-user daily alert limit
+      // is hit. Do NOT enter the tracking screen with that fake id — it would
+      // poll /responders forever and 404. Surface the message instead.
+      if (data.state === 'rate_limited' || !data.event_id) {
+        setNoticeMsg(data.message || 'You have already triggered an alert recently. If this is a continuing emergency, call 999.');
+        return;
+      }
+      setNoticeMsg(null);
       setAlertEventId(data.event_id);
       setActivated(true);
     } catch (e) {
@@ -888,6 +898,23 @@ function AlertScreen() {
             : 'Hold the button for four seconds. Your proctor, nearby users, and contacts will be notified.'}
         </div>
       </div>
+
+      {/* Rate-limit / notice banner */}
+      {noticeMsg && !activated && (
+        <div style={{
+          margin: '8px 20px 0', padding: '12px 14px', borderRadius: 12,
+          background: 'rgba(232,49,42,0.10)', border: '1px solid rgba(232,49,42,0.35)',
+          color: phase === 'during' ? '#FCD9D7' : '#8A1B16',
+          fontFamily: 'var(--font-sans)', fontSize: 12.5, lineHeight: 1.45,
+          display: 'flex', alignItems: 'flex-start', gap: 8,
+        }}>
+          <span style={{ flex: 1 }}>{noticeMsg}</span>
+          <button onClick={() => setNoticeMsg(null)} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'inherit', fontWeight: 700, fontSize: 14, lineHeight: 1, padding: 0,
+          }}>×</button>
+        </div>
+      )}
 
       {/* Phase tabs */}
       <div style={{ padding: '14px 20px 4px' }}>
