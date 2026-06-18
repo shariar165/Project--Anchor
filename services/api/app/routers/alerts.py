@@ -431,6 +431,39 @@ async def alert_push_diag(db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/v1/alerts/_diag/test-push")
+async def alert_test_push(db: AsyncSession = Depends(get_db)):
+    """
+    Send a test push to ALL active FCM tokens, bypassing geofence/freshness/
+    actor-exclusion logic. Isolates 'is delivery working?' from 'is targeting
+    working?'. Returns per-token success (token redacted). Remove after debugging.
+    """
+    from app.services import fcm as fcm_svc
+
+    rows = await db.execute(
+        select(UserFCMToken).where(UserFCMToken.disabled_at.is_(None))
+    )
+    tokens = [t.fcm_token for t in rows.scalars().all()]
+    if not tokens:
+        return {"sent": 0, "failed": 0, "detail": "no active FCM tokens registered", "results": []}
+
+    results = await fcm_svc.send_batch(
+        tokens,
+        title="Anchor test push ✅",
+        body="If you can read this, push delivery works on this device.",
+        data={"category": "test", "deep_link": "anchor://test"},
+    )
+    out = [
+        {"token": t[:12] + "…", "platform": None, "message_id": mid, "ok": mid is not None}
+        for t, mid in results.items()
+    ]
+    return {
+        "sent": sum(1 for r in out if r["ok"]),
+        "failed": sum(1 for r in out if not r["ok"]),
+        "results": out,
+    }
+
+
 # ─── Per-event endpoints (parameterised — must come AFTER static paths) ───────
 
 @router.get("/v1/alerts/{event_id}", response_model=AlertStatusResponse)
