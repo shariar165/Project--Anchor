@@ -389,6 +389,28 @@ async def alert_push_diag(db: AsyncSession = Depends(get_db)):
     active_tokens = await db.scalar(
         select(func.count()).select_from(UserFCMToken).where(UserFCMToken.disabled_at.is_(None))
     )
+    # Per-token detail (redacted) so we can see if a fresh token just registered
+    now_ts = datetime.now(timezone.utc)
+    def _age(dt):
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int((now_ts - dt).total_seconds())
+    tok_rows = (await db.execute(
+        select(UserFCMToken).where(UserFCMToken.disabled_at.is_(None))
+        .order_by(UserFCMToken.created_at.desc())
+    )).scalars().all()
+    token_detail = [
+        {
+            "prefix": t.fcm_token[:10],
+            "platform": t.platform.value if hasattr(t.platform, "value") else str(t.platform),
+            "user": alert_svc.compute_anonymous_hash(t.user_id)[:8],
+            "created_age_s": _age(t.created_at),
+            "seen_age_s": _age(t.last_seen_at),
+        }
+        for t in tok_rows
+    ]
     total_snaps = await db.scalar(select(func.count()).select_from(UserLocationSnapshot))
     consenting_total = await db.scalar(
         select(func.count()).select_from(UserLocationSnapshot).where(
@@ -423,6 +445,7 @@ async def alert_push_diag(db: AsyncSession = Depends(get_db)):
         "zone_radius_m": settings.alert_zone_radius_m,
         "staleness_minutes": settings.alert_location_staleness_minutes,
         "active_fcm_tokens": active_tokens or 0,
+        "token_detail": token_detail,
         "location_snapshots": total_snaps or 0,
         "consenting_total": consenting_total or 0,
         "recent_total": recent_total or 0,
