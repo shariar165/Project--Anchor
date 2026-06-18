@@ -284,21 +284,36 @@ async def trigger_alert(
     )
     phase1 = p1_result.scalars().first()
 
+    # Resolve coordinates: prefer the live GPS in the request, but fall back to
+    # the user's most recent location snapshot (kept fresh by the background
+    # watchPosition) so a momentary getCurrentPosition failure on the panic
+    # screen does not prevent zone creation + nearby fan-out.
+    eff_lat, eff_lng = body.lat, body.lng
+    eff_gps_status = GPSStatus(body.gps_status)
+    if eff_lat is None or eff_lng is None:
+        snap = await db.scalar(
+            select(UserLocationSnapshot).where(UserLocationSnapshot.user_id == token.user_id)
+        )
+        if snap and snap.lat is not None and snap.lng is not None:
+            eff_lat, eff_lng = snap.lat, snap.lng
+            if eff_gps_status == GPSStatus.unavailable:
+                eff_gps_status = GPSStatus.stale
+
     event = await alert_svc.create_alert_event(
         db,
         user_id=token.user_id,
         device_fp_hash=fp_hash,
-        lat=body.lat, lng=body.lng,
+        lat=eff_lat, lng=eff_lng,
         gps_accuracy_m=body.gps_accuracy_m,
-        gps_status=GPSStatus(body.gps_status),
+        gps_status=eff_gps_status,
         tenant_id=token.tenant_id,
         phase1_record_id=phase1.id if phase1 else None,
     )
 
     zone = None
-    if body.lat and body.lng:
+    if eff_lat and eff_lng:
         zone = await alert_svc.create_alert_zone(
-            db, body.lat, body.lng, event.event_id, token.tenant_id
+            db, eff_lat, eff_lng, event.event_id, token.tenant_id
         )
         event.alert_zone_id = zone.id
 
@@ -354,6 +369,47 @@ async def list_my_alerts(
         }
         for ev in events
     ]
+
+
+@router.get("/v1/alerts/_diag")
+async def alert_push_diag(db: AsyncSession = Depends(get_db)):
+    """
+    Non-sensitive push/fan-out diagnostics (booleans + counts only — no PII,
+    no secrets). Lets us confirm prod config without a token. Safe to remove
+    once the deployment is verified.
+    """
+    from app.config import get_settings
+    from app.services import fcm as fcm_svc
+
+    settings = get_settings()
+    fcm_app = fcm_svc._get_app()
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        minutes=settings.alert_location_staleness_minutes
+    )
+    active_tokens = await db.scalar(
+        select(func.count()).select_from(UserFCMToken).where(UserFCMToken.disabled_at.is_(None))
+    )
+    total_snaps = await db.scalar(select(func.count()).select_from(UserLocationSnapshot))
+    consenting_recent = await db.scalar(
+        select(func.count()).select_from(UserLocationSnapshot).where(
+            and_(
+                UserLocationSnapshot.geofence_consent == True,
+                UserLocationSnapshot.last_seen_at >= cutoff,
+            )
+        )
+    )
+    return {
+        "fcm_configured": fcm_app is not None,
+        "fcm_project_id": settings.fcm_project_id or None,
+        "has_fcm_json_env": bool(settings.fcm_service_account_json),
+        "has_fcm_json_path": bool(settings.fcm_service_account_json_path),
+        "daily_limit_per_user": settings.alert_daily_limit_per_user,
+        "zone_radius_m": settings.alert_zone_radius_m,
+        "staleness_minutes": settings.alert_location_staleness_minutes,
+        "active_fcm_tokens": active_tokens or 0,
+        "location_snapshots": total_snaps or 0,
+        "consenting_recent_snapshots": consenting_recent or 0,
+    }
 
 
 # ─── Per-event endpoints (parameterised — must come AFTER static paths) ───────
