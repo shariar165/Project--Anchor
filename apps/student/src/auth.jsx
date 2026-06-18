@@ -51,6 +51,23 @@ async function registerFCMToken() {
     const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
     const fcmToken = await messaging.getToken({ vapidKey: FIREBASE_VAPID_KEY, serviceWorkerRegistration: swReg });
     if (!fcmToken) return;
+
+    // Foreground messages: the service worker's onBackgroundMessage only fires
+    // when the tab is NOT focused. When the app is open/focused, FCM delivers
+    // here instead — without this handler the push would arrive silently. Show
+    // it via the SW registration so a real OS notification still appears.
+    try {
+      messaging.onMessage((payload) => {
+        const n = payload.notification || {};
+        const data = payload.data || {};
+        swReg.showNotification(n.title || 'Anchor Alert', {
+          body: n.body || 'Someone nearby needs help.',
+          tag: 'anchor-alert-' + (data.event_id || 'general'),
+          data: { url: data.deep_link || '/', event_id: data.event_id },
+          renotify: true,
+        }).catch(() => {});
+      });
+    } catch (e) { console.warn('[FCM] onMessage setup failed:', e); }
     let deviceId = localStorage.getItem('anchor_device_id');
     if (!deviceId) {
       deviceId = 'web-' + Math.random().toString(36).slice(2, 18);
