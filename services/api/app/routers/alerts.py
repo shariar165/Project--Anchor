@@ -390,6 +390,16 @@ async def alert_push_diag(db: AsyncSession = Depends(get_db)):
         select(func.count()).select_from(UserFCMToken).where(UserFCMToken.disabled_at.is_(None))
     )
     total_snaps = await db.scalar(select(func.count()).select_from(UserLocationSnapshot))
+    consenting_total = await db.scalar(
+        select(func.count()).select_from(UserLocationSnapshot).where(
+            UserLocationSnapshot.geofence_consent == True
+        )
+    )
+    recent_total = await db.scalar(
+        select(func.count()).select_from(UserLocationSnapshot).where(
+            UserLocationSnapshot.last_seen_at >= cutoff
+        )
+    )
     consenting_recent = await db.scalar(
         select(func.count()).select_from(UserLocationSnapshot).where(
             and_(
@@ -398,6 +408,12 @@ async def alert_push_diag(db: AsyncSession = Depends(get_db)):
             )
         )
     )
+    newest = await db.scalar(select(func.max(UserLocationSnapshot.last_seen_at)))
+    newest_age_seconds = None
+    if newest is not None:
+        if newest.tzinfo is None:
+            newest = newest.replace(tzinfo=timezone.utc)
+        newest_age_seconds = int((datetime.now(timezone.utc) - newest).total_seconds())
     return {
         "fcm_configured": fcm_app is not None,
         "fcm_project_id": settings.fcm_project_id or None,
@@ -408,7 +424,10 @@ async def alert_push_diag(db: AsyncSession = Depends(get_db)):
         "staleness_minutes": settings.alert_location_staleness_minutes,
         "active_fcm_tokens": active_tokens or 0,
         "location_snapshots": total_snaps or 0,
+        "consenting_total": consenting_total or 0,
+        "recent_total": recent_total or 0,
         "consenting_recent_snapshots": consenting_recent or 0,
+        "newest_snapshot_age_seconds": newest_age_seconds,
     }
 
 
