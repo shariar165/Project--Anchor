@@ -22,6 +22,7 @@ firebase-sw-env.js
 .env
 # Allow student app Firebase web config for Vercel deployment
 !apps/student/env.js
+!apps/student/firebase-sw-env.js
 
 # Claude Code local settings (machine-specific permissions)
 .claude/settings.local.json
