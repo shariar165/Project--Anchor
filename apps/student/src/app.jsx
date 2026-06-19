@@ -478,58 +478,21 @@ function RouteView() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Mount — single phone in a viewport (also responsive)
+// Mount — responsive app shell (full-bleed on mobile, centered
+// column on desktop). See .app-shell in styles.css.
 // ─────────────────────────────────────────────────────────────
 function App() {
   // Splash flow: 'splash1' → 'splash2' → 'app'
   const [stage, setStage] = useState('splash1');
 
-  // Auto-scale phone if viewport too small
-  const wrapRef = useRef(null);
-  const [scale, setScale] = useState(1);
-  useEffect(() => {
-    const measure = () => {
-      const vh = window.innerHeight;
-      const vw = window.innerWidth;
-      const targetH = 874 + 96;
-      const targetW = 402 + 80;
-      const s = Math.min(1, vh / targetH, vw / targetW);
-      setScale(s);
-    };
-    measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
-  }, []);
-
   return (
     <AppProvider>
-      <div className="viewport-bg grain">
-        <div ref={wrapRef} style={{
-          transform: `scale(${scale})`, transformOrigin: 'center center',
-          width: 402, height: 874,
-        }}>
-          <IOSDevice width={402} height={874} dark={stage === 'splash1'}>
-            {stage === 'splash1' && <Splash1 onAdvance={() => setStage('splash2')}/>}
-            {stage === 'splash2' && <Splash2 onAdvance={() => setStage('app')}/>}
-            {stage === 'app'     && <RouteView/>}
-          </IOSDevice>
-        </div>
-        <Caption/>
+      <div className="app-shell grain">
+        {stage === 'splash1' && <Splash1 onAdvance={() => setStage('splash2')}/>}
+        {stage === 'splash2' && <Splash2 onAdvance={() => setStage('app')}/>}
+        {stage === 'app'     && <RouteView/>}
       </div>
     </AppProvider>
-  );
-}
-
-function Caption() {
-  return (
-    <div style={{
-      position: 'fixed', bottom: 18, left: 0, right: 0, textAlign: 'center',
-      color: 'rgba(247,243,238,0.45)', fontFamily: 'var(--font-serif)',
-      fontStyle: 'italic', fontSize: 12, letterSpacing: '0.01em',
-      pointerEvents: 'none',
-    }}>
-      Anchor AI — Team AiVion · Daffodil International University
-    </div>
   );
 }
 
