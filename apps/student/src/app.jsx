@@ -151,6 +151,38 @@ function AppProvider({ children }) {
     if (window.syncPushToken) window.syncPushToken({ interactive: false });
   }, [auth.isAuthenticated]);
 
+  // Push deep-link: tapping an alert notification opens "/?alert=<event_id>"
+  // (cold start) or — if the app is already open — the service worker posts an
+  // "anchor-open-alert" message. Either way, land on the live map for that alert.
+  useEffect(() => {
+    const openAlert = (eventId, lat, lng) => {
+      if (!auth.isAuthenticated) return;
+      go('map', { focusAlert: eventId || undefined, lat, lng });
+    };
+    // 1) Cold start — once authenticated, read and then strip the ?alert= params
+    //    so a refresh or history navigation doesn't re-trigger it. If the session
+    //    hasn't restored yet, leave the param in place; this effect re-runs when
+    //    auth.isAuthenticated flips true.
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const a = params.get('alert');
+      if (a && auth.isAuthenticated) {
+        openAlert(a, params.get('lat'), params.get('lng'));
+        ['alert', 'lat', 'lng'].forEach(k => params.delete(k));
+        const qs = params.toString();
+        window.history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
+      }
+    } catch (_) { /* URL API unavailable */ }
+    // 2) App already open — message from the service worker's notificationclick.
+    const onMsg = (e) => {
+      if (e.data && e.data.type === 'anchor-open-alert') openAlert(e.data.eventId, e.data.lat, e.data.lng);
+    };
+    if (navigator.serviceWorker) navigator.serviceWorker.addEventListener('message', onMsg);
+    return () => {
+      if (navigator.serviceWorker) navigator.serviceWorker.removeEventListener('message', onMsg);
+    };
+  }, [auth.isAuthenticated]);
+
   useEffect(() => {
     if (!auth.isAuthenticated || !geofenceConsent) {
       if (watchIdRef.current !== null) {

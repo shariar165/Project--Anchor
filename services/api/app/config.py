@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     secret_key: str = Field(default="0" * 64)
     environment: str = "development"
     cors_origins: str = "http://localhost:8080,http://localhost:3000"
+    # Public base URL of the student web app — used to build clickable links in
+    # notifications/emails (e.g. "{frontend_url}/?alert={event_id}"). Leave blank
+    # to omit links where an absolute URL is required (the web push click handler
+    # builds its own URL from the SW origin and does not need this).
+    frontend_url: str = ""
 
     # Token TTLs (seconds)
     access_token_ttl: int = 900          # 15 min

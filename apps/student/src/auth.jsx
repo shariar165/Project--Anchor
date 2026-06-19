@@ -99,7 +99,7 @@ async function syncPushToken({ interactive = false } = {}) {
           swReg.showNotification(n.title || 'Anchor Alert', {
             body: n.body || 'Someone nearby needs help.',
             tag: 'anchor-alert-' + (data.event_id || 'general'),
-            data: { url: data.deep_link || '/', event_id: data.event_id },
+            data: { event_id: data.event_id, lat: data.lat, lng: data.lng },
             renotify: true,
           }).catch(() => {});
         });

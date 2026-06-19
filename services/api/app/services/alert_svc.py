@@ -339,7 +339,7 @@ async def notify_proctor(event_id: uuid.UUID) -> None:
                         data={
                             "event_id": str(event.event_id),
                             "category": "campus_alert",
-                            "deep_link": f"anchor://alerts/{event.event_id}",
+                            "deep_link": f"/?alert={event.event_id}",
                             "lat": lat_str,
                             "lng": lng_str,
                         },
@@ -364,11 +364,16 @@ async def notify_proctor(event_id: uuid.UUID) -> None:
                 # Email
                 if proctor.email:
                     subject = "Anchor AI — Active campus alert"
+                    frontend_url = get_settings().frontend_url.rstrip("/")
+                    open_link = (
+                        f"<p><a href='{frontend_url}/?alert={event.event_id}'>Open in Anchor</a></p>"
+                        if frontend_url else ""
+                    )
                     html = (
                         f"<p>An emergency alert has been triggered on campus at <b>{ts}</b>.</p>"
                         f"<p>Approximate location: {lat_str}, {lng_str}</p>"
                         f"<p>Event ID: <code>{event.event_id}</code></p>"
-                        f"<p><a href='anchor://alerts/{event.event_id}'>Open in Anchor</a></p>"
+                        f"{open_link}"
                     )
                     await send_email(proctor.email, subject, html)
                     notif = AlertNotification(
@@ -439,7 +444,7 @@ async def notify_nearby_users(event_id: uuid.UUID, zone_id: uuid.UUID) -> None:
                         data={
                             "event_id": str(event.event_id),
                             "category": "nearby_alert",
-                            "deep_link": f"anchor://alerts/{event.event_id}",
+                            "deep_link": f"/?alert={event.event_id}",
                             "lat": lat_str,
                             "lng": lng_str,
                         },

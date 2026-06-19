@@ -469,12 +469,18 @@ const LEGEND_ENTRIES = [
   ['black',    'Assault Report',    '#374151'],
 ];
 
-function MapScreen() {
+function MapScreen({ params } = {}) {
   const mapContainerRef = React.useRef(null);
   const leafletMapRef   = React.useRef(null);
   const zoneLayersRef   = React.useRef([]);
   const userMarkerRef   = React.useRef(null);
+  const alertMarkerRef  = React.useRef(null);
   const userLocRef      = React.useRef({ lat: 23.7450, lng: 90.3718 });
+
+  // When opened from an alert push (deep link), focus the emergency location.
+  const focusLat = params ? parseFloat(params.lat) : NaN;
+  const focusLng = params ? parseFloat(params.lng) : NaN;
+  const hasFocus = isFinite(focusLat) && isFinite(focusLng);
 
   const [radiusKm,    setRadiusKm]    = React.useState(10);
   const [userLoc,     setUserLoc]     = React.useState({ lat: 23.7450, lng: 90.3718 });
@@ -525,7 +531,8 @@ function MapScreen() {
           const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
           userLocRef.current = loc;
           setUserLoc(loc);
-          map.setView([loc.lat, loc.lng], 14);
+          // Don't yank the view away from an alert we were asked to focus.
+          if (!hasFocus) map.setView([loc.lat, loc.lng], 14);
           setLocStatus('found');
           fetchZones(loc.lat, loc.lng, 10);
         },
@@ -543,6 +550,22 @@ function MapScreen() {
       if (leafletMapRef.current) { leafletMapRef.current.remove(); leafletMapRef.current = null; }
     };
   }, []);
+
+  // Center on the alert location and drop a marker when arriving from a push.
+  React.useEffect(() => {
+    const map = leafletMapRef.current;
+    if (!map || !hasFocus) return;
+    map.setView([focusLat, focusLng], 16);
+    if (alertMarkerRef.current) { try { map.removeLayer(alertMarkerRef.current); } catch (_) {} }
+    alertMarkerRef.current = L.circleMarker([focusLat, focusLng], {
+      radius: 11, color: '#E8312A', fillColor: '#E8312A', fillOpacity: 0.85, weight: 3,
+    }).addTo(map)
+      .bindPopup('<b style="color:#E8312A">Active alert here</b><br>Someone nearby needs help. Tap zones for details.')
+      .openPopup();
+    return () => {
+      if (alertMarkerRef.current) { try { map.removeLayer(alertMarkerRef.current); } catch (_) {} alertMarkerRef.current = null; }
+    };
+  }, [focusLat, focusLng]);
 
   // Re-render zones on the map whenever zones list changes
   React.useEffect(() => {
