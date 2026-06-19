@@ -130,6 +130,8 @@ FCM web push requires three things to work end-to-end:
 
 3. **Backend** — `FCM_SERVICE_ACCOUNT_JSON_PATH` set in `services/api/.env` pointing to the Firebase Admin SDK service account JSON. FCM service (`services/api/app/services/fcm.py`) degrades gracefully if unconfigured.
 
+> **Invariant — same project on both sides.** The client (`env.js` / `firebase-sw-env.js` / VAPID key) and the backend service-account JSON **must be the same Firebase project** (currently `project-anchor-e008b`, sender `621805042876`). A mismatch makes the Admin SDK reject every token as `SenderIdMismatch`, so no notification is ever delivered. Verify alignment via `GET /v1/admin/alerts/push-health` → `project_match: true`.
+
 ### Alert Fan-Out Chain
 
 The complete path from button press to push notification:

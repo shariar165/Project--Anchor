@@ -14,10 +14,11 @@ logger = logging.getLogger(__name__)
 
 _firebase_app = None
 _init_attempted = False
+_credential_project_id: str | None = None
 
 
 def _get_app():
-    global _firebase_app, _init_attempted
+    global _firebase_app, _init_attempted, _credential_project_id
     if _init_attempted:
         return _firebase_app
     _init_attempted = True
@@ -35,8 +36,21 @@ def _get_app():
         else:
             logger.warning("[FCM] FCM not configured — push disabled")
             return None
+        # The Admin SDK authenticates against the project_id INSIDE the credential,
+        # not FCM_PROJECT_ID. Capture it so callers/health checks can detect a
+        # mismatch with the client's project (the cause of every push failing as
+        # SenderIdMismatch).
+        _credential_project_id = getattr(cred, "project_id", None)
         _firebase_app = firebase_admin.initialize_app(cred)
-        logger.info("[FCM] Firebase app initialized for project %s", settings.fcm_project_id)
+        if _credential_project_id and settings.fcm_project_id \
+                and _credential_project_id != settings.fcm_project_id:
+            logger.warning(
+                "[FCM] Project mismatch — service-account credential is for project %r but "
+                "FCM_PROJECT_ID is %r. Pushes to tokens minted by a different project will fail "
+                "as SenderIdMismatch.",
+                _credential_project_id, settings.fcm_project_id,
+            )
+        logger.info("[FCM] Firebase app initialized for project %s", _credential_project_id)
         return _firebase_app
     except ImportError:
         logger.warning("[FCM] firebase-admin not installed — push disabled")
@@ -44,6 +58,14 @@ def _get_app():
     except Exception as exc:
         logger.warning("[FCM] Firebase init failed: %s — push disabled", exc)
         return None
+
+
+def get_credential_project_id() -> str | None:
+    """The Firebase project the Admin SDK is actually authenticated for (from the
+    service-account JSON), or None if FCM is unconfigured/uninitialized. Use this —
+    not FCM_PROJECT_ID — to verify the backend matches the client's project."""
+    _get_app()
+    return _credential_project_id
 
 
 # Result shape returned by send_to_token / send_batch.

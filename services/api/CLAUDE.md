@@ -200,10 +200,20 @@ async def _publish(client, headers, resource_id, prefix="/v1/notices"):
 
 **FCM config** (required for push notifications):
 ```
-FCM_PROJECT_ID=project-anchor-76170
-FCM_SERVICE_ACCOUNT_JSON_PATH=C:/Users/Acer/Downloads/project-anchor-76170-firebase-adminsdk-fbsvc-e6d1d3d97a.json
+FCM_PROJECT_ID=project-anchor-e008b
+FCM_SERVICE_ACCOUNT_JSON_PATH=C:/Users/Acer/Downloads/<project-anchor-e008b-firebase-adminsdk>.json
 ```
 Use forward slashes in the path — backslashes are treated as escape sequences by python-dotenv.
+On Railway/prod, set `FCM_SERVICE_ACCOUNT_JSON` to the full JSON content instead (the file path
+isn't present there); `fcm.py` prefers the inline content when set.
+
+> **Invariant — same project on both sides.** This service-account JSON **must** be for the same
+> Firebase project as the client (`apps/student/env.js` / `firebase-sw-env.js` / VAPID key —
+> currently `project-anchor-e008b`). The Admin SDK authenticates against the `project_id` *inside
+> the JSON*, not `FCM_PROJECT_ID` (which is only used for logging/health). If the JSON is for a
+> different project than the client, every push fails as `SenderIdMismatch` and the token gets
+> auto-disabled — i.e. nothing is ever delivered on any device. `fcm._get_app()` logs a WARNING on
+> mismatch; `GET /v1/admin/alerts/push-health` reports `credential_project_id` and `project_match`.
 
 **Alert fan-out tuning** (all in `app/config.py`, safe to override in `.env`):
 - `ALERT_ZONE_RADIUS_M=1000` — initial nearby-user search radius

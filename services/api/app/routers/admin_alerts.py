@@ -56,6 +56,12 @@ async def push_health(
 
     settings = get_settings()
     fcm_app = fcm_svc._get_app()
+    # The project the Admin SDK is actually authenticated for (from the
+    # service-account JSON) — this must match the client's Firebase project or
+    # every push fails as SenderIdMismatch.
+    EXPECTED_CLIENT_PROJECT = "project-anchor-e008b"
+    credential_project_id = fcm_svc.get_credential_project_id()
+    project_match = bool(credential_project_id) and credential_project_id == EXPECTED_CLIENT_PROJECT
     cutoff = _now() - timedelta(minutes=settings.alert_location_staleness_minutes)
     day_ago = _now() - timedelta(hours=24)
 
@@ -94,6 +100,9 @@ async def push_health(
     return {
         "fcm_configured": fcm_app is not None,
         "fcm_project_id": settings.fcm_project_id or None,
+        "credential_project_id": credential_project_id,
+        "expected_client_project": EXPECTED_CLIENT_PROJECT,
+        "project_match": project_match,
         "active_tokens": active_tokens or 0,
         "disabled_tokens": disabled_tokens or 0,
         "consenting_recent_devices": consenting_recent or 0,
