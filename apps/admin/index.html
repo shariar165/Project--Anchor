@@ -9370,7 +9370,7 @@ function CommandBar({ termId, version, entries, onEntryLockChange, onResolved })
       };
     }
 
-    m = t.match(/^\/move\s+(\S+)\s+(\S+)\s*[→->]\s*(\w+)\s+(\d+)/i);
+    m = t.match(/^\/move\s+(\S+)\s+(\S+)\s*(?:→|->|>)\s*(\w+)\s+(\d+)/i);
     if (m) {
       const [,code,sec,dayStr,slotStr] = m;
       const dayKey = dayStr.toLowerCase();
