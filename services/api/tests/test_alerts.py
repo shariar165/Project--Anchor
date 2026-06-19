@@ -540,9 +540,39 @@ async def test_push_health_admin_shape(client: AsyncClient, registered_user, db_
     assert resp.status_code == 200, resp.text
     body = resp.json()
     for key in ("fcm_configured", "active_tokens", "disabled_tokens",
-                "consenting_recent_devices", "staleness_minutes", "recent_push"):
+                "consenting_recent_devices", "staleness_minutes", "recent_push",
+                "credential_project_id", "expected_client_project", "project_match"):
         assert key in body
     assert set(body["recent_push"].keys()) == {"sent", "failed"}
+    # Unconfigured in tests → no credential project, so it cannot match the client.
+    assert body["credential_project_id"] is None
+    assert body["project_match"] is False
+
+
+@pytest.mark.asyncio
+async def test_push_health_project_match(client: AsyncClient, registered_user, db_session, mock_redis, monkeypatch):
+    """The core regression guard: project_match is true ONLY when the backend's
+    credential project equals the client's project, and false on a mismatch
+    (the SenderIdMismatch bug that broke every push)."""
+    from app.services import fcm as fcm_svc
+    headers = await _make_admin_and_relogin(
+        client, db_session, registered_user["email"], registered_user["password"])
+
+    # Simulate a configured credential whose project matches the client.
+    monkeypatch.setattr(fcm_svc, "_get_app", lambda: object())
+    monkeypatch.setattr(fcm_svc, "get_credential_project_id", lambda: "project-anchor-e008b")
+    resp = await client.get("/v1/admin/alerts/push-health", headers=headers)
+    body = resp.json()
+    assert body["fcm_configured"] is True
+    assert body["credential_project_id"] == "project-anchor-e008b"
+    assert body["project_match"] is True
+
+    # Simulate the original bug: credential for the OLD project.
+    monkeypatch.setattr(fcm_svc, "get_credential_project_id", lambda: "project-anchor-76170")
+    resp = await client.get("/v1/admin/alerts/push-health", headers=headers)
+    body = resp.json()
+    assert body["credential_project_id"] == "project-anchor-76170"
+    assert body["project_match"] is False
 
 
 # ─── Unit tests for alert_svc helpers ────────────────────────────────────────
