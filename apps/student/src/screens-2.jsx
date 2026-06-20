@@ -477,9 +477,22 @@ function MapScreen({ params } = {}) {
   const alertMarkerRef  = React.useRef(null);
   const userLocRef      = React.useRef({ lat: 23.7450, lng: 90.3718 });
 
-  // When opened from an alert push (deep link), focus the emergency location.
-  const focusLat = params ? parseFloat(params.lat) : NaN;
-  const focusLng = params ? parseFloat(params.lng) : NaN;
+  // When opened from an alert push (deep link), focus the emergency location and
+  // surface the responder confirmation flow. focusAlert carries the event id; lat/lng
+  // (from the push payload) may be absent/stale, so we also fetch authoritative
+  // coordinates + state from the backend below.
+  const eventId = params?.focusAlert || null;
+  const responderToken = (typeof localStorage !== 'undefined') ? localStorage.getItem('anchor_access_token') : null;
+  const [alertInfo, setAlertInfo] = React.useState(null);   // { lat, lng, state } from GET /v1/alerts/{id}
+  // Responder flow state machine: idle | loading | prompt | sending | responded | cannot | closed | error
+  const [respondStatus, setRespondStatus] = React.useState((eventId && responderToken) ? 'loading' : 'idle');
+  const [respondError,  setRespondError]  = React.useState(null);
+
+  // Prefer authoritative backend coordinates; fall back to the push params.
+  const pushLat = params ? parseFloat(params.lat) : NaN;
+  const pushLng = params ? parseFloat(params.lng) : NaN;
+  const focusLat = isFinite(pushLat) ? pushLat : (alertInfo && isFinite(alertInfo.lat) ? alertInfo.lat : NaN);
+  const focusLng = isFinite(pushLng) ? pushLng : (alertInfo && isFinite(alertInfo.lng) ? alertInfo.lng : NaN);
   const hasFocus = isFinite(focusLat) && isFinite(focusLng);
 
   const [radiusKm,    setRadiusKm]    = React.useState(10);
@@ -566,6 +579,65 @@ function MapScreen({ params } = {}) {
       if (alertMarkerRef.current) { try { map.removeLayer(alertMarkerRef.current); } catch (_) {} alertMarkerRef.current = null; }
     };
   }, [focusLat, focusLng]);
+
+  // Responder flow — fetch the authoritative alert location + state so we know
+  // whether to prompt the user to help and where the person actually is.
+  React.useEffect(() => {
+    if (!eventId || !responderToken) { setRespondStatus('idle'); return; }
+    let cancelled = false;
+    setRespondStatus('loading');
+    setRespondError(null);
+    alertApiGet('/v1/alerts/' + eventId, responderToken)
+      .then(d => {
+        if (cancelled) return;
+        setAlertInfo({ lat: d.lat, lng: d.lng, state: d.state });
+        setRespondStatus(d.state === 'active' ? 'prompt' : 'closed');
+      })
+      .catch(e => {
+        if (cancelled) return;
+        const msg = String(e && e.message || '').toLowerCase();
+        if (msg.includes('not found') || msg.includes('404')) setRespondStatus('closed');
+        else { setRespondError('Could not load this alert.'); setRespondStatus('error'); }
+      });
+    return () => { cancelled = true; };
+  }, [eventId, responderToken]);
+
+  // Distance from this responder to the person who needs help — only when we have a
+  // real GPS fix (userLocRef defaults to a campus coordinate until located).
+  function responderDistanceM() {
+    const a = alertInfo;
+    const me = userLocRef.current;
+    if (a && isFinite(a.lat) && isFinite(a.lng) && me && locStatus === 'found') {
+      return Math.round(haversineDistance(me.lat, me.lng, a.lat, a.lng));
+    }
+    return null;
+  }
+
+  async function handleRespondYes() {
+    if (!eventId || !responderToken) return;
+    setRespondError(null);
+    setRespondStatus('sending');
+    try {
+      await alertApiPost('/v1/alerts/' + eventId + '/respond',
+        { response_type: 'responding', distance_m: responderDistanceM() }, responderToken);
+      setRespondStatus('responded');
+    } catch (e) {
+      const msg = String(e && e.message || '').toLowerCase();
+      if (msg.includes('not found') || msg.includes('404')) setRespondStatus('closed');
+      else { setRespondError('Could not send your response. Please try again.'); setRespondStatus('prompt'); }
+    }
+  }
+
+  async function handleRespondNo() {
+    if (eventId && responderToken) {
+      // best-effort — record the decline so the fan-out can prioritise others
+      try {
+        await alertApiPost('/v1/alerts/' + eventId + '/respond',
+          { response_type: 'cannot_help', distance_m: null }, responderToken);
+      } catch (_) { /* non-blocking */ }
+    }
+    setRespondStatus('cannot');
+  }
 
   // Re-render zones on the map whenever zones list changes
   React.useEffect(() => {
@@ -754,6 +826,171 @@ function MapScreen({ params } = {}) {
           );
         })}
       </div>
+
+      {/* Responder confirmation sheet — shown when arriving from a nearby-alert push */}
+      {eventId && respondStatus !== 'idle' && (
+        <AlertRespondSheet
+          status={respondStatus}
+          error={respondError}
+          distanceTxt={(() => {
+            const d = responderDistanceM();
+            if (d == null) return null;
+            return d < 1000 ? Math.round(d) + 'm away' : (d / 1000).toFixed(1) + 'km away';
+          })()}
+          onYes={handleRespondYes}
+          onNo={handleRespondNo}
+          onClose={() => setRespondStatus('idle')}
+        />
+      )}
+    </>
+  );
+}
+
+// Bottom-sheet a nearby user sees after tapping an emergency push. Lets them confirm
+// "I'm coming to help" (→ POST /respond responding) so the alerting user's live map
+// shows a real responder instead of "0 responding".
+function AlertRespondSheet({ status, error, distanceTxt, onYes, onNo, onClose }) {
+  const sending = status === 'sending';
+  const sheet = (children) => (
+    <div style={{ position:'fixed', inset:0, zIndex:9998, background:'rgba(11,29,53,0.55)',
+                  backdropFilter:'blur(4px)', display:'flex', alignItems:'flex-end', justifyContent:'center' }}>
+      <div style={{ background:'var(--cream)', borderRadius:'24px 24px 0 0', padding:'24px 24px 36px',
+                    width:'100%', maxWidth:402, boxSizing:'border-box' }}>
+        <div style={{ width:40, height:4, borderRadius:999, background:'var(--mist)', margin:'0 auto 20px' }}/>
+        {children}
+      </div>
+    </div>
+  );
+
+  if (status === 'loading') {
+    return sheet(
+      <div style={{ textAlign:'center', padding:'8px 0 4px', color:'var(--muted)',
+                    fontSize:14, fontFamily:'var(--font-sans)' }}>
+        Loading alert…
+      </div>
+    );
+  }
+
+  if (status === 'responded') {
+    return sheet(
+      <>
+        <div style={{ width:52, height:52, borderRadius:999, margin:'0 auto 14px',
+                      background:'rgba(74,107,92,0.15)', border:'1px solid rgba(74,107,92,0.4)',
+                      display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <IconCheck size={26} sw={2.4} stroke="var(--sage)"/>
+        </div>
+        <div style={{ fontSize:21, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)',
+                      textAlign:'center', marginBottom:8 }}>You're on the way</div>
+        <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.6, textAlign:'center',
+                    fontFamily:'var(--font-sans)', marginBottom:20 }}>
+          They've been told that help is coming. The map shows where they are — head over safely.
+          If the situation looks dangerous, call the authorities.
+        </p>
+        <a href="tel:999" style={{ display:'block', textAlign:'center', textDecoration:'none',
+            marginBottom:10, padding:'13px 0', borderRadius:12, background:'var(--ember)', color:'#fff',
+            fontSize:15, fontWeight:600, fontFamily:'var(--font-sans)' }}>
+          Call 999 (Police)
+        </a>
+        <button onClick={onClose} className="btn"
+          style={{ width:'100%', height:44, borderRadius:12, fontSize:14, background:'transparent',
+                   border:'none', cursor:'pointer', color:'var(--muted)', fontFamily:'var(--font-sans)' }}>
+          Done
+        </button>
+      </>
+    );
+  }
+
+  if (status === 'cannot') {
+    return sheet(
+      <>
+        <div style={{ fontSize:20, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)',
+                      marginBottom:8 }}>No problem</div>
+        <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.6,
+                    fontFamily:'var(--font-sans)', marginBottom:20 }}>
+          Thanks for letting us know. We'll keep notifying others nearby.
+        </p>
+        <button onClick={onClose} className="btn btn-primary"
+          style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600 }}>Close</button>
+      </>
+    );
+  }
+
+  if (status === 'closed') {
+    return sheet(
+      <>
+        <div style={{ fontSize:20, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)',
+                      marginBottom:8 }}>Alert no longer active</div>
+        <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.6,
+                    fontFamily:'var(--font-sans)', marginBottom:20 }}>
+          This person may already be safe, or the alert has expired. No action is needed.
+        </p>
+        <button onClick={onClose} className="btn btn-primary"
+          style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600 }}>Close</button>
+      </>
+    );
+  }
+
+  if (status === 'error') {
+    return sheet(
+      <>
+        <div style={{ fontSize:20, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)',
+                      marginBottom:8 }}>Couldn't load the alert</div>
+        <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.6,
+                    fontFamily:'var(--font-sans)', marginBottom:20 }}>
+          {error || 'Something went wrong. Please check your connection and try again.'}
+        </p>
+        <button onClick={onClose} className="btn btn-primary"
+          style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600 }}>Close</button>
+      </>
+    );
+  }
+
+  // status === 'prompt' | 'sending'
+  return sheet(
+    <>
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+        <div style={{ width:44, height:44, borderRadius:999, flexShrink:0,
+                      background:'rgba(232,49,42,0.14)', border:'1px solid rgba(232,49,42,0.4)',
+                      display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <IconAlert size={20} stroke="#E8312A"/>
+        </div>
+        <div>
+          <div style={{ fontSize:19, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)', lineHeight:1.15 }}>
+            Someone nearby needs help
+          </div>
+          {distanceTxt && (
+            <div style={{ fontSize:12.5, color:'var(--ember)', fontWeight:600, marginTop:2,
+                          fontFamily:'var(--font-sans)' }}>{distanceTxt}</div>
+          )}
+        </div>
+      </div>
+      <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.6,
+                  fontFamily:'var(--font-sans)', marginBottom: error ? 14 : 22 }}>
+        A nearby user just triggered an emergency alert. If you can safely reach them, let them
+        know you're coming — they'll see that help is on the way.
+      </p>
+
+      {error && (
+        <div style={{ marginBottom:16, padding:'11px 13px', borderRadius:12,
+                      background:'rgba(196,69,54,0.08)', border:'1px solid rgba(196,69,54,0.22)',
+                      color:'var(--ember)', fontSize:12.5, lineHeight:1.5, fontFamily:'var(--font-sans)' }}>
+          {error}
+        </div>
+      )}
+
+      <button onClick={onYes} disabled={sending}
+        style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600, marginBottom:10,
+                 background:'var(--ember)', color:'#fff', border:'none',
+                 cursor: sending ? 'default' : 'pointer', opacity: sending ? 0.7 : 1,
+                 fontFamily:'var(--font-sans)' }}>
+        {sending ? 'Sending…' : "I'm coming to help"}
+      </button>
+      <button onClick={onNo} disabled={sending}
+        style={{ width:'100%', height:42, borderRadius:12, fontSize:14,
+                 background:'transparent', border:'none', cursor: sending ? 'default' : 'pointer',
+                 color:'var(--muted)', fontFamily:'var(--font-sans)' }}>
+        I can't right now
+      </button>
     </>
   );
 }

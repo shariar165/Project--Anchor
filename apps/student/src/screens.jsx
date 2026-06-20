@@ -1294,6 +1294,27 @@ function AlertDuring({ holding, progress, activated, eventId, gpsResult, token, 
         {/* Live tactical map — your location, fan-out zone, responders */}
         <AlertLiveMap eventId={eventId} gpsResult={gpsResult} token={token} onCount={onCount}/>
 
+        {/* "Help is coming" banner — appears the moment a nearby user confirms */}
+        {responderCount > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: '12px 14px', borderRadius: 12,
+            background: 'rgba(74,107,92,0.18)', border: '1px solid rgba(74,107,92,0.5)',
+          }}>
+            <div style={{
+              width: 30, height: 30, borderRadius: 999, flexShrink: 0,
+              background: 'rgba(74,107,92,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <IconCheck size={16} sw={2.6} stroke="#9FCFBD"/>
+            </div>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#9FCFBD' }}>
+              {responderCount === 1
+                ? 'Someone is coming to help'
+                : `${responderCount} people are coming to help`}
+            </div>
+          </div>
+        )}
+
         {/* Responder count */}
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
