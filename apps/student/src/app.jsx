@@ -28,8 +28,10 @@ function GeofenceConsentModal({ onAccept, onDecline }) {
         <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.65,
                     fontFamily:'var(--font-sans)', marginBottom:24 }}>
           Anchor can notify you when someone near you triggers an emergency alert.
-          Your location is shared anonymously and never stored beyond 10 minutes.
-          You can turn this off at any time in Settings.
+          To do this we'll ask for two permissions next — <strong>location</strong>{' '}
+          (shared anonymously, never stored beyond 10 minutes) and{' '}
+          <strong>notifications</strong> (so the alert can pop up on your phone).
+          You can turn both off at any time in Settings.
         </p>
         <button onClick={onAccept} className="btn btn-primary"
           style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600, marginBottom:10 }}>
@@ -103,7 +105,14 @@ function AppProvider({ children }) {
     setAuth(newAuth);
     localStorage.setItem('anchor_auth', JSON.stringify(newAuth));
     if (userData.role === 'user') setMode('country');
-    if (localStorage.getItem('anchor_geofence_consent_answered') !== 'true') {
+    // Show the consent modal on first login, AND re-show it for a device that
+    // consented to location earlier but never granted notification permission
+    // (permission still 'default') — otherwise that device would never get a
+    // token and never receive a push, with no way back to the in-app opt-in.
+    const answered = localStorage.getItem('anchor_geofence_consent_answered') === 'true';
+    const consented = localStorage.getItem('anchor_geofence_consent') === 'true';
+    const notifUngranted = typeof Notification === 'undefined' || Notification.permission === 'default';
+    if (!answered || (consented && notifUngranted)) {
       setShowGeofencePrompt(true);
     }
   };
@@ -224,7 +233,22 @@ function AppProvider({ children }) {
       {children}
       {showGeofencePrompt && (
         <GeofenceConsentModal
-          onAccept={() => {
+          onAccept={async () => {
+            // Receiving an alert fan-out needs BOTH location consent and a
+            // registered FCM token. Request the two browser permissions in
+            // sequence (awaiting each) so they never collide — Chrome shows one
+            // permission prompt at a time and silently drops simultaneous ones.
+            // Step 1 — location permission FIRST. Resolve on success OR error so
+            // a denial doesn't hang the flow; this surfaces and waits out the
+            // geolocation prompt before we ask for anything else.
+            await new Promise((res) => {
+              if (!navigator.geolocation) return res();
+              navigator.geolocation.getCurrentPosition(res, res, { timeout: 10000, maximumAge: 60000 });
+            });
+            // Step 2 — notification permission SECOND, only after location is done.
+            try { if (window.syncPushToken) await window.syncPushToken({ interactive: true }); } catch (_) { /* best-effort */ }
+            // Step 3 — persist + start the location watcher (permission already
+            // granted above, so watchPosition won't re-prompt).
             localStorage.setItem('anchor_geofence_consent', 'true');
             localStorage.setItem('anchor_geofence_consent_answered', 'true');
             setGeofenceConsent(true);

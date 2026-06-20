@@ -135,9 +135,12 @@ async function deregisterPushToken() {
   } catch (_) { /* best-effort */ }
 }
 
-// Back-compat: login paths call registerFCMToken(). Login is a user gesture, so
-// allow the first-time permission prompt there.
-function registerFCMToken() { return syncPushToken({ interactive: true }); }
+// Back-compat: login paths call registerFCMToken(). This is now a SILENT refresh
+// — it only registers a token if notification permission was already granted, and
+// never shows a prompt. The first-time, interactive opt-in is driven solely by the
+// GeofenceConsentModal (location → notifications, in sequence) and the Profile
+// toggle, so nothing at login collides with those prompts.
+function registerFCMToken() { return syncPushToken({ interactive: false }); }
 
 // Expose for app.jsx (auto-refresh on load) and ProfileScreen (enable toggle).
 window.syncPushToken = syncPushToken;
