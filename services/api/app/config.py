@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     notice_ai_model: str = "qwen3:1.7b"
 
+    # RAG service (the /ai/chat proxy target). rag_internal_secret must match
+    # RAG_INTERNAL_SECRET set on the services/rag side, or RAG returns 403.
+    rag_service_url: str = "http://localhost:8001"
+    rag_internal_secret: str = ""
+
     # HIBP
     hibp_check_enabled: bool = True
 
@@ -90,7 +95,11 @@ class Settings(BaseSettings):
     alert_zone_fallback_radius_m: int = 2000
     alert_nearby_batch_size: int = 50
     alert_nearby_pause_threshold: int = 3
-    alert_location_staleness_minutes: int = 10
+    # Max age of a user's location snapshot to still target them in a fan-out. The web
+    # client only posts location while foregrounded (watchPosition, throttled), so a
+    # short window silently drops any phone that isn't actively open. 30 min keeps
+    # recently-active devices eligible without targeting stale positions.
+    alert_location_staleness_minutes: int = 30
     alert_false_ban_days: int = 30
     # Hex-encoded 32-byte keys — must be set in production
     alert_actor_hmac_key: str = Field(default="0" * 64)

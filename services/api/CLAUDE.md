@@ -217,7 +217,7 @@ isn't present there); `fcm.py` prefers the inline content when set.
 
 **Alert fan-out tuning** (all in `app/config.py`, safe to override in `.env`):
 - `ALERT_ZONE_RADIUS_M=1000` — initial nearby-user search radius
-- `ALERT_LOCATION_STALENESS_MINUTES=10` — max age of location snapshot for fan-out targeting
+- `ALERT_LOCATION_STALENESS_MINUTES=30` — max age of location snapshot for fan-out targeting (raised from 10: the web client only posts location while foregrounded, so a short window silently drops phones that aren't actively open)
 - `ALERT_NEARBY_PAUSE_THRESHOLD=3` — responders needed to pause fan-out
 
 **Push delivery — design constraints & lifecycle** (web FCM):

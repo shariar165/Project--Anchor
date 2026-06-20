@@ -1291,6 +1291,14 @@ function NoticesScreen() {
                 {n.body.length > 280 ? n.body.slice(0, 280) + '…' : n.body}
               </div>
             </div>
+            <div style={{ marginTop: 10 }}>
+              <DownloadMenu
+                path={`/v1/notices/${n.id}/export`}
+                stem={`notice-${String(n.id).slice(0, 8)}`}
+                label="Download notice"
+                accent="var(--sage)"
+              />
+            </div>
           </div>
         ))}
       </div>
@@ -1315,26 +1323,92 @@ function ProfileScreen() {
   const [draftPhone, setDraftPhone] = React.useState('');
   const [draftDept, setDraftDept] = React.useState('');
 
-  // Push-notification opt-in. 'default' | 'granted' | 'denied' | 'unsupported'.
+  // Push-notification opt-in. Driven by window.getPushCapability().reason so iOS /
+  // insecure-context devices show actionable guidance instead of a dead-end toggle.
+  // Values: 'granted'|'default'|'ok'|'denied'|'unsupported'|'ios-needs-install'|'ios-chrome'|'insecure-context'.
   const [pushState, setPushState] = React.useState(
-    typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
+    () => (window.getPushCapability ? window.getPushCapability().reason : 'unsupported')
   );
   const pushEnabled = pushState === 'granted';
+  // Only environments where tapping can actually do something are interactive.
+  const pushActionable = ['granted', 'default', 'ok', 'denied'].includes(pushState);
   const enablePush = async () => {
     if (!window.syncPushToken) { setPushState('unsupported'); return; }
     const r = await window.syncPushToken({ interactive: true });  // user-gesture call
     setPushState(
       r === 'granted' ? 'granted'
       : r === 'blocked' ? 'denied'
-      : r === 'unsupported' ? 'unsupported'
-      : (typeof Notification !== 'undefined' ? Notification.permission : 'error')
+      : (window.getPushCapability ? window.getPushCapability().reason : r)
     );
   };
   const pushSubtext =
-    pushState === 'granted'     ? 'Enabled on this device'
-    : pushState === 'denied'    ? 'Blocked — allow notifications in browser settings'
-    : pushState === 'unsupported' ? 'Not supported on this browser'
+    pushState === 'granted'            ? 'Enabled on this device'
+    : pushState === 'denied'           ? 'Blocked — allow notifications in your browser settings'
+    : pushState === 'ios-needs-install' ? 'On iPhone: Share → Add to Home Screen, then open Anchor from the icon'
+    : pushState === 'ios-chrome'       ? 'On iPhone, open Anchor in Safari, then Add to Home Screen'
+    : pushState === 'insecure-context' ? 'Needs a secure (https) connection'
+    : pushState === 'unsupported'      ? 'Not supported on this browser'
     : 'Tap to receive emergency push alerts';
+
+  // Location consent toggle. Enabling must actually request geolocation permission
+  // and post the first snapshot — otherwise the device is marked "consented" but
+  // never appears in the fan-out (no fresh snapshot) and shows "no GPS" to operators.
+  const [locBlocked, setLocBlocked] = React.useState(false);
+  const locSubtext =
+    locBlocked        ? 'Location blocked — enable it in your browser settings'
+    : geofenceConsent ? 'Sharing anonymous location for alert fan-out'
+    : 'Share anonymous location for alert fan-out';
+  const toggleLocation = async () => {
+    if (geofenceConsent) {
+      localStorage.setItem('anchor_geofence_consent', 'false');
+      localStorage.setItem('anchor_geofence_consent_answered', 'true');
+      setGeofenceConsent(false);
+      setLocBlocked(false);
+      return;
+    }
+    const position = await new Promise((res) => {
+      if (!navigator.geolocation) return res(null);
+      navigator.geolocation.getCurrentPosition((p) => res(p), () => res(null),
+        { timeout: 10000, maximumAge: 60000 });
+    });
+    if (!position) { setLocBlocked(true); return; }
+    localStorage.setItem('anchor_geofence_consent', 'true');
+    localStorage.setItem('anchor_geofence_consent_answered', 'true');
+    setGeofenceConsent(true);
+    setLocBlocked(false);
+    const t = localStorage.getItem('anchor_access_token');
+    if (t) {
+      fetch((window.ANCHOR_API_URL || 'http://localhost:8000') + '/v1/users/me/location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t },
+        body: JSON.stringify({ lat: position.coords.latitude, lng: position.coords.longitude, geofence_consent: true }),
+      }).catch(() => {});
+    }
+  };
+
+  // Per-device verification: send a real push to this account's devices and report
+  // whether it was delivered, so the user can confirm push works on each one.
+  const [testBusy, setTestBusy] = React.useState(false);
+  const [testMsg, setTestMsg] = React.useState(null);
+  const sendTestPush = async () => {
+    setTestBusy(true);
+    setTestMsg(null);
+    try {
+      const t = localStorage.getItem('anchor_access_token');
+      const res = await fetch((window.ANCHOR_API_URL || 'http://localhost:8000') + '/v1/users/me/fcm-token/test', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + t },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) setTestMsg({ ok: false, text: 'Could not send test — please try again.' });
+      else if (!data.tokens) setTestMsg({ ok: false, text: 'No registered devices yet. Turn on notifications first.' });
+      else if (data.delivered > 0) setTestMsg({ ok: true, text: 'Sent ✓ A notification should appear on this device.' });
+      else setTestMsg({ ok: false, text: 'Delivery failed on this device — toggle notifications off and on, then retry.' });
+    } catch (_) {
+      setTestMsg({ ok: false, text: 'Network error — please try again.' });
+    }
+    setTestBusy(false);
+  };
 
   const enterEditMode = () => {
     setDraftName(user ? user.name || '' : '');
@@ -1626,16 +1700,12 @@ function ProfileScreen() {
               <div style={{ fontSize:14, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-sans)' }}>
                 Nearby alerts
               </div>
-              <div style={{ fontSize:12, color:'var(--muted)', fontFamily:'var(--font-sans)', marginTop:2 }}>
-                Share anonymous location for alert fan-out
+              <div style={{ fontSize:12, color: locBlocked ? 'var(--red)' : 'var(--muted)',
+                            fontFamily:'var(--font-sans)', marginTop:2 }}>
+                {locSubtext}
               </div>
             </div>
-            <button onClick={() => {
-                const next = !geofenceConsent;
-                localStorage.setItem('anchor_geofence_consent', String(next));
-                localStorage.setItem('anchor_geofence_consent_answered', 'true');
-                setGeofenceConsent(next);
-              }}
+            <button onClick={toggleLocation}
               style={{ width:44, height:26, borderRadius:999, border:'none', cursor:'pointer', flexShrink:0,
                        background: geofenceConsent ? 'var(--sage)' : 'var(--mist)', position:'relative',
                        transition:'background 0.2s' }}>
@@ -1660,10 +1730,10 @@ function ProfileScreen() {
                 {pushSubtext}
               </div>
             </div>
-            <button onClick={enablePush} disabled={pushState === 'unsupported'}
+            <button onClick={enablePush} disabled={!pushActionable}
               style={{ width:44, height:26, borderRadius:999, border:'none', flexShrink:0,
-                       cursor: pushState === 'unsupported' ? 'not-allowed' : 'pointer',
-                       opacity: pushState === 'unsupported' ? 0.5 : 1,
+                       cursor: !pushActionable ? 'not-allowed' : 'pointer',
+                       opacity: !pushActionable ? 0.5 : 1,
                        background: pushEnabled ? 'var(--sage)' : 'var(--mist)', position:'relative',
                        transition:'background 0.2s' }}>
               <span style={{ position:'absolute', top:3, left: pushEnabled ? 21 : 3,
@@ -1671,6 +1741,24 @@ function ProfileScreen() {
                              boxShadow:'0 1px 3px rgba(0,0,0,0.18)', transition:'left 0.2s' }}/>
             </button>
           </div>
+          {/* Per-device verification */}
+          {pushEnabled && (
+            <div style={{ marginTop: 10, display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+              <button onClick={sendTestPush} disabled={testBusy}
+                style={{ height:34, padding:'0 14px', borderRadius:10, border:'1px solid var(--mist-2)',
+                         background:'transparent', color:'var(--navy)', fontSize:12.5, fontWeight:600,
+                         cursor: testBusy ? 'default' : 'pointer', opacity: testBusy ? 0.7 : 1,
+                         fontFamily:'var(--font-sans)' }}>
+                {testBusy ? 'Sending…' : 'Send test notification'}
+              </button>
+              {testMsg && (
+                <span style={{ fontSize:12, fontFamily:'var(--font-sans)',
+                               color: testMsg.ok ? 'var(--sage)' : 'var(--red)' }}>
+                  {testMsg.text}
+                </span>
+              )}
+            </div>
+          )}
         </div>
         {/* Sign out */}
         <div style={{ marginBottom: 16 }}>
@@ -2120,6 +2208,15 @@ function RoutinesScreen() {
                 r.published_at && React.createElement('span', {
                   style: { fontFamily: 'var(--font-mono)', fontSize: 10.5 }
                 }, '· ' + fmtDate(r.published_at))
+              ),
+              /* Download (PDF / DOCX / CSV) */
+              React.createElement('div', { style: { marginTop: 10 } },
+                React.createElement(DownloadMenu, {
+                  path: '/v1/routines/' + r.id + '/export',
+                  stem: 'routine-' + (r.semester || String(r.id).slice(0, 8)),
+                  label: 'Download routine',
+                  accent: 'var(--sage)',
+                })
               )
             ),
 

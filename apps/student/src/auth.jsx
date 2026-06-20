@@ -41,6 +41,50 @@ const FIREBASE_VAPID_KEY = window.ENV?.FIREBASE_VAPID_KEY;
 
 let _fcmForegroundBound = false;  // bind messaging.onMessage only once per page
 
+// ── Push capability detection ────────────────────────────────────────────────
+// Browsers cannot silently enable notifications — permission is granted only on a
+// user gesture, and several environments (iOS browser tabs, insecure origins) can
+// never receive web push at all. This helper reports, per device, exactly why push
+// is or isn't available so the UI can show an actionable message instead of a
+// silent no-op. `reason` is one of:
+//   'ok'               — push is available; permission may still be 'default'
+//   'granted'          — push is available AND already granted on this device
+//   'ios-needs-install'— iOS Safari, not installed → must "Add to Home Screen"
+//   'ios-chrome'       — iOS Chrome/Firefox/etc. → web push impossible (WebKit)
+//   'insecure-context' — page not served over HTTPS/localhost
+//   'unsupported'      — browser lacks Service Worker / Notification / FCM SDK
+//   'denied'           — user blocked notifications in browser settings
+//   'default'          — supported, not yet asked (tap to enable)
+function getPushCapability() {
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  // iPadOS 13+ reports as Mac; detect it via touch points.
+  const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+    (ua.includes('Mac') && typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1);
+  // iOS Chrome/Firefox/Edge are WebKit wrappers (CriOS/FxiOS/EdgiOS) with no web push.
+  const isIOSThirdParty = isIOS && /CriOS|FxiOS|EdgiOS|OPiOS|GSA/.test(ua);
+  const isStandalone =
+    (typeof window !== 'undefined' && window.matchMedia &&
+      window.matchMedia('(display-mode: standalone)').matches) ||
+    (typeof navigator !== 'undefined' && navigator.standalone === true);
+  const secureContext = typeof window !== 'undefined' ? window.isSecureContext !== false : true;
+  const hasServiceWorker = typeof navigator !== 'undefined' && 'serviceWorker' in navigator;
+  const hasNotification = typeof window !== 'undefined' && 'Notification' in window;
+  const hasFirebase = typeof firebase !== 'undefined';
+  const permission = hasNotification ? Notification.permission : 'unsupported';
+
+  let reason;
+  if (!secureContext) reason = 'insecure-context';
+  else if (isIOSThirdParty) reason = 'ios-chrome';
+  else if (isIOS && !isStandalone && !hasNotification) reason = 'ios-needs-install';
+  else if (!hasServiceWorker || !hasNotification || !hasFirebase) reason = 'unsupported';
+  else if (permission === 'denied') reason = 'denied';
+  else if (permission === 'granted') reason = 'granted';
+  else reason = permission === 'default' ? 'default' : 'ok';
+
+  return { secureContext, hasServiceWorker, hasNotification, isIOS, isStandalone, permission, reason };
+}
+window.getPushCapability = getPushCapability;
+
 function _ensureDeviceId() {
   let deviceId = localStorage.getItem('anchor_device_id');
   if (!deviceId) {
@@ -57,6 +101,13 @@ function _ensureDeviceId() {
 //                            already granted (call on every authenticated load)
 // Returns one of: 'granted' | 'denied' | 'blocked' | 'unsupported' | 'error'.
 async function syncPushToken({ interactive = false } = {}) {
+  // Environments that can never receive web push — return the specific reason so
+  // the caller (Profile toggle, consent modal) can show actionable guidance
+  // (e.g. "Add to Home Screen" on iOS) instead of a generic failure.
+  const cap = getPushCapability();
+  if (cap.reason === 'insecure-context') return 'insecure-context';
+  if (cap.reason === 'ios-chrome') return 'ios-chrome';
+  if (cap.reason === 'ios-needs-install') return 'ios-needs-install';
   if (typeof firebase === 'undefined') return 'unsupported';
   if (!FIREBASE_VAPID_KEY || FIREBASE_VAPID_KEY === 'YOUR_VAPID_KEY_HERE') return 'unsupported';
   if (!('serviceWorker' in navigator) || !('Notification' in window)) return 'unsupported';
