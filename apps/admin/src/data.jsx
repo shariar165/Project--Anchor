@@ -131,12 +131,7 @@ window.AnchorData = (() => {
     { id: 'ALR-2026-7A88', status: 'Resolved', location: 'Parking Lot D', distance: '610m', elapsed: '—', kind: 'Theft', triggeredAt: '2026-05-15 08:14' },
   ];
 
-  const tenants = [
-    { id: 'diu', name: 'Daffodil International University', domain: '@diu.edu.bd', status: 'Active', users: 8421, cases: 612, schema: 't_diu_main', namespace: 'ns_diu', onboarded: '2025-09-12', contact: 'Dr. Tahmina Karim' },
-    { id: 'buet', name: 'Bangladesh University of Engineering & Technology', domain: '@buet.ac.bd', status: 'Pilot', users: 2104, cases: 287, schema: 't_buet_pilot', namespace: 'ns_buet', onboarded: '2026-02-04', contact: 'Prof. Anwar Hossain' },
-    { id: 'du', name: 'University of Dhaka', domain: '@du.ac.bd', status: 'Active', users: 1820, cases: 244, schema: 't_du_main', namespace: 'ns_du', onboarded: '2025-11-08', contact: 'Dr. Shamima Rahman' },
-    { id: 'nsu', name: 'North South University', domain: '@northsouth.edu', status: 'Suspended', users: 502, cases: 60, schema: 't_nsu_main', namespace: 'ns_nsu', onboarded: '2025-12-20', contact: 'Dr. Imran Chowdhury' },
-  ];
+  // Tenants/universities are loaded live from /v1/super-admin/tenants — see super.jsx.
 
   const audit = [
     { t: '2026-05-24 21:18', actor: 'admin_a3f9 (Proctor)', action: 'ALERT_ACKNOWLEDGED', target: 'ALR-2026-7C12', tenant: 'diu', ip: '203.81.•.•', outcome: 'OK' },
@@ -247,7 +242,7 @@ window.AnchorData = (() => {
   ];
 
   return {
-    complaints, alerts, tenants, audit, deanonRequests, services,
+    complaints, alerts, audit, deanonRequests, services,
     inflow, categoryBreakdown, deptPerf, classroomReports,
     days, slots, timetable, sectionColors, courses, cultureReports,
   };

@@ -363,12 +363,7 @@ window.AnchorData = (() => {
     { id: 'ALR-2026-7A88', status: 'Resolved', location: 'Parking Lot D', distance: '610m', elapsed: '—', kind: 'Theft', triggeredAt: '2026-05-15 08:14' },
   ];
 
-  const tenants = [
-    { id: 'diu', name: 'Daffodil International University', domain: '@diu.edu.bd', status: 'Active', users: 8421, cases: 612, schema: 't_diu_main', namespace: 'ns_diu', onboarded: '2025-09-12', contact: 'Dr. Tahmina Karim' },
-    { id: 'buet', name: 'Bangladesh University of Engineering & Technology', domain: '@buet.ac.bd', status: 'Pilot', users: 2104, cases: 287, schema: 't_buet_pilot', namespace: 'ns_buet', onboarded: '2026-02-04', contact: 'Prof. Anwar Hossain' },
-    { id: 'du', name: 'University of Dhaka', domain: '@du.ac.bd', status: 'Active', users: 1820, cases: 244, schema: 't_du_main', namespace: 'ns_du', onboarded: '2025-11-08', contact: 'Dr. Shamima Rahman' },
-    { id: 'nsu', name: 'North South University', domain: '@northsouth.edu', status: 'Suspended', users: 502, cases: 60, schema: 't_nsu_main', namespace: 'ns_nsu', onboarded: '2025-12-20', contact: 'Dr. Imran Chowdhury' },
-  ];
+  // Tenants/universities are loaded live from /v1/super-admin/tenants — see super.jsx.
 
   const audit = [
     { t: '2026-05-24 21:18', actor: 'admin_a3f9 (Proctor)', action: 'ALERT_ACKNOWLEDGED', target: 'ALR-2026-7C12', tenant: 'diu', ip: '203.81.•.•', outcome: 'OK' },
@@ -479,7 +474,7 @@ window.AnchorData = (() => {
   ];
 
   return {
-    complaints, alerts, tenants, audit, deanonRequests, services,
+    complaints, alerts, audit, deanonRequests, services,
     inflow, categoryBreakdown, deptPerf, classroomReports,
     days, slots, timetable, sectionColors, courses, cultureReports,
   };
@@ -4271,11 +4266,17 @@ var { useState, useEffect, useCallback, useRef, useMemo } = React;
 function SuperDashboard({ onGo }) {
   const D = window.AnchorData;
   const [recentAudit, setRecentAudit] = useState([]);
+  const [tenants, setTenants] = useState([]);
   useEffect(() => {
     AnchorAPI.apiGet('/v1/admin/audit?limit=5')
       .then(d => setRecentAudit(d.items || []))
       .catch(() => {});
+    AnchorAPI.apiGet('/v1/super-admin/tenants')
+      .then(d => setTenants(d.items || []))
+      .catch(() => {});
   }, []);
+  const pilotCount = tenants.filter(t => t.tier === 'pilot').length;
+  const suspendedCount = tenants.filter(t => !t.active).length;
   return (
     <>
       <PageHeader
@@ -4294,7 +4295,7 @@ function SuperDashboard({ onGo }) {
       </AuditNote>
 
       <div className="grid grid-cols-5 gap-4 mb-6">
-        <KpiCard label="Universities" value="4" subtle="1 pilot · 1 suspended" accent="navy" />
+        <KpiCard label="Universities" value={tenants.length} subtle={`${pilotCount} pilot · ${suspendedCount} suspended`} accent="navy" />
         <KpiCard label="Active users" value="12,847" delta="+412" deltaTone="up" subtle="last 30 days" />
         <KpiCard label="Open cases" value="1,203" subtle="across all tenants" accent="ember" />
         <KpiCard label="Active alerts" value="2" subtle="DIU campus" accent="ember" />
@@ -4350,16 +4351,18 @@ function SuperDashboard({ onGo }) {
             <SectionLabel className="mb-0">Tenants</SectionLabel>
             <button onClick={()=>onGo('/super/tenants')} className="text-[12px] text-[var(--ember)] hover:underline">All tenants →</button>
           </div>
-          <DataTable
-            columns={[
-              { key:'name', label:'University' },
-              { key:'status', label:'Status', render:r=><StatusPill status={r.status} /> },
-              { key:'users', label:'Users', align:'right', render:r=><span className="font-mono">{r.users.toLocaleString()}</span> },
-              { key:'cases', label:'Cases', align:'right', render:r=><span className="font-mono">{r.cases}</span> },
-            ]}
-            rows={D.tenants}
-            dense
-          />
+          {tenants.length === 0
+            ? <div className="p-4 text-[12px] text-[var(--muted)]">No universities onboarded yet.</div>
+            : <DataTable
+                columns={[
+                  { key:'name', label:'University' },
+                  { key:'status', label:'Status', render:r=><StatusPill status={r.status} /> },
+                  { key:'user_count', label:'Users', align:'right', render:r=><span className="font-mono">{(r.user_count||0).toLocaleString()}</span> },
+                ]}
+                rows={tenants}
+                onRowClick={(r)=>onGo(`/super/tenant/${r.id}`)}
+                dense
+              />}
         </Card>
         <Card noPad>
           <div className="p-4 hair-b flex items-center justify-between">
@@ -4396,44 +4399,132 @@ function Sparkline({ values, color='var(--ember)' }) {
 }
 
 // ---- Tenants ----
+function fmtDate(s) {
+  if (!s) return '—';
+  try { return new Date(s).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }); }
+  catch { return '—'; }
+}
+
 function SuperTenants({ onGo }) {
-  const D = window.AnchorData;
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    AnchorAPI.apiGet('/v1/super-admin/tenants')
+      .then(d => setRows(d.items || []))
+      .catch(e => setError(e.message || 'Failed to load tenants'))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
   return (
     <>
       <PageHeader
         title="University tenants"
-        description="All onboarded universities. Click a row to view detail. Onboarding a new tenant runs a 7-step wizard."
+        description="All onboarded universities. Click a row to view detail. Onboarding provisions a tenant with its own verified email domain(s) and an initial admin account."
         actions={<PrimaryButton icon="plus" mode="ember" onClick={()=>onGo('/super/onboard')}>Onboard new</PrimaryButton>}
       />
+      {error && (
+        <div className="mb-4">
+          <AuditNote tone="red" icon="alert-triangle">
+            <span>{error} </span>
+            <button onClick={load} className="underline font-medium ml-1">Retry →</button>
+          </AuditNote>
+        </div>
+      )}
       <Card noPad>
-        <DataTable
-          columns={[
-            { key:'name', label:'University', render:r=><div><div className="font-medium text-[var(--ink)]">{r.name}</div><div className="text-[11px] text-[var(--muted)] font-mono">{r.domain}</div></div> },
-            { key:'status', label:'Status', render:r=><StatusPill status={r.status} /> },
-            { key:'users', label:'Users', align:'right', render:r=><span className="font-mono">{r.users.toLocaleString()}</span> },
-            { key:'cases', label:'Cases', align:'right', render:r=><span className="font-mono">{r.cases}</span> },
-            { key:'schema', label:'Schema', render:r=><MonoChip>{r.schema}</MonoChip> },
-            { key:'namespace', label:'Vector ns', render:r=><MonoChip>{r.namespace}</MonoChip> },
-            { key:'onboarded', label:'Onboarded', render:r=><span className="font-mono text-[12px] text-[var(--muted)]">{r.onboarded}</span> },
-            { key:'contact', label:'Primary contact' },
-          ]}
-          rows={D.tenants}
-          onRowClick={(r)=>onGo(`/super/tenant/${r.id}`)}
-        />
+        {loading
+          ? <div className="p-10 text-center text-[13px] text-[var(--muted)]">Loading universities…</div>
+          : rows.length === 0 && !error
+            ? <EmptyState icon="building-2" title="No universities yet"
+                body="Onboard your first university to provision its tenant, email domains, and an initial admin account."
+                action={<PrimaryButton icon="plus" mode="ember" onClick={()=>onGo('/super/onboard')}>Onboard new</PrimaryButton>} />
+            : <DataTable
+                columns={[
+                  { key:'name', label:'University', render:r=><div><div className="font-medium text-[var(--ink)]">{r.name}</div><div className="text-[11px] text-[var(--muted)] font-mono">{(r.domains||[]).map(d=>'@'+d.domain).join(', ') || '—'}</div></div> },
+                  { key:'status', label:'Status', render:r=><StatusPill status={r.status} /> },
+                  { key:'user_count', label:'Users', align:'right', render:r=><span className="font-mono">{(r.user_count||0).toLocaleString()}</span> },
+                  { key:'vector_namespace', label:'Vector ns', render:r=><MonoChip>{r.vector_namespace || r.slug}</MonoChip> },
+                  { key:'contact_name', label:'Primary contact', render:r=>r.contact_name || <span className="text-[var(--muted)]">—</span> },
+                  { key:'created_at', label:'Onboarded', render:r=><span className="font-mono text-[12px] text-[var(--muted)]">{fmtDate(r.created_at)}</span> },
+                ]}
+                rows={rows}
+                onRowClick={(r)=>onGo(`/super/tenant/${r.id}`)}
+              />}
       </Card>
     </>
   );
 }
 
+const INPUT_CLS = "w-full px-3 py-2 hair border rounded-sm bg-white text-[13px]";
+
+function slugify(s) {
+  return (s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+}
+
 function SuperOnboard({ onGo }) {
+  const steps = ['University info','Initial admin','Confirmation'];
   const [step, setStep] = useState(0);
-  const steps = ['University info','Initial admin','Departments','Hierarchy','Privacy agreement','Provision schema','Confirmation'];
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [f, setF] = useState({
+    name: '', slug: '', domains: '', country: 'Bangladesh', tier: 'pilot',
+    contact_name: '', vector_namespace: '',
+    admin_name: '', admin_email: '', admin_password: '',
+  });
+  const set = (k, v) => setF(prev => ({ ...prev, [k]: v }));
+
+  // Auto-derive slug from name until the user edits the slug directly.
+  const onName = (v) => setF(prev => ({ ...prev, name: v, slug: slugTouched ? prev.slug : slugify(v) }));
+
+  const domainList = f.domains.split(',').map(d => d.trim().replace(/^@/, '').toLowerCase()).filter(Boolean);
+
+  const stepValid = (s) => {
+    if (s === 0) return f.name.trim() && f.slug.trim() && domainList.length > 0;
+    if (s === 1) return f.admin_name.trim() && /.+@.+\..+/.test(f.admin_email) && f.admin_password.length >= 8;
+    return true;
+  };
+  const canSubmit = stepValid(0) && stepValid(1);
+
+  const submit = async () => {
+    setError(null);
+    setSubmitting(true);
+    try {
+      const payload = {
+        name: f.name.trim(),
+        slug: f.slug.trim(),
+        email_domains: domainList,
+        tier: f.tier,
+        country: f.country.trim() || null,
+        contact_name: f.contact_name.trim() || null,
+        vector_namespace: f.vector_namespace.trim() || null,
+        initial_admin: {
+          full_name: f.admin_name.trim(),
+          email: f.admin_email.trim(),
+          password: f.admin_password,
+        },
+      };
+      const created = await AnchorAPI.apiPostAuth('/v1/super-admin/tenants', payload);
+      onGo(`/super/tenant/${created.id}`);
+    } catch (e) {
+      setError(e.message || 'Onboarding failed');
+      setSubmitting(false);
+    }
+  };
+
   return (
     <>
       <PageHeader
         title="Onboard new university"
-        description="Provision a new tenant with its own schema, vector namespace, and admin accounts."
+        description="Provision a new tenant with its own verified email domain(s), RAG vector namespace, and an initial university admin account."
       />
+      {error && (
+        <div className="mb-4"><AuditNote tone="red" icon="alert-triangle">{error}</AuditNote></div>
+      )}
       <div className="grid gap-5" style={{ gridTemplateColumns: '260px 1fr' }}>
         <Card noPad>
           <ol>
@@ -4449,20 +4540,53 @@ function SuperOnboard({ onGo }) {
         </Card>
         <Card>
           <SectionLabel>Step {step+1} · {steps[step]}</SectionLabel>
+
           {step===0 && (
             <div className="grid grid-cols-2 gap-3">
-              <Field label="University name"><input defaultValue="Bangladesh University of Engineering & Technology" className="w-full px-3 py-2 hair border rounded-sm bg-white" /></Field>
-              <Field label="Verified email domain"><input defaultValue="@buet.ac.bd" className="w-full px-3 py-2 hair border rounded-sm bg-white font-mono" /></Field>
-              <Field label="Country"><select className="w-full px-2 py-2 hair border rounded-sm bg-white"><option>Bangladesh</option></select></Field>
-              <Field label="Tier"><select className="w-full px-2 py-2 hair border rounded-sm bg-white"><option>Pilot</option><option>Active</option></select></Field>
+              <Field label="University name"><input value={f.name} onChange={e=>onName(e.target.value)} placeholder="Bangladesh University of Engineering & Technology" className={INPUT_CLS} /></Field>
+              <Field label="Slug (unique)" hint="Used as the tenant key and default vector namespace."><input value={f.slug} onChange={e=>{setSlugTouched(true); set('slug', slugify(e.target.value));}} placeholder="buet" className={INPUT_CLS + ' font-mono'} /></Field>
+              <Field label="Verified email domain(s)" hint="Comma-separate multiple. The leading @ is optional."><input value={f.domains} onChange={e=>set('domains', e.target.value)} placeholder="buet.ac.bd, eee.buet.ac.bd" className={INPUT_CLS + ' font-mono'} /></Field>
+              <Field label="Primary contact (optional)"><input value={f.contact_name} onChange={e=>set('contact_name', e.target.value)} placeholder="Dr. Anwar Hossain" className={INPUT_CLS} /></Field>
+              <Field label="Country"><input value={f.country} onChange={e=>set('country', e.target.value)} className={INPUT_CLS} /></Field>
+              <Field label="Tier">
+                <select value={f.tier} onChange={e=>set('tier', e.target.value)} className={INPUT_CLS}>
+                  <option value="pilot">Pilot</option>
+                  <option value="active">Active</option>
+                </select>
+              </Field>
+              <Field label="Vector namespace (optional)" hint="Defaults to the slug if left blank."><input value={f.vector_namespace} onChange={e=>set('vector_namespace', e.target.value)} placeholder={f.slug || 'buet'} className={INPUT_CLS + ' font-mono'} /></Field>
             </div>
           )}
-          {step!==0 && <EmptyState icon="clipboard-list" title={`Continue with ${steps[step]}`} body="This step collects the inputs needed to provision the tenant. Click Continue to advance the demo." />}
+
+          {step===1 && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Admin full name"><input value={f.admin_name} onChange={e=>set('admin_name', e.target.value)} placeholder="Registrar Office" className={INPUT_CLS} /></Field>
+              <Field label="Admin email"><input value={f.admin_email} onChange={e=>set('admin_email', e.target.value)} placeholder="admin@buet.ac.bd" className={INPUT_CLS + ' font-mono'} /></Field>
+              <Field label="Temporary password" hint="At least 8 characters. The admin should change it after first login."><input type="password" value={f.admin_password} onChange={e=>set('admin_password', e.target.value)} className={INPUT_CLS} /></Field>
+              <div className="col-span-2"><AuditNote tone="navy" icon="info">This creates one active <span className="font-mono">admin</span> account scoped to the new tenant. Add more staff later from User management.</AuditNote></div>
+            </div>
+          )}
+
+          {step===2 && (
+            <div className="space-y-2 text-[13px]">
+              <div className="grid grid-cols-2 gap-y-2 gap-x-4">
+                <div><span className="text-[var(--muted)]">University:</span> <span className="text-[var(--ink)] font-medium">{f.name || '—'}</span></div>
+                <div><span className="text-[var(--muted)]">Slug:</span> <MonoChip>{f.slug || '—'}</MonoChip></div>
+                <div><span className="text-[var(--muted)]">Domains:</span> <span className="font-mono">{domainList.map(d=>'@'+d).join(', ') || '—'}</span></div>
+                <div><span className="text-[var(--muted)]">Tier:</span> <StatusPill status={f.tier==='pilot'?'Pilot':'Active'} /></div>
+                <div><span className="text-[var(--muted)]">Namespace:</span> <MonoChip>{f.vector_namespace || f.slug || '—'}</MonoChip></div>
+                <div><span className="text-[var(--muted)]">Contact:</span> {f.contact_name || '—'}</div>
+                <div><span className="text-[var(--muted)]">Admin:</span> {f.admin_name || '—'} <span className="font-mono text-[var(--muted)]">{f.admin_email || ''}</span></div>
+              </div>
+              {!canSubmit && <AuditNote tone="red" icon="alert-triangle">Some required fields are missing — go back and complete University info and Initial admin.</AuditNote>}
+            </div>
+          )}
+
           <div className="mt-5 flex items-center justify-between">
-            <GhostButton onClick={()=>setStep(s=>Math.max(0,s-1))}>Back</GhostButton>
-            {step<steps.length-1
-              ? <PrimaryButton mode="ember" icon="arrow-right" onClick={()=>setStep(s=>s+1)}>Continue</PrimaryButton>
-              : <PrimaryButton mode="ember" icon="check" onClick={()=>onGo('/super/tenants')}>Finish onboarding</PrimaryButton>}
+            <GhostButton onClick={()=> step===0 ? onGo('/super/tenants') : setStep(s=>s-1)}>{step===0 ? 'Cancel' : 'Back'}</GhostButton>
+            {step < steps.length-1
+              ? <PrimaryButton mode="ember" icon="arrow-right" onClick={()=>setStep(s=>s+1)} disabled={!stepValid(step)} className={!stepValid(step)?'opacity-50 pointer-events-none':''}>Continue</PrimaryButton>
+              : <PrimaryButton mode="ember" icon="check" onClick={submit} disabled={!canSubmit || submitting} className={(!canSubmit||submitting)?'opacity-50 pointer-events-none':''}>{submitting ? 'Provisioning…' : 'Finish onboarding'}</PrimaryButton>}
           </div>
         </Card>
       </div>
@@ -4471,38 +4595,189 @@ function SuperOnboard({ onGo }) {
 }
 
 function SuperTenantDetail({ id, onGo }) {
-  const tenant = window.AnchorData.tenants.find(t=>t.id===id) || window.AnchorData.tenants[0];
-  const [tab, setTab] = useState('overview');
+  const [tenant, setTenant] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [actionError, setActionError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [confirmSuspend, setConfirmSuspend] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [newDomain, setNewDomain] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    AnchorAPI.apiGet(`/v1/super-admin/tenants/${id}`)
+      .then(setTenant)
+      .catch(e => setError(e.message || 'Failed to load tenant'))
+      .finally(() => setLoading(false));
+  }, [id]);
+  useEffect(() => { load(); }, [load]);
+
+  const run = async (fn) => {
+    setActionError(null);
+    setBusy(true);
+    try { await fn(); }
+    catch (e) { setActionError(e.message || 'Action failed'); }
+    finally { setBusy(false); }
+  };
+
+  const setActive = (active) => run(async () => {
+    const updated = await AnchorAPI.apiPatch(`/v1/super-admin/tenants/${id}`, { active });
+    setTenant(updated);
+  });
+
+  const addDomain = () => run(async () => {
+    const updated = await AnchorAPI.apiPostAuth(`/v1/super-admin/tenants/${id}/domains`, { domain: newDomain });
+    setNewDomain('');
+    setTenant(updated);
+  });
+
+  const removeDomain = (domainId) => run(async () => {
+    await AnchorAPI.apiDelete(`/v1/super-admin/tenants/${id}/domains/${domainId}`);
+    load();
+  });
+
+  const doDelete = () => run(async () => {
+    await AnchorAPI.apiDelete(`/v1/super-admin/tenants/${id}`);
+    onGo('/super/tenants');
+  });
+
+  if (loading) return <div className="p-10 text-center text-[13px] text-[var(--muted)]">Loading tenant…</div>;
+  if (error) return (
+    <>
+      <PageHeader title="University tenant" description="" actions={<GhostButton icon="arrow-left" onClick={()=>onGo('/super/tenants')}>Back</GhostButton>} />
+      <AuditNote tone="red" icon="alert-triangle"><span>{error} </span><button onClick={load} className="underline font-medium ml-1">Retry →</button></AuditNote>
+    </>
+  );
+  if (!tenant) return null;
+
   return (
     <>
       <PageHeader
         title={tenant.name}
-        description={`Tenant ID: ${tenant.id} · Schema ${tenant.schema} · Namespace ${tenant.namespace}`}
+        description={`Tenant ID: ${tenant.id} · Namespace ${tenant.vector_namespace || tenant.slug}`}
         actions={
           <>
             <StatusPill status={tenant.status} />
-            <GhostButton size="sm" icon="settings">Configure</GhostButton>
-            <GhostButton size="sm" icon="pause" danger>Suspend</GhostButton>
+            <GhostButton size="sm" icon="settings" onClick={()=>setConfigOpen(true)}>Configure</GhostButton>
+            {tenant.active
+              ? <GhostButton size="sm" icon="pause" danger onClick={()=>setConfirmSuspend(true)}>Suspend</GhostButton>
+              : <PrimaryButton size="sm" icon="play" mode="sage" onClick={()=>setActive(true)}>Activate</PrimaryButton>}
+            <GhostButton size="sm" icon="trash-2" danger onClick={()=>setConfirmDelete(true)}>Delete</GhostButton>
           </>
         }
       />
-      <div className="flex items-center gap-1 mb-4">
-        {['overview','usage','admins','config','schema','log'].map(t => (
-          <button key={t} onClick={()=>setTab(t)} className={`px-3 py-1.5 text-[13px] rounded-sm ${tab===t?'bg-[var(--navy)] text-white':'hair border text-[var(--graphite)]'}`}>
-            {{overview:'Overview', usage:'Usage', admins:'Admins', config:'Configuration', schema:'Schema health', log:'Activity log'}[t]}
-          </button>
-        ))}
-      </div>
+
+      {actionError && <div className="mb-4"><AuditNote tone="red" icon="alert-triangle">{actionError}</AuditNote></div>}
+
       <div className="grid grid-cols-4 gap-4 mb-4">
-        <KpiCard label="Users" value={tenant.users.toLocaleString()} subtle="active in tenant" accent="navy" />
-        <KpiCard label="Open cases" value={tenant.cases} accent="ember" />
-        <KpiCard label="Notices · 30d" value="38" />
-        <KpiCard label="Onboarded" value={tenant.onboarded} mono={true} />
+        <KpiCard label="Users" value={(tenant.user_count||0).toLocaleString()} subtle="attached to tenant" accent="navy" />
+        <KpiCard label="Status" value={tenant.status} mono={false} accent={tenant.active ? 'sage' : 'ember'} />
+        <KpiCard label="Tier" value={tenant.tier==='pilot'?'Pilot':'Active'} mono={false} />
+        <KpiCard label="Onboarded" value={fmtDate(tenant.created_at)} mono={false} />
       </div>
-      <AuditNote tone="navy" icon="lock">
-        Super Admin cannot read individual case content from this tenant — only aggregate metrics and configuration. Identity de-anonymization requires a formal request via the workflow.
-      </AuditNote>
+
+      <div className="grid gap-4" style={{ gridTemplateColumns: '1fr 1fr' }}>
+        <Card>
+          <SectionLabel>Details</SectionLabel>
+          <dl className="space-y-2 text-[13px]">
+            <div className="flex justify-between gap-4"><dt className="text-[var(--muted)]">Slug</dt><dd><MonoChip>{tenant.slug}</MonoChip></dd></div>
+            <div className="flex justify-between gap-4"><dt className="text-[var(--muted)]">Country</dt><dd>{tenant.country || '—'}</dd></div>
+            <div className="flex justify-between gap-4"><dt className="text-[var(--muted)]">Primary contact</dt><dd>{tenant.contact_name || '—'}</dd></div>
+            <div className="flex justify-between gap-4"><dt className="text-[var(--muted)]">Vector namespace</dt><dd><MonoChip>{tenant.vector_namespace || tenant.slug}</MonoChip></dd></div>
+          </dl>
+        </Card>
+
+        <Card>
+          <SectionLabel right={<MonoChip>{(tenant.domains||[]).length}</MonoChip>}>Verified email domains</SectionLabel>
+          <div className="space-y-2 mb-3">
+            {(tenant.domains||[]).map(d => (
+              <div key={d.id} className="flex items-center justify-between hair border rounded-sm px-3 py-2">
+                <span className="font-mono text-[13px]">@{d.domain}</span>
+                <button onClick={()=>removeDomain(d.id)} disabled={busy || (tenant.domains||[]).length<=1}
+                  className={`text-[var(--red)] ${(busy||(tenant.domains||[]).length<=1)?'opacity-40':'hover:opacity-70'}`} title={(tenant.domains||[]).length<=1?'A tenant must keep at least one domain':'Remove domain'}>
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input value={newDomain} onChange={e=>setNewDomain(e.target.value)} placeholder="add.edu.bd" className={INPUT_CLS + ' font-mono'} />
+            <PrimaryButton size="sm" mode="ember" icon="plus" onClick={addDomain} disabled={busy || !newDomain.trim()} className={(busy||!newDomain.trim())?'opacity-50 pointer-events-none':''}>Add</PrimaryButton>
+          </div>
+        </Card>
+      </div>
+
+      <div className="mt-4">
+        <AuditNote tone="navy" icon="lock">
+          Super Admin cannot read individual case content from this tenant — only aggregate metrics and configuration. Identity de-anonymization requires a formal request via the workflow.
+        </AuditNote>
+      </div>
+
+      <ConfirmModal open={confirmSuspend} onClose={()=>setConfirmSuspend(false)} onConfirm={()=>setActive(false)}
+        title="Suspend tenant" tone="red" confirmWord="SUSPEND" confirmLabel="Suspend"
+        body={`Suspending ${tenant.name} disables sign-in resolution for its email domains. You can reactivate it at any time.`} />
+
+      <ConfirmModal open={confirmDelete} onClose={()=>setConfirmDelete(false)} onConfirm={doDelete}
+        title="Delete tenant" tone="red" confirmWord="DELETE" confirmLabel="Delete"
+        body={`Permanently delete ${tenant.name} and its email domains. This is only allowed when no users are attached to the tenant.`} />
+
+      <ConfigureSlideOver open={configOpen} onClose={()=>setConfigOpen(false)} tenant={tenant}
+        onSaved={(updated)=>{ setTenant(updated); setConfigOpen(false); }} onError={setActionError} />
     </>
+  );
+}
+
+function ConfigureSlideOver({ open, onClose, tenant, onSaved, onError }) {
+  const [f, setF] = useState({ name:'', tier:'active', country:'', contact_name:'', vector_namespace:'' });
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (open && tenant) setF({
+      name: tenant.name || '', tier: tenant.tier || 'active', country: tenant.country || '',
+      contact_name: tenant.contact_name || '', vector_namespace: tenant.vector_namespace || '',
+    });
+  }, [open, tenant]);
+  const set = (k, v) => setF(prev => ({ ...prev, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const updated = await AnchorAPI.apiPatch(`/v1/super-admin/tenants/${tenant.id}`, {
+        name: f.name.trim(), tier: f.tier, country: f.country.trim() || null,
+        contact_name: f.contact_name.trim() || null, vector_namespace: f.vector_namespace.trim() || null,
+      });
+      onSaved(updated);
+    } catch (e) {
+      onError(e.message || 'Save failed');
+      onClose();
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <SlideOver open={open} onClose={onClose}>
+      <div className="p-5 hair-b flex items-center justify-between">
+        <h3 className="font-serif text-[20px] text-[var(--navy)]">Configure tenant</h3>
+        <button onClick={onClose} className="text-[var(--muted)] hover:text-[var(--ink)]"><Icon name="x" size={18} /></button>
+      </div>
+      <div className="p-5 space-y-3">
+        <Field label="University name"><input value={f.name} onChange={e=>set('name', e.target.value)} className={INPUT_CLS} /></Field>
+        <Field label="Tier">
+          <select value={f.tier} onChange={e=>set('tier', e.target.value)} className={INPUT_CLS}>
+            <option value="pilot">Pilot</option>
+            <option value="active">Active</option>
+          </select>
+        </Field>
+        <Field label="Country"><input value={f.country} onChange={e=>set('country', e.target.value)} className={INPUT_CLS} /></Field>
+        <Field label="Primary contact"><input value={f.contact_name} onChange={e=>set('contact_name', e.target.value)} className={INPUT_CLS} /></Field>
+        <Field label="Vector namespace"><input value={f.vector_namespace} onChange={e=>set('vector_namespace', e.target.value)} className={INPUT_CLS + ' font-mono'} /></Field>
+      </div>
+      <div className="p-4 hair-t flex items-center justify-end gap-2">
+        <GhostButton onClick={onClose}>Cancel</GhostButton>
+        <PrimaryButton mode="ember" icon="check" onClick={save} disabled={saving || !f.name.trim()} className={(saving||!f.name.trim())?'opacity-50 pointer-events-none':''}>{saving ? 'Saving…' : 'Save changes'}</PrimaryButton>
+      </div>
+    </SlideOver>
   );
 }
 

@@ -31,6 +31,7 @@ from app.routers import admin_users as admin_users_router
 from app.routers import geofence as geofence_router
 from app.routers import campus_zones as campus_zones_router
 from app.routers import super_zones as super_zones_router
+from app.routers import admin_tenants as admin_tenants_router
 from app.routers import admin_timetable as admin_timetable_router
 
 
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     # Campus zones (admin polygon CRUD) — must be included before zones_router to avoid /{id} conflict
     app.include_router(campus_zones_router.router)
     app.include_router(super_zones_router.router)
+    app.include_router(admin_tenants_router.router)
 
     # Serve uploaded feed attachments in dev
     from fastapi.staticfiles import StaticFiles
