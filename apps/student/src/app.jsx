@@ -140,8 +140,11 @@ function AppProvider({ children }) {
   };
   const stored = getStoredAuth();
 
+  // Campus is student-only. Default-deny: anyone who is NOT a confirmed student
+  // (general 'user', admin, moderator, or an unexpected/stale role) gets national.
+  // Keeps the pre-login screen on campus branding (stored is null before auth).
   const [mode, setMode] = useState(
-    (stored?.isAuthenticated && stored?.user?.role === 'user') ? 'country' : 'campus'
+    (stored?.isAuthenticated && stored?.user?.role !== 'student') ? 'country' : 'campus'
   );
   const [lang, setLangRaw] = useState(
     localStorage.getItem('anchor_lang') === 'BN' ? 'BN' : 'EN'
@@ -189,7 +192,8 @@ function AppProvider({ children }) {
     const newAuth = { isAuthenticated: true, user: userData, authStep: null, pendingIdentifier: null };
     setAuth(newAuth);
     localStorage.setItem('anchor_auth', JSON.stringify(newAuth));
-    if (userData.role === 'user') setMode('country');
+    // Students are campus-first (can toggle to national); everyone else is national-only.
+    setMode(userData.role === 'student' ? 'campus' : 'country');
     // First-run opt-in: show the consent modal on a device that hasn't answered yet,
     // but only where a browser prompt can actually help. On iOS-in-a-tab (or other
     // environments that can't receive push), the persistent AlertReadinessCTA shows
