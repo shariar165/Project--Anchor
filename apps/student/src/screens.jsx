@@ -747,6 +747,7 @@ function AlertScreen() {
   const [safeMarked, setSafeMarked] = _useS(false);
   const [sending, setSending] = _useS(false);
   const [gpsResult, setGpsResult] = _useS(null);
+  const [gpsRetrying, setGpsRetrying] = _useS(false);
   const [noticeMsg, setNoticeMsg] = _useS(null);
   const startRef = _useR(null);
   const rafRef = _useR(null);
@@ -767,6 +768,27 @@ function AlertScreen() {
       { timeout: 10000, maximumAge: 30000, enableHighAccuracy: false }
     );
   }, [showConfirm]);
+
+  // Retry with a longer timeout + high accuracy when the quick pre-check failed —
+  // on phones the first fix is often denied/slow; a deliberate retry frequently
+  // succeeds and lets the alert carry real coordinates instead of "no GPS".
+  const retryGps = () => {
+    if (!navigator.geolocation) { setGpsResult({ gps_status: 'unavailable' }); return; }
+    setGpsRetrying(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGpsResult({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          gps_accuracy_m: pos.coords.accuracy ? Math.round(pos.coords.accuracy) : null,
+          gps_status: 'ok',
+        });
+        setGpsRetrying(false);
+      },
+      () => { setGpsResult({ gps_status: 'unavailable' }); setGpsRetrying(false); },
+      { timeout: 20000, maximumAge: 0, enableHighAccuracy: true }
+    );
+  };
 
   const startHold = () => {
     if (activated || showConfirm) return;
@@ -860,6 +882,8 @@ function AlertScreen() {
           onCancel={handleCancelConfirm}
           sending={sending}
           gpsUnavailable={gpsResult?.gps_status === 'unavailable'}
+          onRetryGps={retryGps}
+          retryingGps={gpsRetrying}
         />
       )}
 
@@ -955,7 +979,7 @@ function AlertScreen() {
 }
 
 // ─── Double-confirmation modal (anti-trap, spec §4.2) ────────────────────────
-function ConfirmAlertModal({ onConfirm, onCancel, sending, gpsUnavailable }) {
+function ConfirmAlertModal({ onConfirm, onCancel, sending, gpsUnavailable, onRetryGps, retryingGps }) {
   const [btnEnabled, setBtnEnabled] = _useS(false);
 
   _useE(() => {
@@ -1019,6 +1043,17 @@ function ConfirmAlertModal({ onConfirm, onCancel, sending, gpsUnavailable }) {
           fontSize: 12, color: 'rgba(184,137,58,0.95)', lineHeight: 1.5,
         }}>
           ⚠️ Location unavailable — nearby users won't receive an alert. Your proctor will still be notified.
+          {onRetryGps && (
+            <button onClick={onRetryGps} disabled={retryingGps}
+              style={{
+                display: 'block', marginTop: 8, padding: '6px 12px', borderRadius: 8,
+                border: '1px solid rgba(184,137,58,0.5)', background: 'transparent',
+                color: 'rgba(184,137,58,0.95)', fontSize: 12, fontWeight: 600,
+                cursor: retryingGps ? 'default' : 'pointer', fontFamily: 'var(--font-sans)',
+              }}>
+              {retryingGps ? 'Locating…' : 'Retry location'}
+            </button>
+          )}
         </div>
       )}
 

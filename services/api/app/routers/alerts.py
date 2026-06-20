@@ -663,6 +663,72 @@ async def deregister_fcm_token(
     return {"message": "FCM token de-registered", "disabled": disabled}
 
 
+@router.post("/v1/users/me/fcm-token/test")
+@limiter.limit("6/minute")
+async def test_fcm_push(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(get_current_user),
+):
+    """
+    Send a test push to all of the current user's registered devices so a user can
+    verify, per device, that push notifications actually arrive. Returns per-token
+    results and self-heals by disabling permanently-invalid tokens (same policy as
+    the alert fan-out — see fcm.PERMANENT_ERRORS).
+    """
+    from app.services import fcm as fcm_svc
+
+    result = await db.execute(
+        select(UserFCMToken).where(
+            and_(
+                UserFCMToken.user_id == token.user_id,
+                UserFCMToken.disabled_at.is_(None),
+            )
+        )
+    )
+    rows = result.scalars().all()
+    if not rows:
+        return {
+            "tokens": 0,
+            "delivered": 0,
+            "results": [],
+            "message": "No registered devices on this account. Enable notifications first.",
+        }
+
+    tokens = [r.fcm_token for r in rows]
+    send_results = await fcm_svc.send_batch(
+        tokens,
+        title="Anchor: Test alert ✓",
+        body="Push notifications are working on this device.",
+        data={"category": "test"},
+    )
+
+    delivered = 0
+    dead_tokens: list[str] = []
+    out = []
+    for r in rows:
+        res = send_results.get(r.fcm_token, {"ok": False, "error": "error"})
+        if res.get("ok"):
+            delivered += 1
+        elif res.get("error") in fcm_svc.PERMANENT_ERRORS:
+            dead_tokens.append(r.fcm_token)
+        out.append({
+            "device_id": r.device_id,
+            "platform": r.platform.value if hasattr(r.platform, "value") else r.platform,
+            "ok": bool(res.get("ok")),
+            "error": res.get("error"),
+        })
+
+    if dead_tokens:
+        now = datetime.now(tz=timezone.utc)
+        for r in rows:
+            if r.fcm_token in dead_tokens:
+                r.disabled_at = now
+        await db.commit()
+
+    return {"tokens": len(tokens), "delivered": delivered, "results": out}
+
+
 @router.post("/v1/users/me/location")
 @limiter.limit("60/minute")
 async def update_location(

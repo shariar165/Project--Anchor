@@ -15,7 +15,73 @@ const AUTH_ROUTES = new Set([
   'mfa-verify', 'mfa-setup', 'tracking-lookup',
 ]);
 
-function GeofenceConsentModal({ onAccept, onDecline }) {
+// Human-readable guidance for each push-capability reason returned by
+// window.syncPushToken / getPushCapability. Shared by the consent modal and the
+// Profile notification toggle so the messaging stays consistent.
+function pushReasonMessage(reason) {
+  switch (reason) {
+    case 'granted':
+    case 'ok':
+    case 'default':
+      return null; // nothing to warn about
+    case 'ios-needs-install':
+      return 'On iPhone, tap the Share button, then "Add to Home Screen", and open Anchor from the icon to receive alerts.';
+    case 'ios-chrome':
+      return 'On iPhone, open Anchor in Safari (not Chrome), then "Add to Home Screen" to receive alerts.';
+    case 'denied':
+      return 'Notifications are blocked. Enable them for this site in your browser settings to receive alerts.';
+    case 'insecure-context':
+      return 'Notifications need a secure (https) connection.';
+    default:
+      return "This browser can't receive push notifications, so alerts may not pop up on this device.";
+  }
+}
+
+function GeofenceConsentModal({ onComplete, onDismiss }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null);   // inline result message after enabling
+  const [done, setDone] = useState(false);  // requests finished — show result + Done
+
+  // Requests location, then notifications, in sequence (Chrome shows one prompt at
+  // a time and silently drops simultaneous ones). Persists consent only when a real
+  // position was obtained, and surfaces exactly why push did/didn't enable.
+  const handleEnable = async () => {
+    setBusy(true);
+    setNote(null);
+    // Step 1 — location FIRST. Resolve with the position on success, null on error.
+    const position = await new Promise((res) => {
+      if (!navigator.geolocation) return res(null);
+      navigator.geolocation.getCurrentPosition(
+        (p) => res(p),
+        () => res(null),
+        { timeout: 10000, maximumAge: 60000 }
+      );
+    });
+    const locationGranted = !!position;
+    // Step 2 — notifications SECOND, only after the location prompt is dismissed.
+    let pushReason = 'unsupported';
+    try {
+      if (window.syncPushToken) pushReason = await window.syncPushToken({ interactive: true });
+    } catch (_) { /* best-effort */ }
+
+    // Let the parent persist consent + post the first snapshot.
+    onComplete({ locationGranted, position, pushReason });
+
+    // Build an inline note if anything needs the user's attention.
+    const msgs = [];
+    if (!locationGranted) msgs.push('Location is off — enable it to receive nearby alerts.');
+    const pushMsg = pushReasonMessage(pushReason);
+    if (pushMsg) msgs.push(pushMsg);
+
+    setBusy(false);
+    if (msgs.length === 0) {
+      onDismiss();  // all good — close immediately
+    } else {
+      setNote(msgs.join(' '));
+      setDone(true);
+    }
+  };
+
   return (
     <div style={{ position:'fixed', inset:0, zIndex:9999, background:'rgba(11,29,53,0.55)',
                   backdropFilter:'blur(4px)', display:'flex', alignItems:'flex-end', justifyContent:'center' }}>
@@ -26,23 +92,42 @@ function GeofenceConsentModal({ onAccept, onDecline }) {
         <div style={{ fontSize:22, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)',
                       marginBottom:12 }}>Enable nearby alerts?</div>
         <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.65,
-                    fontFamily:'var(--font-sans)', marginBottom:24 }}>
+                    fontFamily:'var(--font-sans)', marginBottom: note ? 16 : 24 }}>
           Anchor can notify you when someone near you triggers an emergency alert.
           To do this we'll ask for two permissions next — <strong>location</strong>{' '}
           (shared anonymously, never stored beyond 10 minutes) and{' '}
           <strong>notifications</strong> (so the alert can pop up on your phone).
           You can turn both off at any time in Settings.
         </p>
-        <button onClick={onAccept} className="btn btn-primary"
-          style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600, marginBottom:10 }}>
-          Enable nearby alerts
-        </button>
-        <button onClick={onDecline}
-          style={{ width:'100%', height:40, borderRadius:12, fontSize:14,
-                   background:'transparent', border:'none', cursor:'pointer',
-                   color:'var(--muted)', fontFamily:'var(--font-sans)' }}>
-          Not now
-        </button>
+
+        {note && (
+          <div style={{ marginBottom:18, padding:'12px 14px', borderRadius:12,
+                        background:'rgba(196,69,54,0.08)', border:'1px solid rgba(196,69,54,0.22)',
+                        color:'var(--ember)', fontSize:12.5, lineHeight:1.55, fontFamily:'var(--font-sans)' }}>
+            {note}
+          </div>
+        )}
+
+        {!done ? (
+          <>
+            <button onClick={handleEnable} disabled={busy} className="btn btn-primary"
+              style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600,
+                       marginBottom:10, opacity: busy ? 0.7 : 1 }}>
+              {busy ? 'Requesting permissions…' : 'Enable nearby alerts'}
+            </button>
+            <button onClick={onDismiss} disabled={busy}
+              style={{ width:'100%', height:40, borderRadius:12, fontSize:14,
+                       background:'transparent', border:'none', cursor: busy ? 'default' : 'pointer',
+                       color:'var(--muted)', fontFamily:'var(--font-sans)' }}>
+              Not now
+            </button>
+          </>
+        ) : (
+          <button onClick={onDismiss} className="btn btn-primary"
+            style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600 }}>
+            Got it
+          </button>
+        )}
       </div>
     </div>
   );
@@ -105,14 +190,15 @@ function AppProvider({ children }) {
     setAuth(newAuth);
     localStorage.setItem('anchor_auth', JSON.stringify(newAuth));
     if (userData.role === 'user') setMode('country');
-    // Show the consent modal on first login, AND re-show it for a device that
-    // consented to location earlier but never granted notification permission
-    // (permission still 'default') — otherwise that device would never get a
-    // token and never receive a push, with no way back to the in-app opt-in.
+    // First-run opt-in: show the consent modal on a device that hasn't answered yet,
+    // but only where a browser prompt can actually help. On iOS-in-a-tab (or other
+    // environments that can't receive push), the persistent AlertReadinessCTA shows
+    // the right guidance ("Add to Home Screen") instead — popping a modal there is a
+    // dead end. Every other not-ready state is covered by that always-present CTA.
     const answered = localStorage.getItem('anchor_geofence_consent_answered') === 'true';
-    const consented = localStorage.getItem('anchor_geofence_consent') === 'true';
-    const notifUngranted = typeof Notification === 'undefined' || Notification.permission === 'default';
-    if (!answered || (consented && notifUngranted)) {
+    const cap = window.getPushCapability ? window.getPushCapability() : { reason: 'default' };
+    const promptCanHelp = ['default', 'granted', 'ok', 'denied'].includes(cap.reason);
+    if (!answered && promptCanHelp) {
       setShowGeofencePrompt(true);
     }
   };
@@ -233,30 +319,43 @@ function AppProvider({ children }) {
       {children}
       {showGeofencePrompt && (
         <GeofenceConsentModal
-          onAccept={async () => {
-            // Receiving an alert fan-out needs BOTH location consent and a
-            // registered FCM token. Request the two browser permissions in
-            // sequence (awaiting each) so they never collide — Chrome shows one
-            // permission prompt at a time and silently drops simultaneous ones.
-            // Step 1 — location permission FIRST. Resolve on success OR error so
-            // a denial doesn't hang the flow; this surfaces and waits out the
-            // geolocation prompt before we ask for anything else.
-            await new Promise((res) => {
-              if (!navigator.geolocation) return res();
-              navigator.geolocation.getCurrentPosition(res, res, { timeout: 10000, maximumAge: 60000 });
-            });
-            // Step 2 — notification permission SECOND, only after location is done.
-            try { if (window.syncPushToken) await window.syncPushToken({ interactive: true }); } catch (_) { /* best-effort */ }
-            // Step 3 — persist + start the location watcher (permission already
-            // granted above, so watchPosition won't re-prompt).
-            localStorage.setItem('anchor_geofence_consent', 'true');
+          onComplete={({ locationGranted, position }) => {
+            // The modal already ran the two permission prompts in sequence. Here we
+            // only persist the OUTCOME: consent is true only when a real position
+            // was obtained (so we never mark a device "consented" while location is
+            // actually blocked, which would leave it eligible-but-snapshotless).
             localStorage.setItem('anchor_geofence_consent_answered', 'true');
-            setGeofenceConsent(true);
-            setShowGeofencePrompt(false);
+            if (locationGranted && position) {
+              localStorage.setItem('anchor_geofence_consent', 'true');
+              setGeofenceConsent(true);
+              // Post the first snapshot immediately so the device is eligible for
+              // fan-out right away (and shows up in the super-admin GPS view)
+              // without waiting for the throttled watchPosition callback.
+              const accessToken = localStorage.getItem('anchor_access_token');
+              if (accessToken) {
+                fetch((window.ANCHOR_API_URL || 'http://localhost:8000') + '/v1/users/me/location', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + accessToken },
+                  body: JSON.stringify({
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                    geofence_consent: true,
+                  }),
+                }).catch(err => console.warn('[Location] Initial snapshot failed:', err));
+              }
+            } else {
+              localStorage.setItem('anchor_geofence_consent', 'false');
+              setGeofenceConsent(false);
+            }
           }}
-          onDecline={() => {
-            localStorage.setItem('anchor_geofence_consent', 'false');
-            localStorage.setItem('anchor_geofence_consent_answered', 'true');
+          onDismiss={() => {
+            // If the user closed without ever resolving (tapped "Not now"), record
+            // that they answered so the modal doesn't reappear every load — the
+            // persistent CTA on Home/Alert still offers a one-tap enable.
+            if (localStorage.getItem('anchor_geofence_consent_answered') !== 'true') {
+              localStorage.setItem('anchor_geofence_consent', 'false');
+              localStorage.setItem('anchor_geofence_consent_answered', 'true');
+            }
             setShowGeofencePrompt(false);
           }}
         />
@@ -438,6 +537,97 @@ function BottomNav() {
 // ─────────────────────────────────────────────────────────────
 // Route renderer
 // ─────────────────────────────────────────────────────────────
+// Persistent, dismissible call-to-action shown on the Home/Alert screens when this
+// device is NOT ready to receive emergency pushes — i.e. notifications aren't granted
+// or location consent is off. This is how a user gets EVERY device into the deliverable
+// state: the browser only grants permission on a user gesture, so a one-tap button here
+// drives both prompts. Re-appears on the next load while the device stays not-ready.
+function AlertReadinessCTA() {
+  const { auth, geofenceConsent, setGeofenceConsent } = useApp();
+  const [dismissed, setDismissed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [, force] = useState(0);  // re-evaluate capability after enabling
+
+  if (!auth.isAuthenticated || dismissed) return null;
+
+  const cap = (window.getPushCapability && window.getPushCapability()) || { reason: 'ok' };
+  const notifReady = cap.reason === 'granted';
+  const locReady = geofenceConsent;
+  if (notifReady && locReady) return null;
+
+  const pushMsg = notifReady ? null : pushReasonMessage(cap.reason);
+  const detail =
+    pushMsg ? pushMsg
+    : !locReady ? 'Share your location so we can alert you when someone nearby needs help.'
+    : 'Turn on notifications so emergency alerts pop up on this device.';
+
+  const enable = async () => {
+    setBusy(true);
+    // Location first (so it's eligible + visible to operators), notifications second.
+    if (!locReady) {
+      const position = await new Promise((res) => {
+        if (!navigator.geolocation) return res(null);
+        navigator.geolocation.getCurrentPosition((p) => res(p), () => res(null),
+          { timeout: 10000, maximumAge: 60000 });
+      });
+      if (position) {
+        localStorage.setItem('anchor_geofence_consent', 'true');
+        localStorage.setItem('anchor_geofence_consent_answered', 'true');
+        setGeofenceConsent(true);
+        const t = localStorage.getItem('anchor_access_token');
+        if (t) {
+          fetch((window.ANCHOR_API_URL || 'http://localhost:8000') + '/v1/users/me/location', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t },
+            body: JSON.stringify({ lat: position.coords.latitude, lng: position.coords.longitude, geofence_consent: true }),
+          }).catch(() => {});
+        }
+      }
+    }
+    try { if (window.syncPushToken) await window.syncPushToken({ interactive: true }); } catch (_) {}
+    setBusy(false);
+    force(n => n + 1);
+  };
+
+  // iOS-in-a-tab cannot enable push at all from a button — only guidance helps.
+  const actionable = cap.reason !== 'ios-needs-install' && cap.reason !== 'ios-chrome'
+    && cap.reason !== 'unsupported' && cap.reason !== 'insecure-context';
+
+  return (
+    <div style={{ margin: '12px 16px 0', padding: '14px 16px', borderRadius: 16,
+                  background: 'rgba(196,69,54,0.07)', border: '1px solid rgba(196,69,54,0.22)' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <div style={{ flexShrink: 0, marginTop: 1, color: 'var(--ember)' }}>
+          <IconBell size={18} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--navy)', fontFamily: 'var(--font-sans)' }}>
+            Emergency alerts are off on this device
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5, marginTop: 3, fontFamily: 'var(--font-sans)' }}>
+            {detail}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
+            {actionable && (
+              <button onClick={enable} disabled={busy}
+                style={{ height: 34, padding: '0 14px', borderRadius: 10, border: 'none',
+                         background: 'var(--ember)', color: '#fff', fontSize: 12.5, fontWeight: 600,
+                         cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1, fontFamily: 'var(--font-sans)' }}>
+                {busy ? 'Enabling…' : 'Turn on alerts'}
+              </button>
+            )}
+            <button onClick={() => setDismissed(true)}
+              style={{ height: 34, padding: '0 10px', borderRadius: 10, border: 'none', background: 'transparent',
+                       color: 'var(--muted)', fontSize: 12.5, cursor: 'pointer', fontFamily: 'var(--font-sans)' }}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RouteView() {
   const { route, mode, auth } = useApp();
   const isAuthRoute = AUTH_ROUTES.has(route.name);
@@ -492,8 +682,11 @@ function RouteView() {
     ? LoginScreen
     : (Map[route.name] || HomeScreen);
 
+  const showReadinessCTA = auth.isAuthenticated && (route.name === 'home' || route.name === 'alert');
+
   return (
     <div key={route.name + mode} className={`screen ${mode === 'campus' ? 'tint-campus' : 'tint-country'}`}>
+      {showReadinessCTA && <AlertReadinessCTA/>}
       <Comp params={route.params}/>
       {!isAuthRoute && <div style={{ height: 96 }}/>}
       {!isAuthRoute && <BottomNav/>}

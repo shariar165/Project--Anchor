@@ -1,0 +1,19 @@
+{
+  "name": "Anchor AI — Civic Trust Platform",
+  "short_name": "Anchor",
+  "description": "Emergency alerts, campus complaints, and legal companion for Bangladesh.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0E0E0F",
+  "theme_color": "#0B1D35",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "192x192 512x512 any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

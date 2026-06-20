@@ -491,6 +491,48 @@ async def test_deregister_fcm_token(client: AsyncClient, registered_user, db_ses
     assert len(rows) == 1 and rows[0].disabled_at is not None
 
 
+@pytest.mark.asyncio
+async def test_fcm_test_push_no_devices(client: AsyncClient, registered_user, db_session, mock_redis):
+    """Test-push on an account with no registered device reports tokens=0."""
+    resp = await client.post("/v1/users/me/fcm-token/test", headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["tokens"] == 0
+    assert body["delivered"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fcm_test_push_reports_and_disables_dead(
+    client: AsyncClient, registered_user, db_session, mock_redis, monkeypatch
+):
+    """Test-push returns per-device results and disables permanently-invalid tokens."""
+    h = _auth(registered_user["tokens"])
+    await client.post("/v1/users/me/fcm-token", json={
+        "fcm_token": "tok-good", "device_id": "dev-good", "platform": "web"}, headers=h)
+    await client.post("/v1/users/me/fcm-token", json={
+        "fcm_token": "tok-bad", "device_id": "dev-bad", "platform": "android"}, headers=h)
+
+    async def _fake_send_batch(tokens, title, body, data=None):
+        return {
+            "tok-good": {"message_id": "m1", "ok": True, "error": None},
+            "tok-bad": {"message_id": None, "ok": False, "error": "sender_id_mismatch"},
+        }
+    monkeypatch.setattr("app.services.fcm.send_batch", _fake_send_batch)
+
+    resp = await client.post("/v1/users/me/fcm-token/test", headers=h)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["tokens"] == 2
+    assert body["delivered"] == 1
+    assert len(body["results"]) == 2
+
+    # The sender_id_mismatch token must be auto-disabled (PERMANENT_ERRORS self-heal).
+    rows = (await db_session.execute(select(UserFCMToken))).scalars().all()
+    by_token = {r.fcm_token: r for r in rows}
+    assert by_token["tok-bad"].disabled_at is not None
+    assert by_token["tok-good"].disabled_at is None
+
+
 def test_fcm_classify_and_permanent_errors():
     """Send-error classification maps the permanently-invalid token cases."""
     from app.services.fcm import _classify, PERMANENT_ERRORS
