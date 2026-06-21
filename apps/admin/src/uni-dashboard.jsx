@@ -1,9 +1,94 @@
-// University Dashboard — role-adaptive
+// University Dashboard — role-adaptive, backend-connected
 var { useState, useEffect, useCallback, useRef, useMemo } = React;
 const { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, RadialBarChart, RadialBar, Legend } = window.Recharts || {};
 
 const chartAxis = { stroke: '#6B7785', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' };
 const chartGrid = { stroke: '#E5E0D6', strokeDasharray: '0' };
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+function _cap(s) { return String(s || '').replace(/^\w/, c => c.toUpperCase()); }
+
+// Average resolution seconds → "3.2d" / "5.4h" / "—".
+function _fmtResolution(secs) {
+  if (!secs || secs <= 0) return '—';
+  const days = secs / 86400;
+  if (days >= 1) return `${days.toFixed(1)}d`;
+  return `${(secs / 3600).toFixed(1)}h`;
+}
+
+// Map a Filing.state to a StatusPill status label.
+const _FILING_STATUS = {
+  draft: 'Submitted', moderation_queue: 'Submitted', routed: 'Submitted',
+  subject_notified: 'Under Review', subject_responded: 'Under Review', under_review: 'Under Review',
+  resolved: 'Resolved', dismissed: 'Rejected', withdrawn: 'Closed', spam_rejected: 'Rejected',
+};
+function _filingStatus(state) { return _FILING_STATUS[state] || 'Submitted'; }
+
+// Render a labelled horizontal bar breakdown from a {key: count} map.
+function BreakdownBars({ data, color = 'var(--sage)', labelMap }) {
+  const entries = Object.entries(data || {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return <div className="text-[12px] text-[var(--muted)] py-2">No data yet.</div>;
+  const max = Math.max(...entries.map(([, v]) => v));
+  return (
+    <div className="space-y-3">
+      {entries.map(([k, v]) => (
+        <div key={k}>
+          <div className="flex items-center justify-between text-[12px] mb-1">
+            <span className="text-[var(--ink)]">{labelMap ? (labelMap[k] || _cap(k.replace(/_/g, ' '))) : _cap(k.replace(/_/g, ' '))}</span>
+            <span className="font-mono text-[var(--muted)]">{v}</span>
+          </div>
+          <div className="h-1.5 rounded-sm bg-[var(--mist)]/70 overflow-hidden">
+            <div className="h-full" style={{ width: `${(v / max) * 100}%`, background: color }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Shared fetch of the admin filing stats + a small recent-filings list.
+function useFilingData() {
+  const [stats, setStats] = useState(null);
+  const [filings, setFilings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    Promise.all([
+      AnchorAPI.apiGet('/v1/admin/filings/stats'),
+      AnchorAPI.apiGet('/v1/admin/filings?page=1').catch(() => []),
+    ])
+      .then(([s, list]) => { if (!alive) return; setStats(s); setFilings(Array.isArray(list) ? list : (list.items || [])); })
+      .catch(e => { if (alive) setError(e.message || 'Failed to load'); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, []);
+  return { stats, filings, loading, error };
+}
+
+function RecentFilings({ filings, onGo, limit = 5 }) {
+  if (!filings.length) return <EmptyState icon="inbox" title="No filings yet." body="Submitted complaints, reports, and grievances appear here." />;
+  return (
+    <div className="hair-t border-t">
+      {filings.slice(0, limit).map(f => (
+        <button key={f.id} onClick={() => onGo('/university/complaints')} className={`w-full text-left p-4 hover:bg-[var(--mist)]/30 hair-b flex items-start gap-3 ${StatusEdgeClass(_filingStatus(f.state))}`}>
+          <Icon name="file-text" size={16} className="mt-0.5 text-[var(--graphite)]" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <MonoChip>{f.filing_number || (f.id ? f.id.slice(0, 8) : '—')}</MonoChip>
+              <span className="text-[11px] text-[var(--muted)] ml-auto">{f.created_at ? new Date(f.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : ''}</span>
+            </div>
+            <div className="text-[13px] text-[var(--ink)] line-clamp-1">{(f.template && f.template.name) || _cap(f.category)}</div>
+            <div className="text-[11px] text-[var(--muted)] mt-1">{_cap(f.category)}</div>
+          </div>
+          <StatusPill status={_filingStatus(f.state)} />
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function UniDashboard({ role, onGo }) {
   return (
@@ -32,72 +117,76 @@ function UniDashboard({ role, onGo }) {
 
 function dashboardDescription(role) {
   return {
-    'Department Head':'Complaint queues, escalations, and your department\u2019s academic operations for the SWE department this week.',
-    'Dean':'Cross-departmental performance, escalated grievances, and AI-flagged culture patterns across your faculty.',
+    'Department Head':'Complaint queues, escalations, and your department’s academic operations this week.',
+    'Dean':'Cross-departmental performance, escalated grievances, and faculty-wide caseload.',
     'Proctor':'Active campus alerts, serious misconduct queue, and the safety operations console.',
     'Provost':'Hostel complaints, hall tutor reports, and residence-life operations.',
-    'VC Office':'Level-3 escalations and platform-wide intelligence for the Vice-Chancellor\u2019s office.',
+    'VC Office':'Level-3 escalations and platform-wide intelligence for the Vice-Chancellor’s office.',
     'IT Admin':'User management, routing configuration, and the technical health of your tenant.',
   }[role];
 }
 
 // ----- Department Head -----
 function DeptHeadDashboard({ onGo }) {
-  const D = window.AnchorData;
+  const { stats, filings, loading } = useFilingData();
+  const inflow = (stats?.inflow_30d || []).map(p => ({ day: p.date ? p.date.slice(8, 10) : '', complaints: p.count }));
+  const categories = Object.entries(stats?.by_category || {}).map(([name, value]) => ({ name: _cap(name), value }));
+  const catMax = Math.max(1, ...categories.map(c => c.value));
+
   return (
     <>
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <KpiCard label="Open complaints" value="23" delta="+4 this week" deltaTone="up" subtle="from 19" />
-        <KpiCard label="Under review" value="11" subtle="3 awaiting your response" />
-        <KpiCard label="Avg resolution" value="3.2d" delta="−0.4d" deltaTone="down" subtle="vs. last month" />
-        <KpiCard label="Escalated to Dean" value="2" subtle="GRV-2026-A4F3, A4F6" accent="gold" />
+        <KpiCard label="Open complaints" value={loading ? '…' : (stats?.open ?? '—')} subtle="in the pipeline" />
+        <KpiCard label="Under review" value={loading ? '…' : (stats?.under_review ?? '—')} subtle="awaiting decision" />
+        <KpiCard label="Avg resolution" value={loading ? '…' : _fmtResolution(stats?.avg_resolution_secs)} subtle="submit → resolve" />
+        <KpiCard label="Escalated" value={loading ? '…' : (stats?.escalated ?? '—')} subtle="raised a level" accent="gold" />
       </div>
 
       <div className="grid grid-cols-3 gap-4 mb-6">
         {/* Inflow chart */}
         <Card className="col-span-2">
-          <SectionLabel right={<div className="flex items-center gap-2 text-[11px] text-[var(--muted)]">
-            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{background:'var(--sage)'}}/>this month</span>
-            <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{background:'var(--mist)'}}/>prev month</span>
-          </div>}>Complaint inflow · last 30 days</SectionLabel>
+          <SectionLabel right={<MonoChip>30d</MonoChip>}>Complaint inflow · last 30 days</SectionLabel>
           <div style={{ height: 240 }}>
-            <ResponsiveContainer>
-              <AreaChart data={D.inflow} margin={{top:5,right:8,left:-15,bottom:0}}>
-                <defs>
-                  <linearGradient id="sageGrad" x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="0%" stopColor="#4A6B5C" stopOpacity={0.25}/>
-                    <stop offset="100%" stopColor="#4A6B5C" stopOpacity={0.02}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid {...chartGrid} vertical={false} />
-                <XAxis dataKey="day" {...chartAxis} tickLine={false} axisLine={{stroke:'#E5E0D6'}} />
-                <YAxis {...chartAxis} tickLine={false} axisLine={false} />
-                <Tooltip contentStyle={{ background:'#FDFBF7', border:'1px solid #E5E0D6', borderRadius:2, fontSize:12 }} />
-                <Area type="monotone" dataKey="complaints" stroke="#4A6B5C" strokeWidth={2} fill="url(#sageGrad)" />
-              </AreaChart>
-            </ResponsiveContainer>
+            {loading
+              ? <div className="h-full grid place-items-center text-[13px] text-[var(--muted)]">Loading…</div>
+              : <ResponsiveContainer>
+                  <AreaChart data={inflow} margin={{top:5,right:8,left:-15,bottom:0}}>
+                    <defs>
+                      <linearGradient id="sageGrad" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="#4A6B5C" stopOpacity={0.25}/>
+                        <stop offset="100%" stopColor="#4A6B5C" stopOpacity={0.02}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid {...chartGrid} vertical={false} />
+                    <XAxis dataKey="day" {...chartAxis} tickLine={false} axisLine={{stroke:'#E5E0D6'}} interval={4} />
+                    <YAxis {...chartAxis} tickLine={false} axisLine={false} allowDecimals={false} />
+                    <Tooltip contentStyle={{ background:'#FDFBF7', border:'1px solid #E5E0D6', borderRadius:2, fontSize:12 }} />
+                    <Area type="monotone" dataKey="complaints" stroke="#4A6B5C" strokeWidth={2} fill="url(#sageGrad)" />
+                  </AreaChart>
+                </ResponsiveContainer>}
           </div>
         </Card>
 
         {/* Category breakdown */}
         <Card>
-          <SectionLabel>Category breakdown · this month</SectionLabel>
-          <div className="space-y-3">
-            {D.categoryBreakdown.map(c => {
-              const max = Math.max(...D.categoryBreakdown.map(x=>x.value));
-              return (
-                <div key={c.name}>
-                  <div className="flex items-center justify-between text-[12px] mb-1">
-                    <span className="text-[var(--ink)]">{c.name}</span>
-                    <span className="font-mono text-[var(--muted)]">{c.value}</span>
-                  </div>
-                  <div className="h-1.5 rounded-sm bg-[var(--mist)]/70 overflow-hidden">
-                    <div className="h-full" style={{ width: `${(c.value/max)*100}%`, background:'var(--sage)' }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <SectionLabel>Category breakdown</SectionLabel>
+          {loading
+            ? <div className="text-[12px] text-[var(--muted)] py-2">Loading…</div>
+            : categories.length === 0
+              ? <div className="text-[12px] text-[var(--muted)] py-2">No complaints filed yet.</div>
+              : <div className="space-y-3">
+                  {categories.map(c => (
+                    <div key={c.name}>
+                      <div className="flex items-center justify-between text-[12px] mb-1">
+                        <span className="text-[var(--ink)]">{c.name}</span>
+                        <span className="font-mono text-[var(--muted)]">{c.value}</span>
+                      </div>
+                      <div className="h-1.5 rounded-sm bg-[var(--mist)]/70 overflow-hidden">
+                        <div className="h-full" style={{ width: `${(c.value/catMax)*100}%`, background:'var(--sage)' }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>}
         </Card>
       </div>
 
@@ -108,67 +197,18 @@ function DeptHeadDashboard({ onGo }) {
             <SectionLabel className="mb-0">Recent activity</SectionLabel>
             <button onClick={()=>onGo('/university/complaints')} className="text-[12px] text-[var(--sage)] hover:underline">Open queue →</button>
           </div>
-          <div className="hair-t border-t">
-            {D.complaints.slice(0,5).map((c, i) => (
-              <button key={c.id} onClick={()=>onGo('/university/complaints')} className={`w-full text-left p-4 hover:bg-[var(--mist)]/30 hair-b flex items-start gap-3 ${StatusEdgeClass(c.status)}`}>
-                <Icon name={c.categoryIcon} size={16} className="mt-0.5 text-[var(--graphite)]" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <MonoChip>{c.id}</MonoChip>
-                    {c.anonymous && <AnonymityBadge />}
-                    <SeverityDots severity={c.severity} />
-                    <span className="text-[11px] text-[var(--muted)] ml-auto">{c.lastAction}</span>
-                  </div>
-                  <div className="text-[13px] text-[var(--ink)] line-clamp-1">{c.title}</div>
-                  <div className="text-[11px] text-[var(--muted)] mt-1 flex items-center gap-2">
-                    <span>{c.category}</span>
-                    <span>·</span>
-                    <span>{c.routing.join(' → ')}</span>
-                  </div>
-                </div>
-                <StatusPill status={c.status} />
-              </button>
-            ))}
-          </div>
+          {loading ? <div className="px-5 py-4 text-[13px] text-[var(--muted)]">Loading…</div> : <RecentFilings filings={filings} onGo={onGo} />}
         </Card>
 
-        {/* Right column: notes + AI insights */}
+        {/* Right column: real breakdowns */}
         <div className="flex flex-col gap-4">
           <Card>
-            <SectionLabel>AI pattern insights</SectionLabel>
-            <div className="space-y-3 text-[12.5px] text-[var(--graphite)] leading-relaxed">
-              <div className="flex gap-2">
-                <Icon name="sparkles" size={14} className="mt-0.5 shrink-0" style={{ color:'var(--gold)' }} />
-                <span><span className="font-medium text-[var(--ink)]">2 classroom-cooling complaints</span> share Knowledge Tower as a hotspot.</span>
-              </div>
-              <div className="flex gap-2">
-                <Icon name="sparkles" size={14} className="mt-0.5 shrink-0" style={{ color:'var(--gold)' }} />
-                <span><span className="font-medium text-[var(--ink)]">4 anonymous reports</span> in 6 weeks reference the same lab instructor — Dean-level review suggested.</span>
-              </div>
-              <div className="flex gap-2">
-                <Icon name="sparkles" size={14} className="mt-0.5 shrink-0" style={{ color:'var(--gold)' }} />
-                <span>Resolution time on <span className="font-medium text-[var(--ink)]">Hostel category</span> has crept up by <span className="font-mono">+1.4d</span> this semester.</span>
-              </div>
-            </div>
-            <button className="mt-4 text-[12px] text-[var(--sage)] hover:underline inline-flex items-center gap-1">Open all insights <Icon name="arrow-right" size={12} /></button>
+            <SectionLabel>Caseload by status</SectionLabel>
+            <BreakdownBars data={stats?.by_state} color="var(--sage)" />
           </Card>
-
           <Card>
-            <SectionLabel>Next escalations</SectionLabel>
-            <div className="space-y-2">
-              {[
-                { id:'CMP-2026-A4F2', label:'AC unit · Room 504', in:'in 18h' },
-                { id:'CMP-2026-A4F8', label:'Lift · Knowledge Tower', in:'in 32h' },
-              ].map(x => (
-                <div key={x.id} className="flex items-center justify-between text-[12px]">
-                  <div className="min-w-0">
-                    <div className="truncate text-[var(--ink)]">{x.label}</div>
-                    <MonoChip>{x.id}</MonoChip>
-                  </div>
-                  <span className="text-[var(--muted)] font-mono shrink-0 ml-2">{x.in}</span>
-                </div>
-              ))}
-            </div>
+            <SectionLabel>By priority</SectionLabel>
+            <BreakdownBars data={stats?.by_priority} color="var(--gold)" />
           </Card>
         </div>
       </div>
@@ -177,80 +217,66 @@ function DeptHeadDashboard({ onGo }) {
 }
 
 // ----- Dean -----
+const DEAN_DEPTS = ['SWE', 'CSE', 'EEE', 'BBA', 'English', 'Law'];
+
 function DeanDashboard({ onGo }) {
-  const D = window.AnchorData;
-  const dims = ['Communication','Resource Mgmt','Responsiveness','Fairness','Events'];
-  const cellClass = (v) => v >= 4.2 ? 'hm-good' : v >= 3.7 ? 'hm-okay' : 'hm-poor';
+  const { stats, filings, loading } = useFilingData();
+  const [deptRows, setDeptRows] = useState(null);
+  useEffect(() => {
+    Promise.all(DEAN_DEPTS.map(d =>
+      AnchorAPI.apiGet(`/v1/departments/${encodeURIComponent(d)}/summary`).catch(() => null)
+    )).then(rows => setDeptRows(rows.map((r, i) => r || { department: DEAN_DEPTS[i], total_count: 0 })));
+  }, []);
+  const cellClass = (v) => v == null ? '' : v >= 4.2 ? 'hm-good' : v >= 3.7 ? 'hm-okay' : 'hm-poor';
+  const dims = [['avg_overall', 'Overall'], ['avg_teaching', 'Teaching'], ['avg_resources', 'Resources'], ['avg_environment', 'Environment']];
+
   return (
     <>
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <KpiCard label="Escalated cases" value="5" delta="+2" deltaTone="up" subtle="awaiting your review" accent="gold" />
-        <KpiCard label="Departments tracked" value="6" subtle="of 6 in faculty" />
-        <KpiCard label="Anonymous reports" value="3" delta="new" deltaTone="up" subtle="not visible to dept heads" accent="ember" />
-        <KpiCard label="Avg dept rating" value="3.96" subtle="Spring 2026 mid-sem" />
+        <KpiCard label="Escalated cases" value={loading ? '…' : (stats?.escalated ?? '—')} subtle="awaiting your review" accent="gold" />
+        <KpiCard label="Open across faculty" value={loading ? '…' : (stats?.open ?? '—')} subtle="active filings" />
+        <KpiCard label="Resolved" value={loading ? '…' : (stats?.resolved ?? '—')} subtle="closed out" />
+        <KpiCard label="Avg resolution" value={loading ? '…' : _fmtResolution(stats?.avg_resolution_secs)} subtle="submit → resolve" />
       </div>
 
-      {/* Heatmap */}
+      {/* Department ratings (real data from /v1/departments/{dept}/summary) */}
       <Card className="mb-6">
         <SectionLabel right={<div className="flex items-center gap-3 text-[11px] text-[var(--muted)]">
-          <span className="inline-flex items-center gap-1"><span className="w-2 h-2 hm-good" /> ≥ 4.2 strong</span>
+          <span className="inline-flex items-center gap-1"><span className="w-2 h-2 hm-good" /> ≥ 4.2</span>
           <span className="inline-flex items-center gap-1"><span className="w-2 h-2 hm-okay" /> 3.7–4.1</span>
           <span className="inline-flex items-center gap-1"><span className="w-2 h-2 hm-poor" /> &lt; 3.7</span>
-        </div>}>Department performance heatmap · Spring 2026</SectionLabel>
-        <div className="grid" style={{ gridTemplateColumns: `120px repeat(${dims.length}, 1fr)` }}>
-          <div />
-          {dims.map(d => <div key={d} className="text-[11px] text-[var(--muted)] px-2 pb-2 text-center">{d}</div>)}
-          {D.deptPerf.map(row => (
-            <React.Fragment key={row.dept}>
-              <div className="text-[13px] font-medium text-[var(--ink)] py-2 hair-t border-t flex items-center">{row.dept}</div>
-              {dims.map(d => (
-                <div key={d} className={`hair-t border-t p-1.5`}>
-                  <div className={`rounded-sm py-2.5 text-center font-mono text-[12px] text-[var(--ink)] ${cellClass(row[d])}`}>{row[d].toFixed(1)}</div>
-                </div>
+        </div>}>Department ratings · student feedback</SectionLabel>
+        {!deptRows
+          ? <div className="text-[12px] text-[var(--muted)] py-4">Loading ratings…</div>
+          : <div className="grid" style={{ gridTemplateColumns: `140px repeat(${dims.length}, 1fr) 90px` }}>
+              <div />
+              {dims.map(([, label]) => <div key={label} className="text-[11px] text-[var(--muted)] px-2 pb-2 text-center">{label}</div>)}
+              <div className="text-[11px] text-[var(--muted)] px-2 pb-2 text-center">Ratings</div>
+              {deptRows.map(row => (
+                <React.Fragment key={row.department}>
+                  <div className="text-[13px] font-medium text-[var(--ink)] py-2 hair-t border-t flex items-center">{row.department}</div>
+                  {dims.map(([key, label]) => (
+                    <div key={label} className="hair-t border-t p-1.5">
+                      <div className={`rounded-sm py-2.5 text-center font-mono text-[12px] text-[var(--ink)] ${cellClass(row[key])}`}>{row[key] != null ? Number(row[key]).toFixed(1) : '—'}</div>
+                    </div>
+                  ))}
+                  <div className="hair-t border-t flex items-center justify-center font-mono text-[12px] text-[var(--muted)]">{row.total_count || 0}</div>
+                </React.Fragment>
               ))}
-            </React.Fragment>
-          ))}
-        </div>
+            </div>}
       </Card>
 
       <div className="grid grid-cols-3 gap-4">
-        <Card className="col-span-2">
-          <SectionLabel right={<MonoChip tone="navy">Dean-only</MonoChip>}>Pattern detection alerts</SectionLabel>
-          <div className="space-y-3">
-            {[
-              { dept:'SWE', text:'3 anonymous reports mention favoritism in SWE-405 lab access — pattern detected.', strength:'High' },
-              { dept:'EEE', text:'Project group assignments appear biased toward students attending instructor coaching.', strength:'Medium' },
-              { dept:'Law', text:'2 culture reports about delayed grading for non-traditional research formats.', strength:'Low' },
-            ].map((p,i) => (
-              <div key={i} className="hair border rounded-sm p-3 edge-gold flex items-start gap-3">
-                <Icon name="sparkles" size={16} className="mt-0.5" style={{ color:'var(--gold)' }} />
-                <div className="flex-1">
-                  <div className="text-[13px] text-[var(--ink)] leading-snug">{p.text}</div>
-                  <div className="mt-1.5 flex items-center gap-2 text-[11px] text-[var(--muted)]">
-                    <Tag tone="sage">{p.dept}</Tag>
-                    <span>·</span>
-                    <span>Signal strength: <span className="font-medium" style={{ color:'var(--ink)' }}>{p.strength}</span></span>
-                  </div>
-                </div>
-                <GhostButton size="sm" icon="arrow-right">Review</GhostButton>
-              </div>
-            ))}
+        <Card className="col-span-2" noPad>
+          <div className="p-5 pb-3 flex items-center justify-between">
+            <SectionLabel className="mb-0">Recent filings across faculty</SectionLabel>
+            <button onClick={()=>onGo('/university/complaints')} className="text-[12px] text-[var(--sage)] hover:underline">Open queue →</button>
           </div>
+          {loading ? <div className="px-5 py-4 text-[13px] text-[var(--muted)]">Loading…</div> : <RecentFilings filings={filings} onGo={onGo} />}
         </Card>
-
         <Card>
-          <SectionLabel>Escalated to your desk</SectionLabel>
-          <div className="space-y-2">
-            {D.complaints.filter(c=>c.level===2).map(c => (
-              <button key={c.id} onClick={()=>onGo('/university/complaints')} className={`w-full text-left p-3 rounded-sm hair border hover:bg-[var(--mist)]/30 ${StatusEdgeClass(c.status)}`}>
-                <div className="flex items-center gap-2 mb-1">
-                  <MonoChip>{c.id}</MonoChip>
-                  {c.anonymous && <AnonymityBadge />}
-                </div>
-                <div className="text-[13px] line-clamp-2">{c.title}</div>
-              </button>
-            ))}
-          </div>
+          <SectionLabel>Caseload by category</SectionLabel>
+          <BreakdownBars data={stats?.by_category} color="var(--sage)" />
         </Card>
       </div>
     </>
@@ -359,40 +385,28 @@ function ProctorDashboard({ onGo }) {
 
 // ----- Provost -----
 function ProvostDashboard({ onGo }) {
+  const { stats, filings, loading } = useFilingData();
   return (
     <>
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <KpiCard label="Hostel complaints · open" value="14" delta="+3" deltaTone="up" subtle="this week" />
-        <KpiCard label="Seat allocation queue" value="22" subtle="pending review" />
-        <KpiCard label="Hall tutor reports" value="6" subtle="3 require response" />
-        <KpiCard label="Warden misconduct" value="1" subtle="Rank-3, sealed" accent="ember" />
+        <KpiCard label="Open complaints" value={loading ? '…' : (stats?.open ?? '—')} subtle="residence + campus" />
+        <KpiCard label="Under review" value={loading ? '…' : (stats?.under_review ?? '—')} subtle="awaiting decision" />
+        <KpiCard label="Resolved" value={loading ? '…' : (stats?.resolved ?? '—')} subtle="closed out" />
+        <KpiCard label="Escalated" value={loading ? '…' : (stats?.escalated ?? '—')} subtle="raised a level" accent="ember" />
       </div>
 
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        {['Female Hall 1','Female Hall 2','Male Hall A','Male Hall B'].map(h => (
-          <Card key={h}>
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <div className="font-serif text-[18px] text-[var(--navy)]" style={{fontWeight:500}}>{h}</div>
-                <div className="text-[12px] text-[var(--muted)]">Tutor: Mr. Saiful Islam · 312 residents</div>
-              </div>
-              <StatusPill status={h.includes('Female Hall 2')?'Escalated':'Under Review'} />
-            </div>
-            <div className="grid grid-cols-4 gap-3 text-center">
-              {[
-                { k:'Seat', v:'4' },
-                { k:'Curfew', v:'2' },
-                { k:'Roommate', v:'3' },
-                { k:'Warden', v:'0' },
-              ].map(x => (
-                <div key={x.k}>
-                  <div className="font-mono text-[20px] text-[var(--ink)]">{x.v}</div>
-                  <div className="smallcaps text-[var(--muted)]" style={{fontSize:'9.5px'}}>{x.k}</div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        ))}
+      <div className="grid grid-cols-3 gap-4">
+        <Card className="col-span-2" noPad>
+          <div className="p-5 pb-3 flex items-center justify-between">
+            <SectionLabel className="mb-0">Recent residence-life filings</SectionLabel>
+            <button onClick={()=>onGo('/university/complaints')} className="text-[12px] text-[var(--sage)] hover:underline">Open queue →</button>
+          </div>
+          {loading ? <div className="px-5 py-4 text-[13px] text-[var(--muted)]">Loading…</div> : <RecentFilings filings={filings} onGo={onGo} />}
+        </Card>
+        <Card>
+          <SectionLabel>Caseload by status</SectionLabel>
+          <BreakdownBars data={stats?.by_state} color="var(--sage)" />
+        </Card>
       </div>
     </>
   );
@@ -400,20 +414,32 @@ function ProvostDashboard({ onGo }) {
 
 // ----- VC -----
 function VCDashboard({ onGo }) {
+  const { stats, loading } = useFilingData();
+  const [alertStats, setAlertStats] = useState(null);
+  useEffect(() => {
+    AnchorAPI.apiGet('/v1/admin/alerts/stats').then(setAlertStats).catch(() => {});
+  }, []);
   return (
     <>
       <AuditNote tone="navy" icon="shield-check">
         You are viewing Level-3 escalations and platform-wide intelligence. All views of this content are audit-logged.
       </AuditNote>
       <div className="grid grid-cols-4 gap-4 my-6">
-        <KpiCard label="Level-3 escalations" value="3" subtle="awaiting your sign-off" accent="ember" />
-        <KpiCard label="Open across faculties" value="612" subtle="university-wide" />
-        <KpiCard label="Active alerts" value="2" subtle="campus safety" accent="ember" />
-        <KpiCard label="Avg resolution" value="4.1d" delta="−0.2d" deltaTone="down" />
+        <KpiCard label="Escalated cases" value={loading ? '…' : (stats?.escalated ?? '—')} subtle="awaiting your sign-off" accent="ember" />
+        <KpiCard label="Open across faculties" value={loading ? '…' : (stats?.open ?? '—')} subtle="university-wide" />
+        <KpiCard label="Active alerts" value={alertStats?.active_count ?? '—'} subtle="campus safety" accent="ember" />
+        <KpiCard label="Avg resolution" value={loading ? '…' : _fmtResolution(stats?.avg_resolution_secs)} subtle="submit → resolve" />
       </div>
       <Card>
         <SectionLabel>Level-3 escalations on your desk</SectionLabel>
-        <EmptyState icon="check-circle" title="Caught up." body="No Level-3 escalations require your sign-off right now. Dean and Proctor are handling current cases." />
+        {loading
+          ? <div className="text-[13px] text-[var(--muted)] py-4">Loading…</div>
+          : (stats?.escalated ?? 0) > 0
+            ? <div className="text-[13px] text-[var(--ink)] py-2">
+                <span className="font-mono text-[18px] text-[var(--ember)]">{stats.escalated}</span> escalated case{stats.escalated === 1 ? '' : 's'} awaiting review.
+                <button onClick={()=>onGo('/university/complaints')} className="ml-2 text-[var(--sage)] hover:underline">Open queue →</button>
+              </div>
+            : <EmptyState icon="check-circle" title="Caught up." body="No Level-3 escalations require your sign-off right now." />}
       </Card>
     </>
   );
@@ -421,27 +447,52 @@ function VCDashboard({ onGo }) {
 
 // ----- IT Admin -----
 function ITDashboard({ onGo }) {
+  const [users, setUsers] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [alertStats, setAlertStats] = useState(null);
+  const [aiOk, setAiOk] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      AnchorAPI.apiGet('/v1/admin/users?page=1'),
+      AnchorAPI.apiGet('/v1/admin/filings/stats').catch(() => null),
+      AnchorAPI.apiGet('/v1/admin/alerts/stats').catch(() => null),
+      AnchorAPI.apiGet('/ai/health').then(d => !!d && !d.error).catch(() => false),
+    ])
+      .then(([u, s, a, ok]) => { setUsers(u); setStats(s); setAlertStats(a); setAiOk(ok); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+  const items = users?.items || [];
+  const unverified = items.filter(u => u.email_verified === false).length;
+
   return (
     <>
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <KpiCard label="Active users · 30d" value="8,421" delta="+126" deltaTone="up" />
-        <KpiCard label="Pending verifications" value="42" subtle="email + ID check" />
-        <KpiCard label="Open routing rules" value="14" subtle="across 6 departments" />
-        <KpiCard label="System health" value="99.94%" delta="OK" deltaTone="up" subtle="uptime · 30d" />
+        <KpiCard label="Users · tenant" value={loading ? '…' : (users?.total?.toLocaleString() ?? '—')} subtle="registered" />
+        <KpiCard label="Unverified · page" value={loading ? '…' : unverified} subtle="email not confirmed" />
+        <KpiCard label="Open filings" value={loading ? '…' : (stats?.open ?? '—')} subtle="across tenant" />
+        <KpiCard label="AI subsystem" value={aiOk == null ? '…' : (aiOk ? 'Operational' : 'Down')} delta={aiOk ? 'OK' : null} deltaTone={aiOk ? 'up' : undefined} subtle="RAG health" accent={aiOk ? undefined : 'ember'} />
       </div>
-      <Card>
-        <SectionLabel>Recent admin actions in your tenant</SectionLabel>
-        <DataTable
-          columns={[
-            { key:'t', label:'Time', render:r=><span className="font-mono text-[12px] text-[var(--muted)]">{r.t}</span> },
-            { key:'actor', label:'Actor' },
-            { key:'action', label:'Action', render:r=><MonoChip>{r.action}</MonoChip> },
-            { key:'target', label:'Target' },
-            { key:'outcome', label:'Outcome', render:r=><span className="text-[12px]">{r.outcome}</span> },
-          ]}
-          rows={window.AnchorData.audit.filter(a=>a.tenant==='diu').slice(0,6)}
-          dense
-        />
+      <Card noPad>
+        <div className="p-5 pb-3 flex items-center justify-between">
+          <SectionLabel className="mb-0">Users in your tenant</SectionLabel>
+          <button onClick={()=>onGo('/university/users')} className="text-[12px] text-[var(--sage)] hover:underline">Manage users →</button>
+        </div>
+        {loading
+          ? <div className="px-5 py-4 text-[13px] text-[var(--muted)]">Loading…</div>
+          : <DataTable
+              columns={[
+                { key:'full_name', label:'Name' },
+                { key:'email', label:'Email', render:r=><span className="font-mono text-[12px] text-[var(--muted)]">{r.email}</span> },
+                { key:'role', label:'Role', render:r=><MonoChip>{r.role}</MonoChip> },
+                { key:'status', label:'Status', render:r=><StatusPill status={_cap(r.status)} dot={false} /> },
+                { key:'email_verified', label:'Verified', render:r=><span className="text-[12px]">{r.email_verified ? '✓' : '—'}</span> },
+              ]}
+              rows={items.slice(0, 8)}
+              dense
+            />}
       </Card>
     </>
   );

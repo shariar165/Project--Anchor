@@ -1,23 +1,55 @@
 // Super Admin screens
 var { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+// Map a free-form RAG/component health string to a StatusPill tone.
+function _ragHealthTone(status) {
+  const s = String(status || '').toLowerCase();
+  if (/(unavailable|down|error|fail|offline|false)/.test(s)) return 'down';
+  if (/(ok|healthy|up|ready|loaded|online|reachable|true)/.test(s)) return 'healthy';
+  return 'degraded';
+}
+// Average MTTR across incidents, formatted as "Xm" / "X.Yh".
+function _avgMttr(items) {
+  const vals = (items || []).map(i => i.mttr_seconds).filter(v => v != null && v > 0);
+  if (!vals.length) return null;
+  const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const m = Math.round(avg / 60);
+  return m >= 60 ? `${(m / 60).toFixed(1)}h` : `${m}m`;
+}
+// Convert a [{date,count}] series into a plain number[] for <Sparkline>.
+function _sparkVals(series) {
+  if (!Array.isArray(series)) return null;
+  return series.map(pt => (pt && typeof pt === 'object') ? (pt.count || 0) : (pt || 0));
+}
+
 function SuperDashboard({ onGo }) {
-  const D = window.AnchorData;
   const [recentAudit, setRecentAudit] = useState([]);
   const [tenants, setTenants] = useState([]);
   const [deanonStats, setDeanonStats] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
+  const [aiHealth, setAiHealth] = useState(null);
+  const [incidents, setIncidents] = useState(null);
   useEffect(() => {
-    AnchorAPI.apiGet('/v1/admin/audit?limit=5')
-      .then(d => setRecentAudit(d.items || []))
-      .catch(() => {});
-    AnchorAPI.apiGet('/v1/super-admin/tenants')
-      .then(d => setTenants(d.items || []))
-      .catch(() => {});
-    AnchorAPI.apiGet('/v1/admin/deanonymization/stats')
-      .then(d => setDeanonStats(d))
-      .catch(() => {});
+    AnchorAPI.apiGet('/v1/admin/audit?limit=5').then(d => setRecentAudit(d.items || [])).catch(() => {});
+    AnchorAPI.apiGet('/v1/super-admin/tenants').then(d => setTenants(d.items || [])).catch(() => {});
+    AnchorAPI.apiGet('/v1/admin/deanonymization/stats').then(setDeanonStats).catch(() => {});
+    AnchorAPI.apiGet('/v1/super-admin/analytics').then(setAnalytics).catch(() => {});
+    AnchorAPI.apiGet('/v1/super-admin/ai-health').then(setAiHealth).catch(() => {});
+    AnchorAPI.apiGet('/v1/super-admin/incidents?limit=20').then(setIncidents).catch(() => {});
   }, []);
-  const pilotCount = tenants.filter(t => t.tier === 'pilot').length;
-  const suspendedCount = tenants.filter(t => !t.active).length;
+  const a = analytics || {};
+  const aTenants = a.tenants || {};
+  const aUsers = a.users || {};
+  const aAlerts = a.alerts || {};
+  const aContent = a.content || {};
+  const aSeries = a.series || {};
+  const pilotCount = aTenants.pilot != null ? aTenants.pilot : tenants.filter(t => t.tier === 'pilot').length;
+  const suspendedCount = aTenants.suspended != null ? aTenants.suspended : tenants.filter(t => !t.active).length;
+  const activeUserCount = (aUsers.by_status && aUsers.by_status.active) || null;
+  const healthComponents = (aiHealth && aiHealth.components) || null;
+  const healthOk = aiHealth ? aiHealth.rag_reachable : null;
+  const openIncidents = incidents ? incidents.open_count : null;
+  const mttr = incidents ? _avgMttr(incidents.items) : null;
   return (
     <>
       <PageHeader
@@ -41,53 +73,69 @@ function SuperDashboard({ onGo }) {
       )}
 
       <div className="grid grid-cols-5 gap-4 mb-6">
-        <KpiCard label="Universities" value={tenants.length} subtle={`${pilotCount} pilot · ${suspendedCount} suspended`} accent="navy" />
-        <KpiCard label="Active users" value="12,847" delta="+412" deltaTone="up" subtle="last 30 days" />
-        <KpiCard label="Open cases" value="1,203" subtle="across all tenants" accent="ember" />
-        <KpiCard label="Active alerts" value="2" subtle="DIU campus" accent="ember" />
-        <KpiCard label="Uptime · 30d" value="99.94%" delta="OK" deltaTone="up" />
+        <KpiCard label="Universities" value={(aTenants.total != null ? aTenants.total : tenants.length).toLocaleString()} subtle={`${pilotCount} pilot · ${suspendedCount} suspended`} accent="navy" />
+        <KpiCard label="Active users" value={aUsers.total != null ? aUsers.total.toLocaleString() : '—'} subtle={activeUserCount != null ? `${activeUserCount.toLocaleString()} active` : 'all tenants'} />
+        <KpiCard label="Open cases" value={aContent.filings != null ? ((aContent.filings || 0) + (aContent.applications || 0)).toLocaleString() : '—'} subtle="filings + applications" accent="ember" />
+        <KpiCard label="Active alerts" value={aAlerts.active != null ? aAlerts.active.toLocaleString() : '—'} subtle="platform-wide" accent="ember" />
+        <KpiCard label="AI / RAG" value={healthOk == null ? '…' : (healthOk ? 'Operational' : 'Degraded')} delta={healthOk ? 'OK' : null} deltaTone={healthOk ? 'up' : undefined} subtle="live health" />
       </div>
 
       <div className="grid gap-4" style={{ gridTemplateColumns: '1.4fr 1fr' }}>
         <Card>
-          <SectionLabel right={<MonoChip>health</MonoChip>}>System health · all services</SectionLabel>
-          <div className="grid grid-cols-2 gap-2">
-            {D.services.map(s => (
-              <div key={s.name} className="hair border rounded-sm p-3 flex items-center gap-3">
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: s.status==='healthy'?'#4A6B5C':s.status==='degraded'?'#B8893A':'#E8312A' }} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] text-[var(--ink)] truncate">{s.name}</div>
-                  <div className="text-[11px] text-[var(--muted)] font-mono">{s.latency} · err {s.err}</div>
-                </div>
-                <StatusPill status={s.status} dot={false} />
-              </div>
-            ))}
-          </div>
+          <SectionLabel right={<MonoChip>health</MonoChip>}>System health · AI subsystem</SectionLabel>
+          {!aiHealth
+            ? <div className="text-[12px] text-[var(--muted)] py-6 text-center">Loading health…</div>
+            : <div className="grid grid-cols-2 gap-2">
+                {Object.entries(healthComponents || {}).map(([name, status]) => {
+                  const tone = _ragHealthTone(status);
+                  return (
+                    <div key={name} className="hair border rounded-sm p-3 flex items-center gap-3">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: tone==='healthy'?'#4A6B5C':tone==='degraded'?'#B8893A':'#E8312A' }} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[13px] text-[var(--ink)] truncate capitalize">{name}</div>
+                        <div className="text-[11px] text-[var(--muted)] font-mono truncate">{String(status)}</div>
+                      </div>
+                      <StatusPill status={tone} dot={false} />
+                    </div>
+                  );
+                })}
+                {(aiHealth.namespaces || []).map(ns => (
+                  <div key={ns.namespace} className="hair border rounded-sm p-3 flex items-center gap-3">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background:'#4A6B5C' }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] text-[var(--ink)] truncate">corpus · {ns.namespace}</div>
+                      <div className="text-[11px] text-[var(--muted)] font-mono truncate">{(ns.documents||0).toLocaleString()} docs · {(ns.dense_chunks||0).toLocaleString()} chunks</div>
+                    </div>
+                  </div>
+                ))}
+              </div>}
           <div className="mt-4 hair-t pt-3 text-[12px] text-[var(--muted)] flex items-center justify-between">
-            <span>Recent incidents</span>
-            <span className="font-mono">3 in last 7d · MTTR 12m</span>
+            <span>Open incidents</span>
+            <span className="font-mono">{openIncidents == null ? '—' : `${openIncidents} open${mttr ? ` · MTTR ${mttr}` : ''}`}</span>
           </div>
         </Card>
 
         <Card>
-          <SectionLabel right={<MonoChip>anonymized</MonoChip>}>Platform activity · this week</SectionLabel>
-          <div className="space-y-3">
-            {[
-              { k:'Complaints filed', v:'4,128', spark: [12,14,11,18,22,19,24] },
-              { k:'Cases resolved', v:'3,802', spark: [11,12,15,16,18,21,22] },
-              { k:'AI queries served', v:'182k', spark: [8,12,14,11,18,16,22] },
-              { k:'FIR drafts generated', v:'214', spark: [3,4,3,5,7,6,8] },
-              { k:'Lawyer chats initiated', v:'88', spark: [1,2,4,3,5,4,6] },
-            ].map(r => (
-              <div key={r.k} className="flex items-center gap-3 hair-b border-b last:border-b-0 pb-2">
-                <div className="flex-1">
-                  <div className="text-[13px] text-[var(--ink)]">{r.k}</div>
-                  <div className="font-mono text-[18px] text-[var(--navy)] leading-tight">{r.v}</div>
-                </div>
-                <Sparkline values={r.spark} />
-              </div>
-            ))}
-          </div>
+          <SectionLabel right={<MonoChip>anonymized</MonoChip>}>Platform activity · last 14 days</SectionLabel>
+          {!analytics
+            ? <div className="text-[12px] text-[var(--muted)] py-6 text-center">Loading activity…</div>
+            : <div className="space-y-3">
+                {[
+                  { k:'Alerts triggered', v:aAlerts.total, spark:_sparkVals(aSeries.alerts_14d) },
+                  { k:'Filings submitted', v:aContent.filings, spark:_sparkVals(aSeries.filings_14d) },
+                  { k:'Feed posts', v:aContent.feed_posts, spark:_sparkVals(aSeries.feed_14d) },
+                  { k:'Applications', v:aContent.applications, spark:null },
+                  { k:'AI queries · 24h', v:(aiHealth && aiHealth.usage && aiHealth.usage.ai_chat_24h), spark:null },
+                ].map(r => (
+                  <div key={r.k} className="flex items-center gap-3 hair-b border-b last:border-b-0 pb-2">
+                    <div className="flex-1">
+                      <div className="text-[13px] text-[var(--ink)]">{r.k}</div>
+                      <div className="font-mono text-[18px] text-[var(--navy)] leading-tight">{r.v == null ? '—' : r.v.toLocaleString()}</div>
+                    </div>
+                    {r.spark && r.spark.length > 1 && <Sparkline values={r.spark} />}
+                  </div>
+                ))}
+              </div>}
         </Card>
       </div>
 

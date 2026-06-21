@@ -6,10 +6,11 @@ MUST come before parameterised /{id} routes to avoid UUID matching conflicts.
 """
 import uuid
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -26,7 +27,7 @@ from app.schemas.filings import (
     FilingTemplateResponse, FilingUpdate,
     SubjectRespondRequest, SubjectResponseResponse,
 )
-from app.services import filing_svc
+from app.services import export_svc, filing_svc
 
 router = APIRouter(tags=["filings"])
 
@@ -51,6 +52,102 @@ async def admin_list_filings(
     return await filing_svc.list_filings_admin(
         db, token.tenant_id, category=category, state=state, template_key=template_key, page=page
     )
+
+
+# Open = actively in the pipeline but not yet finalised. Excludes draft (never submitted)
+# and terminal states (resolved/dismissed/withdrawn/spam_rejected).
+_OPEN_STATES = (
+    FilingState.moderation_queue.value,
+    FilingState.routed.value,
+    FilingState.subject_notified.value,
+    FilingState.subject_responded.value,
+    FilingState.under_review.value,
+)
+
+
+@router.get("/v1/admin/filings/stats")
+async def admin_filing_stats(
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    """Aggregate complaint/report/grievance counts for the admin dashboard.
+
+    Tenant-scoped via ``token.tenant_id``. Drives the University Admin dashboard KPIs,
+    inflow chart, and category breakdown.
+    """
+    def _scoped(stmt):
+        if token.tenant_id:
+            return stmt.where(Filing.tenant_id == token.tenant_id)
+        return stmt
+
+    async def _count(stmt) -> int:
+        return (await db.execute(_scoped(stmt))).scalar() or 0
+
+    async def _grouped(column) -> dict[str, int]:
+        rows = (await db.execute(
+            _scoped(select(column, func.count()).select_from(Filing)).group_by(column)
+        )).all()
+        return {str(k): n for k, n in rows if k is not None}
+
+    base = select(func.count()).select_from(Filing)
+    total = await _count(base)
+    open_count = await _count(base.where(Filing.state.in_(_OPEN_STATES)))
+    under_review = await _count(base.where(Filing.state == FilingState.under_review.value))
+    resolved = await _count(base.where(Filing.state == FilingState.resolved.value))
+    escalated = await _count(
+        base.where(Filing.escalation_level > 0, Filing.finalized_at.is_(None))
+    )
+
+    by_state = await _grouped(Filing.state)
+    by_category = await _grouped(Filing.category)
+    by_priority = await _grouped(Filing.priority)
+
+    # Average resolution time (submit → finalise) over resolved filings. Computed in
+    # Python to stay portable across SQLite (tests) and PostgreSQL (prod).
+    resolved_rows = (await db.execute(_scoped(
+        select(Filing.submitted_at, Filing.finalized_at).where(
+            Filing.state == FilingState.resolved.value,
+            Filing.submitted_at.is_not(None),
+            Filing.finalized_at.is_not(None),
+        )
+    ))).all()
+    durations = [
+        (fin - sub).total_seconds()
+        for sub, fin in resolved_rows
+        if fin and sub and fin >= sub
+    ]
+    avg_resolution_secs = round(sum(durations) / len(durations), 1) if durations else None
+
+    # 30-day daily inflow time-series (by created_at), oldest→newest, zero-filled.
+    days = 30
+    start = (datetime.now(tz=timezone.utc) - timedelta(days=days - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    day_col = func.date(Filing.created_at)
+    inflow_rows = (await db.execute(_scoped(
+        select(day_col, func.count()).select_from(Filing).where(Filing.created_at >= start)
+    ).group_by(day_col))).all()
+    inflow_counts = {str(d): n for d, n in inflow_rows}
+    inflow_30d = [
+        {
+            "date": (di := (start + timedelta(days=i)).date().isoformat()),
+            "count": inflow_counts.get(di, 0),
+        }
+        for i in range(days)
+    ]
+
+    return {
+        "open": open_count,
+        "under_review": under_review,
+        "resolved": resolved,
+        "escalated": escalated,
+        "total": total,
+        "avg_resolution_secs": avg_resolution_secs,
+        "by_state": by_state,
+        "by_category": by_category,
+        "by_priority": by_priority,
+        "inflow_30d": inflow_30d,
+    }
 
 
 @router.get("/v1/admin/filings/{filing_id}", response_model=FilingResponse)
@@ -238,6 +335,46 @@ async def get_filing(
     if filing is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Filing not found")
     return filing
+
+
+@router.get("/v1/filings/{filing_id}/export")
+async def export_filing(
+    filing_id: uuid.UUID,
+    format: str = Query(default="pdf"),
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(get_current_user),
+):
+    """Download a filing as PDF / DOCX / CSV. Only content the student already
+    sees is included — no reviewer identities or internal notes."""
+    filing = await filing_svc.get_filing(db, filing_id, token.user_id, token.tenant_id)
+    if filing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    routing = filing.template.routing_target if filing.template else None
+    meta = [
+        ("Filing number", filing.filing_number or "Draft"),
+        ("Category", str(filing.category).title()),
+        ("Status", str(filing.state).replace("_", " ").title()),
+    ]
+    if routing:
+        meta.append(("Routed to", str(routing).replace("_", " ").title()))
+    if filing.submitted_at:
+        meta.append(("Submitted", filing.submitted_at.strftime("%d %b %Y")))
+    for k, v in (filing.field_values or {}).items():
+        if v:
+            meta.append((str(k).replace("_", " ").title(), str(v)))
+    if filing.final_outcome_note:
+        meta.append(("Outcome", filing.final_outcome_note))
+
+    title = filing.template.name if filing.template else str(filing.category).title()
+    doc = export_svc.ExportDoc(
+        title=title,
+        subtitle="Filing · Complaint / Report / Grievance",
+        meta=meta,
+        body=filing.body or "",
+    )
+    stem = filing.filing_number or f"filing-{str(filing.id)[:8]}"
+    return export_svc.export_response(doc, format, stem)
 
 
 @router.patch("/v1/filings/{filing_id}", response_model=FilingResponse)
