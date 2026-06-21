@@ -13,7 +13,9 @@ Resolution order for `grounding(name, fallback)`:
   3. the caller's `fallback` string              — used in prod when the tree isn't shipped
 
 The result is cached (`@lru_cache`), mirroring the `get_settings()` pattern, so reads are
-zero-cost after the first. A missing tree never raises — it degrades to `fallback`.
+zero-cost after the first. A missing tree never raises — it degrades to `fallback`. This
+matters in container deploys, where the build context may not include the repo-root
+`skills/` tree.
 
 (Verbatim twin of services/api/app/services/skill_loader.py — the two services deploy
 independently and cannot import each other.)
@@ -25,26 +27,38 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Repo's skills/src — this file is services/rag/app/pipeline/skill_loader.py, so the
-# repo root is parents[4]. Used when no SKILLS_DIR override is configured.
-_DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[4] / "skills" / "src"
-
 _FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
 
 
-def _skills_dir() -> Path:
+def _default_skills_dir() -> Path | None:
+    """Locate the repo's skills/src by walking up from this file. Returns None when it
+    isn't found (e.g. a container that doesn't ship the tree) so callers fall back.
+    Never raises — must not index parents blindly (depth varies by deploy layout)."""
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "skills" / "src"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _skills_dir() -> Path | None:
     try:
         from app.config import get_settings
         configured = (getattr(get_settings(), "skills_dir", "") or "").strip()
     except Exception:
         configured = ""
-    return Path(configured) if configured else _DEFAULT_SKILLS_DIR
+    if configured:
+        return Path(configured)
+    return _default_skills_dir()
 
 
 @lru_cache(maxsize=64)
 def grounding(skill_name: str, fallback: str = "") -> str:
     """Return compact backend grounding text for a skill, or `fallback` if unavailable."""
-    base = _skills_dir() / skill_name
+    base_dir = _skills_dir()
+    if base_dir is None:
+        return fallback
+    base = base_dir / skill_name
     try:
         grounding_md = base / "references" / "grounding.md"
         if grounding_md.is_file():
