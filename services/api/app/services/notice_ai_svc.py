@@ -16,10 +16,14 @@ import re
 import httpx
 
 from app.config import get_settings
+from app.services import skill_loader
 
 logger = logging.getLogger(__name__)
 
-# ── DIU notice-drafting knowledge (mirrors skills/diu-notice-generator.skill) ──
+# ── DIU notice-drafting knowledge ──
+# The canonical copy lives in skills/src/diu-notice-generator/references/grounding.md and is
+# loaded at runtime by skill_loader (single source of truth). This literal is kept only as the
+# offline fallback for when the skill tree isn't shipped alongside the service.
 _DIU_STYLE = """\
 You draft official notices for Daffodil International University (DIU), a private \
 university in Dhaka, Bangladesh. Follow these conventions:
@@ -46,8 +50,9 @@ def _build_prompt(*, prompt: str, language: str, tone: str | None,
         f'A working subject line is: "{subject}". Refine it if helpful.\n'
         if subject else ""
     )
+    style = skill_loader.grounding("diu-notice-generator", fallback=_DIU_STYLE)
     return (
-        f"{_DIU_STYLE}\n"
+        f"{style}\n"
         f"Write the notice entirely in {out_lang}.\n"
         f"{tone_line}{audience_line}{subject_line}"
         f"\nThe administrator describes the notice as:\n{prompt}\n\n"

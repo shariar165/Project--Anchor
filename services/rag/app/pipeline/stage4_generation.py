@@ -12,8 +12,16 @@ import re
 import logging
 from app.pipeline.models import RetrievedChunk, QueryAnalysis
 from app.pipeline import llm_client
+from app.pipeline import skill_loader
 
 logger = logging.getLogger(__name__)
+
+
+def _ground(prompt: str) -> str:
+    """Prepend the bd-legal-answer skill grounding (statute cues, citation + authority rules,
+    disclaimer) ahead of the reasoning-scaffold prompt. No-op when the skill tree is absent."""
+    ground = skill_loader.grounding("bd-legal-answer")
+    return f"{ground}\n\n{prompt}" if ground else prompt
 
 _GENERATION_PROMPT = """You are Anchor AI — a knowledgeable, compassionate legal companion for Bangladesh.
 Using ONLY the provided context documents, analyze the user's situation step by step.
@@ -116,12 +124,12 @@ async def generate_response(
 ) -> tuple[str, list[dict]]:
     """Primary generation: legal reasoning scaffold with citation grounding."""
     context = _format_context(chunks)
-    prompt = _GENERATION_PROMPT.format(
+    prompt = _ground(_GENERATION_PROMPT.format(
         query=query,
         mode=mode,
         output_lang=output_lang,
         context=context,
-    )
+    ))
     raw = await llm_client.generate(prompt, model=llm_client.MAIN_MODEL, temperature=0.15)
     citations = _extract_citations(raw, chunks)
     answer = _clean_output(raw)
@@ -135,7 +143,7 @@ async def generate_strict(
 ) -> tuple[str, list[dict]]:
     """Stricter re-generation after claim verification fails first attempt."""
     context = _format_context(chunks)
-    prompt = _STRICT_PROMPT.format(query=query, context=context, output_lang=output_lang)
+    prompt = _ground(_STRICT_PROMPT.format(query=query, context=context, output_lang=output_lang))
     raw = await llm_client.generate(prompt, model=llm_client.MAIN_MODEL, temperature=0.05)
     citations = _extract_citations(raw, chunks)
     answer = _clean_output(raw)
