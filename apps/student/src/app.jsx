@@ -45,11 +45,20 @@ function GeofenceConsentModal({ onComplete, onDismiss }) {
   // Requests location, then notifications, in sequence (Chrome shows one prompt at
   // a time and silently drops simultaneous ones). Persists consent only when a real
   // position was obtained, and surfaces exactly why push did/didn't enable.
+  //
+  // iOS WebKit differs: Notification.requestPermission() must run SYNCHRONOUSLY in
+  // the user gesture — any await before it (like waiting for a GPS fix) makes iOS
+  // silently drop the prompt, so push never enables. We therefore branch: on iOS we
+  // request notifications FIRST (in the tap), then location. Android keeps the
+  // original location-first order verbatim, since it works perfectly there.
   const handleEnable = async () => {
     setBusy(true);
     setNote(null);
-    // Step 1 — location FIRST. Resolve with the position on success, null on error.
-    const position = await new Promise((res) => {
+
+    const cap = window.getPushCapability ? window.getPushCapability() : null;
+    const isIOS = !!(cap && cap.isIOS);
+
+    const requestLocation = () => new Promise((res) => {
       if (!navigator.geolocation) return res(null);
       navigator.geolocation.getCurrentPosition(
         (p) => res(p),
@@ -57,12 +66,29 @@ function GeofenceConsentModal({ onComplete, onDismiss }) {
         { timeout: 10000, maximumAge: 60000 }
       );
     });
-    const locationGranted = !!position;
-    // Step 2 — notifications SECOND, only after the location prompt is dismissed.
+
+    let position = null;
     let pushReason = 'unsupported';
-    try {
-      if (window.syncPushToken) pushReason = await window.syncPushToken({ interactive: true });
-    } catch (_) { /* best-effort */ }
+
+    if (isIOS) {
+      // iOS branch — notifications FIRST (synchronous in the gesture), then location.
+      try {
+        if (typeof Notification !== 'undefined' && Notification.requestPermission) {
+          await Notification.requestPermission();
+        }
+        // Permission is now already resolved; a silent sync just mints + POSTs the token.
+        if (window.syncPushToken) pushReason = await window.syncPushToken({ interactive: false });
+      } catch (_) { /* best-effort */ }
+      position = await requestLocation();
+    } else {
+      // Android / desktop branch — UNCHANGED: location first, then notifications.
+      position = await requestLocation();
+      try {
+        if (window.syncPushToken) pushReason = await window.syncPushToken({ interactive: true });
+      } catch (_) { /* best-effort */ }
+    }
+
+    const locationGranted = !!position;
 
     // Let the parent persist consent + post the first snapshot.
     onComplete({ locationGranted, position, pushReason });

@@ -4,6 +4,67 @@
 const { useState: _useS, useEffect: _useE, useRef: _useR } = React;
 
 // ═══════════════════════════════════════════════════════════════
+//  iOS INSTALL BANNER — additive, iOS-only (no effect on Android)
+// ═══════════════════════════════════════════════════════════════
+// On iOS, WebKit delivers web push ONLY to a PWA added to the Home Screen via
+// Safari. A plain Safari tab, and iOS Chrome (CriOS) entirely, can never receive
+// push — which is why alerts work on Android but not iPhone. This banner tells
+// iPhone users the one thing that makes alerts possible: install via Safari.
+// It renders nothing unless window.getPushCapability() reports an iOS device that
+// is not yet installed, so Android / desktop are completely unaffected.
+function IOSInstallBanner({ persistDismiss = true }) {
+  const cap = (typeof window !== 'undefined' && window.getPushCapability)
+    ? window.getPushCapability() : null;
+  const [dismissed, setDismissed] = _useS(
+    () => persistDismiss && localStorage.getItem('anchor_ios_install_dismissed') === 'true'
+  );
+
+  if (!cap || !cap.isIOS || cap.isStandalone) return null;            // not iOS, or already installed → nothing
+  if (cap.reason !== 'ios-needs-install' && cap.reason !== 'ios-chrome') return null;
+  if (dismissed) return null;
+
+  const isChrome = cap.reason === 'ios-chrome';
+  const title = isChrome ? 'Open in Safari to get alerts' : 'Add Anchor to your Home Screen';
+  const body = isChrome
+    ? 'On iPhone, alerts work only through Safari. Open Anchor in Safari, then Share → Add to Home Screen.'
+    : 'To receive emergency push alerts on iPhone: tap Share, then “Add to Home Screen”, and open Anchor from the icon.';
+
+  const onClose = () => {
+    setDismissed(true);
+    if (persistDismiss) { try { localStorage.setItem('anchor_ios_install_dismissed', 'true'); } catch (_) {} }
+  };
+
+  return (
+    <div style={{ padding: '8px 20px 0' }}>
+      <div style={{
+        display: 'flex', alignItems: 'flex-start', gap: 12,
+        padding: '12px 14px', borderRadius: 14,
+        background: 'rgba(184,137,58,0.08)', border: '1px solid rgba(184,137,58,0.30)',
+      }}>
+        <div style={{ flexShrink: 0, width: 30, height: 30, borderRadius: 999,
+          background: 'rgba(184,137,58,0.16)', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', color: 'var(--gold)' }}>
+          {/* iOS share glyph */}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 16V4"/><path d="m7 9 5-5 5 5"/>
+            <path d="M5 13v6a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-6"/>
+          </svg>
+        </div>
+        <div style={{ flex: 1, lineHeight: 1.4 }}>
+          <div className="serif" style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--navy)' }}>{title}</div>
+          <div style={{ marginTop: 3, fontSize: 11.5, color: 'var(--ink-2)' }}>{body}</div>
+        </div>
+        <button onClick={onClose} aria-label="Dismiss" style={{
+          flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer',
+          color: 'var(--muted)', fontSize: 16, lineHeight: 1, padding: 0,
+        }}>×</button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  HOME SCREEN
 // ═══════════════════════════════════════════════════════════════
 function HomeScreen() {
@@ -112,6 +173,9 @@ function HomeScreen() {
           }}>Hold</button>
         </div>
       </div>
+
+      {/* iOS-only: how to actually receive alerts (no-op on Android) */}
+      <IOSInstallBanner/>
 
       {/* AI chat input */}
       <div style={{ padding: '14px 20px 6px' }}>
@@ -757,6 +821,13 @@ function AlertScreen() {
   _useE(() => {
     if (!showConfirm) { setGpsResult(null); return; }
     if (!navigator.geolocation) { setGpsResult({ gps_status: 'unavailable' }); return; }
+    // iOS often returns POSITION_UNAVAILABLE quickly for low-accuracy requests, so
+    // give iPhones high accuracy + a longer timeout. Android keeps its original
+    // (fast, low-accuracy) options since it works well there.
+    const isIOS = !!(window.getPushCapability && window.getPushCapability().isIOS);
+    const gpsOpts = isIOS
+      ? { timeout: 15000, maximumAge: 30000, enableHighAccuracy: true }
+      : { timeout: 10000, maximumAge: 30000, enableHighAccuracy: false };
     navigator.geolocation.getCurrentPosition(
       (pos) => setGpsResult({
         lat: pos.coords.latitude,
@@ -764,8 +835,10 @@ function AlertScreen() {
         gps_accuracy_m: pos.coords.accuracy ? Math.round(pos.coords.accuracy) : null,
         gps_status: 'ok',
       }),
-      () => setGpsResult({ gps_status: 'unavailable' }),
-      { timeout: 10000, maximumAge: 30000, enableHighAccuracy: false }
+      // Attach the error code so the UI can show specific guidance (1=permission
+      // denied, 2=position unavailable, 3=timeout) instead of a flat failure.
+      (err) => setGpsResult({ gps_status: 'unavailable', gps_error_code: err && err.code }),
+      gpsOpts
     );
   }, [showConfirm]);
 
@@ -785,7 +858,7 @@ function AlertScreen() {
         });
         setGpsRetrying(false);
       },
-      () => { setGpsResult({ gps_status: 'unavailable' }); setGpsRetrying(false); },
+      (err) => { setGpsResult({ gps_status: 'unavailable', gps_error_code: err && err.code }); setGpsRetrying(false); },
       { timeout: 20000, maximumAge: 0, enableHighAccuracy: true }
     );
   };
@@ -882,6 +955,7 @@ function AlertScreen() {
           onCancel={handleCancelConfirm}
           sending={sending}
           gpsUnavailable={gpsResult?.gps_status === 'unavailable'}
+          gpsErrorCode={gpsResult?.gps_error_code}
           onRetryGps={retryGps}
           retryingGps={gpsRetrying}
         />
@@ -979,8 +1053,15 @@ function AlertScreen() {
 }
 
 // ─── Double-confirmation modal (anti-trap, spec §4.2) ────────────────────────
-function ConfirmAlertModal({ onConfirm, onCancel, sending, gpsUnavailable, onRetryGps, retryingGps }) {
+function ConfirmAlertModal({ onConfirm, onCancel, sending, gpsUnavailable, gpsErrorCode, onRetryGps, retryingGps }) {
   const [btnEnabled, setBtnEnabled] = _useS(false);
+  const _isIOS = !!(window.getPushCapability && window.getPushCapability().isIOS);
+  // iOS-only extra hint based on the geolocation error code (1=denied, 2=unavailable, 3=timeout).
+  const iosGpsHint = (_isIOS && gpsUnavailable)
+    ? (gpsErrorCode === 1
+        ? 'On iPhone: Settings → Privacy & Security → Location Services → Safari → While Using, and turn on Precise Location.'
+        : 'On iPhone, move near a window or outdoors and tap Retry — the first GPS fix can take a few seconds.')
+    : null;
 
   _useE(() => {
     // 1-second minimum delay before SEND button is enabled (spec §4.2)
@@ -1043,6 +1124,9 @@ function ConfirmAlertModal({ onConfirm, onCancel, sending, gpsUnavailable, onRet
           fontSize: 12, color: 'rgba(184,137,58,0.95)', lineHeight: 1.5,
         }}>
           ⚠️ Location unavailable — nearby users won't receive an alert. Your proctor will still be notified.
+          {iosGpsHint && (
+            <div style={{ marginTop: 6, fontSize: 11.5, color: 'rgba(184,137,58,0.85)' }}>{iosGpsHint}</div>
+          )}
           {onRetryGps && (
             <button onClick={onRetryGps} disabled={retryingGps}
               style={{
