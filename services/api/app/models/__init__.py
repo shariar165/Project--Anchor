@@ -1,5 +1,6 @@
 from app.models.base import Base, TimestampMixin
 from app.models.tenant import Tenant, TenantEmailDomain
+from app.models.platform_config import PlatformConfig
 from app.models.user import User, Role, AccountStatus
 from app.models.session import Session
 from app.models.mfa import MFAMethod, MFARecoveryCode, MFAType
@@ -49,6 +50,7 @@ from app.models.timetable import (
 __all__ = [
     "Base", "TimestampMixin",
     "Tenant", "TenantEmailDomain",
+    "PlatformConfig",
     "User", "Role", "AccountStatus",
     "Session",
     "MFAMethod", "MFARecoveryCode", "MFAType",

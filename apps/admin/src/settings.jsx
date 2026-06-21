@@ -30,16 +30,7 @@ function SettingsScreen({ mode='uni', dark, setDark, onGo }) {
       { id:'security', label:'Security & MFA', icon:'shield' },
     ]},
     { group:'Platform', items:[
-      { id:'platform-escalation', label:'Default escalation timers', icon:'timer' },
-      { id:'rate-limits', label:'Rate limits', icon:'gauge' },
-      { id:'trust', label:'Trust ranking thresholds', icon:'award' },
-      { id:'bans', label:'Ban durations', icon:'user-x' },
-      { id:'ai-thresholds', label:'AI confidence thresholds', icon:'cpu' },
-    ]},
-    { group:'Compliance', items:[
-      { id:'disclaimer', label:'Legal disclaimer', icon:'file-text' },
-      { id:'retention', label:'Data retention', icon:'database' },
-      { id:'pdpo', label:'Bangladesh PDP Ordinance 2025', icon:'scale' },
+      { id:'policy-moved', label:'Policy & configuration', icon:'scale' },
     ]},
   ];
 
@@ -90,15 +81,18 @@ function SettingsScreen({ mode='uni', dark, setDark, onGo }) {
           {section==='audit-request' && <AuditAccessRequestSection />}
           {section==='export' && <ExportRetentionSection />}
 
-          {/* super admin only */}
-          {section==='platform-escalation' && <PlatformEscalationSection />}
-          {section==='rate-limits' && <RateLimitsSection />}
-          {section==='trust' && <TrustThresholdsSection />}
-          {section==='bans' && <BansSection />}
-          {section==='ai-thresholds' && <AIThresholdsSection />}
-          {section==='disclaimer' && <DisclaimerSection />}
-          {section==='retention' && <RetentionSection />}
-          {section==='pdpo' && <PDPOSection />}
+          {/* super admin only — platform policy now lives at /super/policy */}
+          {section==='policy-moved' && (
+            <Card>
+              <SectionLabel>Policy &amp; configuration</SectionLabel>
+              <AuditNote tone="navy" icon="scale">
+                Platform-wide policy — escalation timers, rate limits, trust thresholds, ban durations, AI confidence gates, the legal disclaimer, retention, and PDP Ordinance controls — now lives in its own audit-logged editor under <span className="font-medium">Configuration → Policy</span>.
+              </AuditNote>
+              <div className="mt-4">
+                <PrimaryButton mode="ember" icon="arrow-right" onClick={()=>onGo && onGo('/super/policy')}>Open Policy &amp; configuration</PrimaryButton>
+              </div>
+            </Card>
+          )}
         </div>
       </div>
     </>

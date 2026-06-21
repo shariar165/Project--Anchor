@@ -12,10 +12,51 @@ This is a one-time offline cost. Anthropic reports this cuts retrieval failures 
 stacked with contextual BM25 + reranker, the combined lift is ~67%.
 """
 import logging
+import re
 import uuid
 from app.pipeline import embeddings, vector_store, bm25_index, llm_client
 
 logger = logging.getLogger(__name__)
+
+
+def rebuild_bm25_from_store(namespace: str = "national") -> int:
+    """Rebuild the in-memory BM25 index from the full persisted ChromaDB store.
+
+    BM25 is in-memory and rebuilt wholesale by build_index(). Building from a
+    single ingest batch (the old behaviour) silently dropped every other
+    document in the namespace from sparse retrieval, and a process restart lost
+    custom-ingested docs entirely. Rebuilding from the persisted store after
+    every ingest/delete — and at startup — keeps BM25 consistent with the dense
+    index.
+    """
+    all_chunks = vector_store.get_all_chunks(namespace)
+    bm25_index.build_index(all_chunks, namespace=namespace)
+    return len(all_chunks)
+
+
+def chunk_text(text: str, max_chars: int = 1500) -> list[str]:
+    """Split a raw document body into retrieval-sized chunks.
+
+    Splits on blank lines first; oversized paragraphs are hard-wrapped at
+    sentence boundaries up to max_chars.
+    """
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    chunks: list[str] = []
+    for para in paras:
+        if len(para) <= max_chars:
+            chunks.append(para)
+            continue
+        sentences = re.split(r"(?<=[.!?।])\s+", para)
+        buf = ""
+        for s in sentences:
+            if buf and len(buf) + len(s) + 1 > max_chars:
+                chunks.append(buf.strip())
+                buf = s
+            else:
+                buf = f"{buf} {s}".strip()
+        if buf.strip():
+            chunks.append(buf.strip())
+    return chunks or ([text.strip()] if text.strip() else [])
 
 _PREFIX_PROMPT = """You are indexing a Bangladeshi legal document for retrieval.
 Document: {document_title}
@@ -101,9 +142,14 @@ async def ingest_document(
     else:
         logger.warning("Embedder unavailable — dense index not populated for namespace '%s'", namespace)
 
-    # Build BM25 index for this namespace
-    # In production you'd load ALL existing chunks first; here we build from this batch.
-    bm25_index.build_index(processed, namespace=namespace)
+    # Rebuild BM25 over the union of the persisted store and this batch, so the
+    # batch is *added* to the namespace rather than replacing it (build_index
+    # rebuilds wholesale). The union also covers the embedder-down case, where
+    # the dense upsert above was skipped but BM25 should still index the batch.
+    merged: dict[str, dict] = {c["chunk_id"]: c for c in vector_store.get_all_chunks(namespace)}
+    for c in processed:
+        merged[c["chunk_id"]] = c
+    bm25_index.build_index(list(merged.values()), namespace=namespace)
 
     logger.info("Ingested %d chunks → namespace='%s'", len(processed), namespace)
     return len(processed)

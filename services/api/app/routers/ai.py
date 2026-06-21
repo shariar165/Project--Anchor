@@ -4,33 +4,17 @@ Proxies to the internal RAG service (services/rag) over HTTP.
 JWT auth is enforced here at the API layer; RAG never sees user tokens.
 """
 import logging
-import os
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from app.limiter import limiter
-from app.deps import get_current_user
+from app.deps import get_current_user, require_role
+from app.services.rag_proxy import rag_url as _rag_url, rag_headers as _rag_headers
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ai", tags=["ai"])
-
-RAG_URL = os.environ.get("RAG_SERVICE_URL", "http://localhost:8001")
-RAG_INTERNAL_SECRET = os.environ.get("RAG_INTERNAL_SECRET", "")
-
-
-def _rag_headers() -> dict[str, str]:
-    h: dict[str, str] = {
-        "Content-Type": "application/json",
-        # When RAG is reached through ngrok (RAG-on-PC topology), this skips
-        # ngrok's HTML interstitial so we always get the JSON body back.
-        # Harmless when RAG is reached directly (unknown header is ignored).
-        "ngrok-skip-browser-warning": "true",
-    }
-    if RAG_INTERNAL_SECRET:
-        h["X-Internal-Secret"] = RAG_INTERNAL_SECRET
-    return h
 
 
 @router.post("/chat")
@@ -55,7 +39,7 @@ async def chat(
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
             resp = await client.post(
-                f"{RAG_URL}/chat",
+                f"{_rag_url()}/chat",
                 json=body,
                 headers=_rag_headers(),
             )
@@ -71,11 +55,14 @@ async def chat(
 
 
 @router.post("/ingest", include_in_schema=False)
-async def ingest_sample(request: Request) -> dict[str, Any]:
-    """Proxy to RAG service ingest endpoint (dev/demo setup)."""
+async def ingest_sample(
+    request: Request,
+    _token=Depends(require_role("super_admin")),
+) -> dict[str, Any]:
+    """Proxy to RAG service sample-corpus reload. Super-admin only."""
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(f"{RAG_URL}/ingest", headers=_rag_headers())
+            resp = await client.post(f"{_rag_url()}/ingest", headers=_rag_headers())
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError:
@@ -90,7 +77,7 @@ async def ai_health() -> dict[str, Any]:
     """Proxy health check to RAG service. Returns degraded status if RAG is unreachable."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{RAG_URL}/health", headers=_rag_headers())
+            resp = await client.get(f"{_rag_url()}/health", headers=_rag_headers())
             return resp.json()
     except httpx.ConnectError:
         return {"pipeline": "unavailable", "error": "RAG service unreachable"}

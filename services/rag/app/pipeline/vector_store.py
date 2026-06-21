@@ -149,3 +149,69 @@ def count(namespace: str = "national") -> int:
         return col.count()
     except Exception:
         return 0
+
+
+def get_all_chunks(namespace: str = "national") -> list[dict]:
+    """Return every stored chunk for a namespace as {chunk_id, text, metadata}.
+
+    This is the persistent source of truth (ChromaDB). Used to rebuild the
+    in-memory BM25 index and to list/inspect the corpus.
+    """
+    col = get_collection(namespace)
+    if col is None:
+        return []
+    try:
+        if col.count() == 0:
+            return []
+        res = col.get(include=["documents", "metadatas"])
+        ids = res.get("ids", []) or []
+        docs = res.get("documents", []) or []
+        metas = res.get("metadatas", []) or []
+        out: list[dict] = []
+        for cid, doc, meta in zip(ids, docs, metas):
+            meta = meta or {}
+            out.append({
+                "chunk_id": meta.get("chunk_id", cid),
+                "text": doc or "",
+                "metadata": meta,
+            })
+        return out
+    except Exception as e:
+        logger.error("get_all_chunks error: %s", e)
+        return []
+
+
+def list_documents(namespace: str = "national") -> list[dict]:
+    """Group stored chunks by document_id into a corpus document listing."""
+    docs: dict[str, dict] = {}
+    for c in get_all_chunks(namespace):
+        m = c.get("metadata", {})
+        doc_id = m.get("document_id") or m.get("chunk_id") or c.get("chunk_id", "")
+        if doc_id not in docs:
+            docs[doc_id] = {
+                "document_id": doc_id,
+                "title": m.get("act_name") or m.get("document_title") or doc_id,
+                "document_type": m.get("document_type", "statute"),
+                "section": m.get("section", ""),
+                "language": m.get("language", "en"),
+                "effective_date": m.get("effective_date", ""),
+                "tenant_scope": m.get("tenant_scope", namespace),
+                "chunk_count": 0,
+            }
+        docs[doc_id]["chunk_count"] += 1
+    return sorted(docs.values(), key=lambda d: d["title"].lower())
+
+
+def delete_document(document_id: str, namespace: str = "national") -> int:
+    """Delete all chunks belonging to a document_id. Returns chunks removed."""
+    col = get_collection(namespace)
+    if col is None:
+        return 0
+    try:
+        before = col.count()
+        col.delete(where={"document_id": document_id})
+        after = col.count()
+        return max(0, before - after)
+    except Exception as e:
+        logger.error("delete_document error: %s", e)
+        return 0

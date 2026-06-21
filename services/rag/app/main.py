@@ -12,7 +12,16 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+
+# Load services/rag/.env into the environment BEFORE anything reads os.environ
+# (config.py captures OLLAMA_BASE_URL etc. at import time). Explicit path so it
+# works no matter the launch cwd. On Railway there is no .env file and real env
+# vars are already set — load_dotenv is then a harmless no-op.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,11 +42,19 @@ async def lifespan(app: FastAPI):
     from app.config import get_settings
     settings = get_settings()
     if not settings.disable_ai_warmup:
-        try:
-            from app.pipeline.sample_corpus import load_sample_corpus
-            asyncio.create_task(load_sample_corpus())
-        except Exception as e:
-            logger.warning("AI warmup skipped: %s", e)
+        async def _warmup():
+            try:
+                from app.pipeline.sample_corpus import load_sample_corpus
+                from app.pipeline.ingestion import rebuild_bm25_from_store
+                await load_sample_corpus()
+                # BM25 is in-memory; rebuild it from the persisted ChromaDB store
+                # on every boot so custom-ingested documents (not just the sample
+                # corpus) are searchable after a restart.
+                for ns in ("national", "diu"):
+                    rebuild_bm25_from_store(ns)
+            except Exception as e:
+                logger.warning("AI warmup skipped: %s", e)
+        asyncio.create_task(_warmup())
     yield
 
 
@@ -51,7 +68,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:8000"],
-    allow_methods=["POST", "GET"],
+    allow_methods=["POST", "GET", "DELETE"],
     allow_headers=["X-Internal-Secret", "Content-Type"],
 )
 
@@ -91,6 +108,121 @@ async def ingest(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/corpus/documents")
+async def corpus_documents(
+    namespace: str = "national",
+    x_internal_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """List corpus documents (grouped by document_id) for a namespace."""
+    _verify_internal(x_internal_secret)
+    from app.pipeline import vector_store
+    return {"namespace": namespace, "documents": vector_store.list_documents(namespace)}
+
+
+@app.get("/corpus/stats")
+async def corpus_stats(
+    x_internal_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Per-namespace chunk counts (dense store + sparse index)."""
+    _verify_internal(x_internal_secret)
+    from app.pipeline import vector_store, bm25_index
+    out: dict[str, Any] = {}
+    for ns in ("national", "diu"):
+        out[ns] = {
+            "dense_chunks": vector_store.count(ns),
+            "sparse_chunks": bm25_index.index_count(ns),
+            "documents": len(vector_store.list_documents(ns)),
+        }
+    return out
+
+
+@app.post("/corpus/ingest")
+async def corpus_ingest(
+    body: dict[str, Any],
+    x_internal_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Ingest a custom document into a namespace.
+
+    Body: {namespace, title, document_type?, document_id?, metadata{}, text | chunks[]}
+    Either `text` (auto-chunked) or a pre-split `chunks` list must be provided.
+    """
+    _verify_internal(x_internal_secret)
+    try:
+        import re
+        import hashlib
+        from app.pipeline.ingestion import ingest_document, chunk_text
+
+        namespace = body.get("namespace", "national")
+        title = (body.get("title") or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title is required")
+
+        # Deterministic id from the title so re-ingesting the same document
+        # overwrites its chunks (upsert by chunk_id) instead of duplicating.
+        # The hash suffix keeps it unique even for non-ASCII (e.g. Bangla)
+        # titles that slugify to empty.
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
+        digest = hashlib.md5(title.encode("utf-8")).hexdigest()[:8]
+        document_id = body.get("document_id") or f"{namespace}-{slug}-{digest}".replace("--", "-")
+        base_meta = dict(body.get("metadata") or {})
+        base_meta.setdefault("document_id", document_id)
+        base_meta.setdefault("document_type", body.get("document_type", "statute"))
+        base_meta.setdefault("act_name", title)
+        base_meta.setdefault("tenant_scope", namespace)
+        base_meta.setdefault("language", body.get("language", "en"))
+
+        raw_chunks = body.get("chunks")
+        if raw_chunks:
+            texts = [c if isinstance(c, str) else c.get("text", "") for c in raw_chunks]
+        else:
+            texts = chunk_text(body.get("text", ""))
+        texts = [t for t in texts if t and t.strip()]
+        if not texts:
+            raise HTTPException(status_code=400, detail="No chunkable text provided")
+
+        chunks = []
+        for i, text in enumerate(texts):
+            meta = dict(base_meta)
+            cid = f"{document_id}-{i}"
+            meta["chunk_id"] = cid
+            chunks.append({
+                "chunk_id": cid,
+                "text": text,
+                "metadata": meta,
+                "document_title": title,
+                "hierarchy": base_meta.get("section", ""),
+                "effective_date": base_meta.get("effective_date", ""),
+            })
+
+        count = await ingest_document(chunks, namespace=namespace, generate_prefixes=True)
+        return {"status": "ok", "document_id": document_id, "chunks_loaded": count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Corpus ingest error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/corpus/documents/{document_id}")
+async def corpus_delete(
+    document_id: str,
+    namespace: str = "national",
+    x_internal_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Delete a document's chunks from a namespace and rebuild BM25."""
+    _verify_internal(x_internal_secret)
+    try:
+        from app.pipeline import vector_store
+        from app.pipeline.ingestion import rebuild_bm25_from_store
+
+        removed = vector_store.delete_document(document_id, namespace)
+        rebuild_bm25_from_store(namespace)
+        return {"status": "ok", "document_id": document_id, "chunks_removed": removed}
+    except Exception as e:
+        logger.error("Corpus delete error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     """Check RAG subsystem component availability."""
@@ -121,6 +253,10 @@ async def health() -> dict[str, Any]:
 
     try:
         from app.pipeline import llm_client
+        # Force a live re-probe: the availability flag is cached for the life of
+        # the process, so a transient failure (e.g. ngrok tunnel briefly down at
+        # startup) would otherwise pin /health to "unavailable" until restart.
+        llm_client.reset_availability_cache()
         available = await llm_client._check_availability()
         status["ollama"] = "ok" if available else "unavailable"
     except Exception as e:

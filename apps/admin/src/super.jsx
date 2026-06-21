@@ -2776,4 +2776,425 @@ function SuperRedZones({ onGo }) {
 }
 
 
-Object.assign(window, { SuperDashboard, SuperTenants, SuperOnboard, SuperTenantDetail, SuperAuditLogs, SuperDeanonymization, SuperVerificationFeed, SuperAIHealth, SuperAlerts, SuperModeration, SuperUsers, SuperRedZones });
+// ---- Policy & configuration ----
+const _PERMA_BAN_OPTS = ['2 super admin approvals', '1 super admin approval', 'External oversight sign-off'];
+const _PATTERN_OPTS = ['Surface to Dean when ≥ 3 reports', 'Surface when ≥ 2 reports', 'Surface when ≥ 5 reports'];
+const _BREACH_OPTS = ['72 hours (Ordinance default)', '48 hours', '24 hours'];
+
+function SuperPolicy() {
+  const [cfg, setCfg]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]   = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved]   = useState(false);
+  const [dirty, setDirty]   = useState({});
+  const [discLang, setDiscLang] = useState('en');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError('');
+    AnchorAPI.apiGet('/v1/super-admin/config')
+      .then(d => { if (!cancelled) setCfg(d); })
+      .catch(e => { if (!cancelled) setError(e.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  function set(section, key, value) {
+    setCfg(c => ({ ...c, [section]: { ...(c[section] || {}), [key]: value } }));
+    setDirty(d => ({ ...d, [section]: true }));
+    setSaved(false);
+  }
+  const hasDirty = Object.keys(dirty).some(s => dirty[s]);
+
+  async function save() {
+    const sections = {};
+    Object.keys(dirty).forEach(s => { if (dirty[s] && cfg[s]) sections[s] = cfg[s]; });
+    if (Object.keys(sections).length === 0) return;
+    setSaving(true); setError('');
+    try {
+      const updated = await AnchorAPI.apiPatch('/v1/super-admin/config', { sections });
+      setCfg(updated); setDirty({}); setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
+  }
+
+  // Field renderers (closures over cfg/set)
+  function numRow(section, key, title, hint, suffix, step) {
+    const v = (cfg[section] || {})[key];
+    return (
+      <SettingRow title={title} hint={hint}>
+        <input type="number" step={step || 1} value={v ?? ''}
+          onChange={e => set(section, key, e.target.value === '' ? '' : Number(e.target.value))}
+          className="w-[90px] px-2 py-1.5 hair border rounded-sm bg-white font-mono text-[13px] text-right" />
+        {suffix && <span className="text-[12px] text-[var(--muted)]">{suffix}</span>}
+      </SettingRow>
+    );
+  }
+  function selRow(section, key, title, hint, options) {
+    const v = (cfg[section] || {})[key];
+    return (
+      <SettingRow title={title} hint={hint}>
+        <select value={v ?? ''} onChange={e => set(section, key, e.target.value)}
+          className="px-2 py-1.5 hair border rounded-sm bg-white text-[12.5px]">
+          {options.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      </SettingRow>
+    );
+  }
+  function toggleRow(section, key, title, hint) {
+    const v = !!(cfg[section] || {})[key];
+    return (
+      <SettingRow title={title} hint={hint}>
+        <Toggle on={v} onChange={nv => set(section, key, nv)} />
+      </SettingRow>
+    );
+  }
+
+  return (
+    <>
+      <PageHeader title="Policy & configuration" bn="নীতি ও কনফিগারেশন"
+        description="Platform-wide defaults: escalation timers, rate limits, trust thresholds, ban durations, AI confidence gates, the legal disclaimer, retention, and PDP Ordinance controls. All changes are audit-logged."
+        actions={
+          <PrimaryButton mode="ember" size="sm" icon={saving ? 'loader' : 'check'} onClick={save}
+            disabled={saving || !hasDirty}
+            className={(saving || !hasDirty) ? 'opacity-60 pointer-events-none' : ''}>
+            {saving ? 'Saving…' : 'Save changes'}
+          </PrimaryButton>
+        }
+      />
+
+      {error && <AuditNote tone="red" icon="alert-triangle">{error}</AuditNote>}
+      {saved && <div className="mb-4"><AuditNote tone="sage" icon="check-circle">Configuration saved and audit-logged.</AuditNote></div>}
+      {hasDirty && !saving && <div className="mb-4"><AuditNote tone="gold" icon="pencil">You have unsaved changes.</AuditNote></div>}
+
+      {loading || !cfg ? (
+        <Card><EmptyState icon="loader" title="Loading configuration…" /></Card>
+      ) : (
+        <div className="space-y-5">
+          <Card>
+            <SectionLabel>Default escalation timers</SectionLabel>
+            <AuditNote tone="red" icon="shield-alert">Platform-wide defaults. Tenants may override per-category in their own settings — but cannot exceed the maximums set here.</AuditNote>
+            <div className="mt-2">
+              {numRow('escalation', 'level1_to_level2_hours', 'Default Level-1 → Level-2 timer', 'Auto-escalation from Dept Head to Dean if no action is taken.', 'hours')}
+              {numRow('escalation', 'level2_to_level3_days', 'Default Level-2 → Level-3 timer', 'Dean to VC Office.', 'days')}
+              {numRow('escalation', 'alert_auto_escalation_minutes', 'Active alert auto-escalation', 'If a tenant proctor doesn’t acknowledge within this window, the alert escalates to platform operators.', 'minutes')}
+              {numRow('escalation', 'max_tenant_timer_days', 'Maximum timer a tenant can configure', 'Hard cap preventing tenants from disabling escalation by setting absurd timers.', 'days')}
+            </div>
+          </Card>
+
+          <Card>
+            <SectionLabel>Rate limits</SectionLabel>
+            {numRow('rate_limits', 'complaint_filing_per_24h', 'Complaint filing · per student', 'Soft limit. Beyond this in 24h, AI screens for spam.', '/ 24h')}
+            {numRow('rate_limits', 'active_alerts_per_24h', 'Active alerts · per student', 'Hard limit per 24h. Exceeded users are auto-blocked until review.', '/ 24h')}
+            {numRow('rate_limits', 'news_publishing_per_hour', 'News publishing · per user', 'Verification feed posts before AI screening throttles.', '/ hour')}
+            {numRow('rate_limits', 'ai_queries_per_hour', 'AI queries · per user', 'Caps individual chatbot usage on the student app.', '/ hour')}
+          </Card>
+
+          <Card>
+            <SectionLabel>Trust ranking thresholds</SectionLabel>
+            <p className="text-[12.5px] text-[var(--graphite)] mb-1">Publishers gain trust by submitting verified news. These thresholds map to badges in the verification feed.</p>
+            {numRow('trust_thresholds', 'bronze_verified_posts', 'Bronze · Verified', 'Minimum correct verified posts to earn the bronze badge.', 'posts')}
+            {numRow('trust_thresholds', 'silver_trusted_posts', 'Silver · Trusted', 'Verified posts to be marked Trusted.', 'posts')}
+            {numRow('trust_thresholds', 'gold_sourceful_posts', 'Gold · Sourceful', 'Earn the highest publisher tier.', 'posts')}
+            {numRow('trust_thresholds', 'demotion_false_posts', 'Demotion threshold', 'Verified false posts that demote a publisher one tier.', 'false posts')}
+          </Card>
+
+          <Card>
+            <SectionLabel>Ban durations</SectionLabel>
+            {numRow('bans', 'alert_false_alarm_days', 'Alert false-alarm ban', 'When a user’s alert is determined false, they cannot file new alerts for this duration.', 'days')}
+            {numRow('bans', 'news_false_publication_days', 'News false-publication ban', 'Publishing falsely verified news.', 'days')}
+            {numRow('bans', 'complaint_spam_days', 'Complaint spam ban', 'Repeated unfounded complaints flagged as spam.', 'days')}
+            {selRow('bans', 'permanent_ban_requires', 'Permanent ban requires', 'Super admin approvals to make a ban permanent.', _PERMA_BAN_OPTS)}
+          </Card>
+
+          <Card>
+            <SectionLabel>AI confidence thresholds</SectionLabel>
+            {numRow('ai_thresholds', 'auto_publish_news', 'Auto-publish · news', 'Minimum AI confidence to auto-approve a verification-feed post.', '', 0.01)}
+            {numRow('ai_thresholds', 'auto_reject_news', 'Auto-reject · news', 'Below this confidence, the AI rejects the post outright.', '', 0.01)}
+            {numRow('ai_thresholds', 'auto_flag_false_alarm', 'Auto-flag false alarm', 'AI confidence that the alert is false.', '', 0.01)}
+            {selRow('ai_thresholds', 'pattern_detection_signal', 'Pattern-detection signal strength · alert', '', _PATTERN_OPTS)}
+            {numRow('ai_thresholds', 'self_verification_min', 'Self-verification minimum pass rate', 'Below this, the output is auto-rejected and re-routed.', '', 0.01)}
+          </Card>
+
+          <Card>
+            <SectionLabel right={
+              <div className="flex hair border rounded-sm overflow-hidden">
+                <button onClick={()=>setDiscLang('en')} className={`px-3 py-1 text-[12px] ${discLang==='en'?'bg-[var(--ember)] text-white':'text-[var(--graphite)]'}`}>English</button>
+                <button onClick={()=>setDiscLang('bn')} className={`px-3 py-1 text-[12px] font-bn ${discLang==='bn'?'bg-[var(--ember)] text-white':'text-[var(--graphite)]'}`}>বাংলা</button>
+              </div>
+            }>Legal disclaimer</SectionLabel>
+            <p className="text-[12px] text-[var(--graphite)] mb-3">Shown to every user on first sign-in and inside the AI chat panel. Both language versions must be present.</p>
+            <textarea value={(cfg.disclaimer || {})[discLang] || ''} onChange={e => set('disclaimer', discLang, e.target.value)}
+              className={`w-full p-3 hair border rounded-sm bg-[var(--bg-input-tint)] text-[13px] min-h-[140px] ${discLang==='bn'?'font-bn':''}`} />
+          </Card>
+
+          <Card>
+            <SectionLabel>Data retention</SectionLabel>
+            <AuditNote tone="navy" icon="database">Retention is set per data class. Deletion is irreversible and respects the audit-log append-only contract.</AuditNote>
+            <div className="mt-2">
+              {selRow('retention', 'resolved_case', 'Resolved-case retention', 'How long resolved cases remain queryable in the admin.', ['2 academic years','3 academic years','5 academic years'])}
+              {selRow('retention', 'evidence', 'Evidence retention', 'Images and documents attached to cases.', ['5 years','10 years'])}
+              {selRow('retention', 'delete_inactive_accounts', 'Delete inactive student accounts', 'Accounts with no activity for this period are deactivated, not deleted.', ['2 years','Never'])}
+            </div>
+          </Card>
+
+          <Card>
+            <SectionLabel>Bangladesh PDP Ordinance 2025 · compliance</SectionLabel>
+            <AuditNote tone="navy" icon="scale">These toggles map directly to sections of the Personal Data Protection Ordinance 2025. Disabling a control will fail the platform’s automated compliance check.</AuditNote>
+            <div className="mt-2">
+              {toggleRow('pdpo', 'right_to_access', 'Right to access', 'Users can request a copy of all personal data held about them within 30 days.')}
+              {toggleRow('pdpo', 'right_to_rectification', 'Right to rectification', 'Users can correct inaccurate personal data.')}
+              {toggleRow('pdpo', 'right_to_erasure', 'Right to erasure', 'Users can request deletion subject to legal hold exceptions.')}
+              {toggleRow('pdpo', 'data_localization', 'Data localization', 'All personal data stored within Bangladesh borders.')}
+              {toggleRow('pdpo', 'cross_border_transfer_review', 'Cross-border transfer review', 'Any data egress to foreign processors requires DPO sign-off.')}
+              {selRow('pdpo', 'breach_notification_window', 'Breach notification window', 'Automatic notification to the Data Protection Authority on a detected breach.', _BREACH_OPTS)}
+            </div>
+          </Card>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---- Legal corpus · RAG ----
+const _DOC_TYPES = ['statute', 'rule', 'regulation', 'circular', 'judgment', 'commentary', 'template', 'university_policy', 'workflow'];
+
+function _healthTone(v) { return v === 'ok' ? 'sage' : v === 'disabled' ? 'mist' : 'red'; }
+
+function SuperLegalCorpus() {
+  const [namespace, setNamespace] = useState('national');
+  const [namespaces, setNamespaces] = useState(['national', 'diu']);
+  const [docs, setDocs]       = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [health, setHealth]   = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [reloading, setReloading]   = useState(false);
+  const [notice, setNotice]   = useState('');
+
+  const blank = { title: '', document_type: 'statute', section: '', language: 'en', effective_date: '', text: '' };
+  const [form, setForm] = useState(blank);
+  const [submitting, setSubmitting] = useState(false);
+  const [formErr, setFormErr] = useState('');
+
+  const fetchDocs = useCallback(() => {
+    setLoading(true); setError('');
+    AnchorAPI.apiGet(`/v1/super-admin/corpus/documents?namespace=${encodeURIComponent(namespace)}`)
+      .then(d => setDocs(d.documents || []))
+      .catch(e => { setError(e.message); setDocs([]); })
+      .finally(() => setLoading(false));
+  }, [namespace]);
+
+  useEffect(() => { fetchDocs(); }, [fetchDocs]);
+
+  useEffect(() => {
+    AnchorAPI.apiGet('/ai/health').then(setHealth).catch(() => setHealth({ pipeline: 'unavailable' }));
+    AnchorAPI.apiGet('/v1/super-admin/tenants')
+      .then(d => {
+        const ns = ['national', 'diu'];
+        (d.items || []).forEach(t => {
+          const v = t.vector_namespace || t.slug;
+          if (v && !ns.includes(v)) ns.push(v);
+        });
+        setNamespaces(ns);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function submitDoc() {
+    if (!form.title.trim() || !form.text.trim()) { setFormErr('Title and document text are required.'); return; }
+    setSubmitting(true); setFormErr('');
+    try {
+      const res = await AnchorAPI.apiPostAuth('/v1/super-admin/corpus/documents', {
+        namespace,
+        title: form.title.trim(),
+        document_type: form.document_type,
+        language: form.language,
+        metadata: { section: form.section.trim(), effective_date: form.effective_date.trim() },
+        text: form.text,
+      });
+      setAddOpen(false); setForm(blank);
+      setNotice(`Indexed “${form.title.trim()}” — ${res.chunks_loaded} chunk${res.chunks_loaded === 1 ? '' : 's'}.`);
+      setTimeout(() => setNotice(''), 4000);
+      fetchDocs();
+    } catch (e) { setFormErr(e.message); }
+    finally { setSubmitting(false); }
+  }
+
+  async function doDelete() {
+    if (!confirmDel) return;
+    try {
+      await AnchorAPI.apiDelete(`/v1/super-admin/corpus/documents/${encodeURIComponent(confirmDel.document_id)}?namespace=${encodeURIComponent(namespace)}`);
+      setNotice(`Removed “${confirmDel.title}” from the ${namespace} corpus.`);
+      setTimeout(() => setNotice(''), 4000);
+      fetchDocs();
+    } catch (e) { setError(e.message); }
+  }
+
+  async function reloadSample() {
+    setReloading(true); setError('');
+    try {
+      await AnchorAPI.apiPostAuth('/ai/ingest', {});
+      setNotice('Sample corpus reloaded into ChromaDB.');
+      setTimeout(() => setNotice(''), 4000);
+      fetchDocs();
+    } catch (e) { setError(e.message); }
+    finally { setReloading(false); }
+  }
+
+  const ragDown = health && (health.pipeline === 'unavailable' || health.chromadb && String(health.chromadb).startsWith('error'));
+
+  const columns = [
+    { key: 'title', label: 'Document', render: r => (
+      <div className="min-w-0">
+        <div className="text-[13px] text-[var(--ink)] font-medium truncate">{r.title}</div>
+        {r.section && <div className="text-[11.5px] text-[var(--muted)]">{r.section}</div>}
+      </div>
+    )},
+    { key: 'document_type', label: 'Type', render: r => <Tag tone="navy">{String(r.document_type).replace(/_/g, ' ')}</Tag> },
+    { key: 'language', label: 'Lang', render: r => <span className="font-mono text-[12px] uppercase">{r.language}</span> },
+    { key: 'effective_date', label: 'Effective', render: r => <span className="text-[12px] text-[var(--graphite)]">{r.effective_date || '—'}</span> },
+    { key: 'chunk_count', label: 'Chunks', align: 'right', render: r => <MonoChip>{r.chunk_count}</MonoChip> },
+    { key: 'actions', label: '', align: 'right', render: r => (
+      <GhostButton size="sm" danger icon="trash-2" onClick={() => setConfirmDel(r)}>Delete</GhostButton>
+    )},
+  ];
+
+  return (
+    <>
+      <PageHeader title="Legal corpus · RAG" bn="আইনি কর্পাস"
+        description="Manage the documents that feed ChromaDB across tenant namespaces. Adding a document chunks it, generates contextual prefixes, and indexes it for hybrid retrieval."
+        actions={<>
+          <GhostButton size="sm" icon={reloading ? 'loader' : 'refresh-cw'} onClick={reloadSample}
+            disabled={reloading} className={reloading ? 'opacity-60 pointer-events-none' : ''}>
+            {reloading ? 'Reloading…' : 'Reload sample corpus'}
+          </GhostButton>
+          <PrimaryButton mode="ember" size="sm" icon="plus" onClick={() => { setForm(blank); setFormErr(''); setAddOpen(true); }}>Add document</PrimaryButton>
+        </>}
+      />
+
+      {notice && <div className="mb-4"><AuditNote tone="sage" icon="check-circle">{notice}</AuditNote></div>}
+
+      {/* RAG health banner */}
+      <div className="mb-4">
+        {ragDown ? (
+          <AuditNote tone="red" icon="server-off">
+            RAG service is unreachable — corpus operations are unavailable. The pipeline runs separately (see services/rag). Start it and refresh.
+          </AuditNote>
+        ) : health ? (
+          <Card className="flex items-center gap-4 flex-wrap" >
+            <span className="smallcaps text-[var(--muted)]">RAG engine</span>
+            {['embedder', 'chromadb', 'ollama'].map(k => (
+              <span key={k} className="inline-flex items-center gap-1.5 text-[12.5px]">
+                <span className="text-[var(--muted)] capitalize">{k}:</span>
+                <Tag tone={_healthTone(health[k])}>{health[k] || 'unknown'}</Tag>
+              </span>
+            ))}
+          </Card>
+        ) : null}
+      </div>
+
+      {/* Namespace selector */}
+      <div className="mb-4 flex items-center gap-2 flex-wrap">
+        <span className="smallcaps text-[var(--muted)] mr-1">Namespace</span>
+        {namespaces.map(ns => (
+          <button key={ns} onClick={() => setNamespace(ns)}
+            className={`px-3 py-1.5 rounded-sm text-[12.5px] hair border ${namespace===ns ? 'bg-[var(--ember)] text-white border-transparent' : 'text-[var(--graphite)] hover:bg-[var(--mist)]/40'}`}>
+            {ns}
+          </button>
+        ))}
+      </div>
+
+      {error && <div className="mb-4"><AuditNote tone="red" icon="alert-triangle">{error}</AuditNote></div>}
+
+      <Card noPad>
+        {loading ? (
+          <EmptyState icon="loader" title="Loading corpus…" />
+        ) : docs.length === 0 ? (
+          <EmptyState icon="book-open" title="No documents in this namespace"
+            body="Add a legal document to index it for retrieval, or reload the built-in sample corpus."
+            action={<PrimaryButton mode="ember" size="sm" icon="plus" onClick={() => setAddOpen(true)}>Add document</PrimaryButton>} />
+        ) : (
+          <div className="p-2">
+            <DataTable columns={columns} rows={docs} />
+          </div>
+        )}
+      </Card>
+
+      {/* Add document slide-over */}
+      <SlideOver open={addOpen} onClose={() => setAddOpen(false)} width={560}>
+        <div className="p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <SectionLabel className="mb-0">Add corpus document · {namespace}</SectionLabel>
+            <button onClick={() => setAddOpen(false)} className="w-7 h-7 rounded-sm hover:bg-[var(--mist)]/40 flex items-center justify-center"><Icon name="x" size={14} /></button>
+          </div>
+          {formErr && <AuditNote tone="red" icon="alert-triangle">{formErr}</AuditNote>}
+          <div>
+            <label className="smallcaps text-[var(--muted)]">Title / Act name</label>
+            <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+              className="mt-1 w-full px-3 py-2 hair border rounded-sm bg-white text-[13px]" placeholder="e.g. Penal Code 1860 — Section 354" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="smallcaps text-[var(--muted)]">Document type</label>
+              <select value={form.document_type} onChange={e => setForm(f => ({ ...f, document_type: e.target.value }))}
+                className="mt-1 w-full px-2 py-2 hair border rounded-sm bg-white text-[12.5px]">
+                {_DOC_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="smallcaps text-[var(--muted)]">Language</label>
+              <select value={form.language} onChange={e => setForm(f => ({ ...f, language: e.target.value }))}
+                className="mt-1 w-full px-2 py-2 hair border rounded-sm bg-white text-[12.5px]">
+                <option value="en">English</option>
+                <option value="bn">Bangla</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="smallcaps text-[var(--muted)]">Section / clause</label>
+              <input value={form.section} onChange={e => setForm(f => ({ ...f, section: e.target.value }))}
+                className="mt-1 w-full px-3 py-2 hair border rounded-sm bg-white text-[13px]" placeholder="Section 3.4" />
+            </div>
+            <div>
+              <label className="smallcaps text-[var(--muted)]">Effective date</label>
+              <input value={form.effective_date} onChange={e => setForm(f => ({ ...f, effective_date: e.target.value }))}
+                className="mt-1 w-full px-3 py-2 hair border rounded-sm bg-white text-[13px]" placeholder="2023-09-18" />
+            </div>
+          </div>
+          <div>
+            <label className="smallcaps text-[var(--muted)]">Document text</label>
+            <textarea value={form.text} onChange={e => setForm(f => ({ ...f, text: e.target.value }))}
+              className={`mt-1 w-full p-3 hair border rounded-sm bg-white text-[13px] min-h-[220px] ${form.language==='bn'?'font-bn':''}`}
+              placeholder="Paste the document body. Blank lines separate it into retrieval chunks." />
+            <p className="text-[11.5px] text-[var(--muted)] mt-1">Long text is split on blank lines into retrieval-sized chunks; each chunk gets an AI-generated contextual prefix before embedding.</p>
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <GhostButton onClick={() => setAddOpen(false)}>Cancel</GhostButton>
+            <PrimaryButton mode="ember" icon={submitting ? 'loader' : 'upload'} onClick={submitDoc}
+              disabled={submitting} className={submitting ? 'opacity-60 pointer-events-none' : ''}>
+              {submitting ? 'Indexing…' : 'Ingest document'}
+            </PrimaryButton>
+          </div>
+        </div>
+      </SlideOver>
+
+      <ConfirmModal
+        open={!!confirmDel}
+        onClose={() => setConfirmDel(null)}
+        onConfirm={doDelete}
+        title="Delete this document?"
+        body={confirmDel ? `All ${confirmDel.chunk_count} chunk${confirmDel.chunk_count===1?'':'s'} of “${confirmDel.title}” will be removed from the ${namespace} corpus and the retrieval index.` : ''}
+        confirmWord="DELETE"
+        confirmLabel="Delete document"
+        tone="red"
+      />
+    </>
+  );
+}
+
+Object.assign(window, { SuperDashboard, SuperTenants, SuperOnboard, SuperTenantDetail, SuperAuditLogs, SuperDeanonymization, SuperVerificationFeed, SuperAIHealth, SuperAlerts, SuperModeration, SuperUsers, SuperRedZones, SuperPolicy, SuperLegalCorpus });

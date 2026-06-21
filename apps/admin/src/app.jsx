@@ -189,10 +189,8 @@ function supView(route, onGo, dark, setDark) {
       items={['Complaints per week (stacked)','Resolution rates by tenant','Alert frequency heatmap (national)','Most cited laws (RAG)','Lawyer engagement','Verification feed activity']} />;
     case '/super/incidents': return <StubScreen title="Incidents" description="Ongoing technical, security and content incidents. Playbooks and post-mortems." icon="flame"
       items={['Active incidents · 1','Playbooks · 14','Post-mortems · 22']} />;
-    case '/super/policy': return <StubScreen title="Policy & configuration" description="Platform-wide settings: escalation timers, rate limits, trust thresholds, ban durations." icon="scale"
-      items={['Escalation timers','Rate limits','Trust thresholds (5 / 10 / 15)','Ban durations','AI confidence thresholds','Legal disclaimer (Bangla + English)','Bangladesh PDP Ordinance 2025']} />;
-    case '/super/legal-corpus': return <StubScreen title="Legal corpus · RAG" description="Manage the legal corpus that feeds ChromaDB across tenant namespaces." icon="book-open"
-      items={['Constitution','Laws & Acts','Court judgments','FIR / GD templates','University policies (per tenant)','Indexing jobs']} />;
+    case '/super/policy': return <SuperPolicy />;
+    case '/super/legal-corpus': return <SuperLegalCorpus />;
     case '/super/team': return <StubScreen title="Team members" description="Super admin accounts, role assignments, MFA enforcement, access levels." icon="users"
       items={['Members · 6','MFA enforced · 6/6','Recent activity']} />;
     case '/super/profile': return <StubScreen title="My profile" description="Super admin account and security settings." icon="circle-user" />;
