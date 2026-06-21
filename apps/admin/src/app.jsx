@@ -183,12 +183,9 @@ function supView(route, onGo, dark, setDark) {
     case '/super/users': return <SuperUsers />;
     case '/super/dms': return <StubScreen title="Dead Man\u2019s Switch" description="Active DMS cases per tenant, recent triggers, service health. Super Admin cannot read encrypted content." icon="lock-keyhole"
       items={['Active cases · 24','Triggered · 30d · 0','Recipient verification · 18','Service health · OK']} />;
-    case '/super/encryption': return <StubScreen title="Encryption & keys" description="Master key rotation, session/chat keys count, KMS health, certificate expiry." icon="key-round"
-      items={['Master key · rotated 14d ago','Active session keys · 12,847','KMS health · OK','Certificates · 3 expiring in 90d']} />;
-    case '/super/analytics': return <StubScreen title="Platform-wide analytics" description="Cross-tenant aggregate dashboards. All anonymized." icon="bar-chart-3"
-      items={['Complaints per week (stacked)','Resolution rates by tenant','Alert frequency heatmap (national)','Most cited laws (RAG)','Lawyer engagement','Verification feed activity']} />;
-    case '/super/incidents': return <StubScreen title="Incidents" description="Ongoing technical, security and content incidents. Playbooks and post-mortems." icon="flame"
-      items={['Active incidents · 1','Playbooks · 14','Post-mortems · 22']} />;
+    case '/super/encryption': return <SuperEncryption />;
+    case '/super/analytics': return <SuperAnalytics />;
+    case '/super/incidents': return <SuperIncidents />;
     case '/super/policy': return <SuperPolicy />;
     case '/super/legal-corpus': return <SuperLegalCorpus />;
     case '/super/team': return <StubScreen title="Team members" description="Super admin accounts, role assignments, MFA enforcement, access levels." icon="users"

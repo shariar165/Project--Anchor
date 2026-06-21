@@ -9,6 +9,10 @@ from app.models.anonymous import AnonymousIdentityMapping
 from app.models.deanonymization import DeanonymizationRequest
 from app.models.dms import DMSRecord
 from app.models.e2ee import UserE2EEKey
+from app.models.incident import (
+    Incident, IncidentUpdate,
+    INCIDENT_SEVERITIES, INCIDENT_STATUSES, OPEN_STATUSES,
+)
 from app.models.alert import (
     AlertPhase1Record, Zone, AlertEvent, AlertNotification,
     AlertResponse, AlertEvidence, AlertBan, AlertAdminAction,
@@ -59,6 +63,8 @@ __all__ = [
     "DeanonymizationRequest",
     "DMSRecord",
     "UserE2EEKey",
+    "Incident", "IncidentUpdate",
+    "INCIDENT_SEVERITIES", "INCIDENT_STATUSES", "OPEN_STATUSES",
     # Alert system
     "AlertPhase1Record", "Zone", "AlertEvent", "AlertNotification",
     "AlertResponse", "AlertEvidence", "AlertBan", "AlertAdminAction",
