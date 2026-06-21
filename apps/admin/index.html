@@ -7038,7 +7038,7 @@ function SuperRedZones({ onGo }) {
 
 // ---- Policy & configuration ----
 const _PERMA_BAN_OPTS = ['2 super admin approvals', '1 super admin approval', 'External oversight sign-off'];
-const _PATTERN_OPTS = ['Surface to Dean when â‰¥ 3 reports', 'Surface when â‰¥ 2 reports', 'Surface when â‰¥ 5 reports'];
+const _PATTERN_OPTS = ['Surface to Dean when ≥ 3 reports', 'Surface when ≥ 2 reports', 'Surface when ≥ 5 reports'];
 const _BREACH_OPTS = ['72 hours (Ordinance default)', '48 hours', '24 hours'];
 
 function SuperPolicy() {
@@ -7114,13 +7114,13 @@ function SuperPolicy() {
 
   return (
     <>
-      <PageHeader title="Policy & configuration" bn="à¦¨à§€à¦¤à¦¿ à¦“ à¦•à¦¨à¦«à¦¿à¦—à¦¾à¦°à§‡à¦¶à¦¨"
+      <PageHeader title="Policy & configuration" bn="নীতি ও কনফিগারেশন"
         description="Platform-wide defaults: escalation timers, rate limits, trust thresholds, ban durations, AI confidence gates, the legal disclaimer, retention, and PDP Ordinance controls. All changes are audit-logged."
         actions={
           <PrimaryButton mode="ember" size="sm" icon={saving ? 'loader' : 'check'} onClick={save}
             disabled={saving || !hasDirty}
             className={(saving || !hasDirty) ? 'opacity-60 pointer-events-none' : ''}>
-            {saving ? 'Savingâ€¦' : 'Save changes'}
+            {saving ? 'Saving…' : 'Save changes'}
           </PrimaryButton>
         }
       />
@@ -7130,40 +7130,40 @@ function SuperPolicy() {
       {hasDirty && !saving && <div className="mb-4"><AuditNote tone="gold" icon="pencil">You have unsaved changes.</AuditNote></div>}
 
       {loading || !cfg ? (
-        <Card><EmptyState icon="loader" title="Loading configurationâ€¦" /></Card>
+        <Card><EmptyState icon="loader" title="Loading configuration…" /></Card>
       ) : (
         <div className="space-y-5">
           <Card>
             <SectionLabel>Default escalation timers</SectionLabel>
-            <AuditNote tone="red" icon="shield-alert">Platform-wide defaults. Tenants may override per-category in their own settings â€” but cannot exceed the maximums set here.</AuditNote>
+            <AuditNote tone="red" icon="shield-alert">Platform-wide defaults. Tenants may override per-category in their own settings — but cannot exceed the maximums set here.</AuditNote>
             <div className="mt-2">
-              {numRow('escalation', 'level1_to_level2_hours', 'Default Level-1 â†’ Level-2 timer', 'Auto-escalation from Dept Head to Dean if no action is taken.', 'hours')}
-              {numRow('escalation', 'level2_to_level3_days', 'Default Level-2 â†’ Level-3 timer', 'Dean to VC Office.', 'days')}
-              {numRow('escalation', 'alert_auto_escalation_minutes', 'Active alert auto-escalation', 'If a tenant proctor doesnâ€™t acknowledge within this window, the alert escalates to platform operators.', 'minutes')}
+              {numRow('escalation', 'level1_to_level2_hours', 'Default Level-1 → Level-2 timer', 'Auto-escalation from Dept Head to Dean if no action is taken.', 'hours')}
+              {numRow('escalation', 'level2_to_level3_days', 'Default Level-2 → Level-3 timer', 'Dean to VC Office.', 'days')}
+              {numRow('escalation', 'alert_auto_escalation_minutes', 'Active alert auto-escalation', 'If a tenant proctor doesn’t acknowledge within this window, the alert escalates to platform operators.', 'minutes')}
               {numRow('escalation', 'max_tenant_timer_days', 'Maximum timer a tenant can configure', 'Hard cap preventing tenants from disabling escalation by setting absurd timers.', 'days')}
             </div>
           </Card>
 
           <Card>
             <SectionLabel>Rate limits</SectionLabel>
-            {numRow('rate_limits', 'complaint_filing_per_24h', 'Complaint filing Â· per student', 'Soft limit. Beyond this in 24h, AI screens for spam.', '/ 24h')}
-            {numRow('rate_limits', 'active_alerts_per_24h', 'Active alerts Â· per student', 'Hard limit per 24h. Exceeded users are auto-blocked until review.', '/ 24h')}
-            {numRow('rate_limits', 'news_publishing_per_hour', 'News publishing Â· per user', 'Verification feed posts before AI screening throttles.', '/ hour')}
-            {numRow('rate_limits', 'ai_queries_per_hour', 'AI queries Â· per user', 'Caps individual chatbot usage on the student app.', '/ hour')}
+            {numRow('rate_limits', 'complaint_filing_per_24h', 'Complaint filing · per student', 'Soft limit. Beyond this in 24h, AI screens for spam.', '/ 24h')}
+            {numRow('rate_limits', 'active_alerts_per_24h', 'Active alerts · per student', 'Hard limit per 24h. Exceeded users are auto-blocked until review.', '/ 24h')}
+            {numRow('rate_limits', 'news_publishing_per_hour', 'News publishing · per user', 'Verification feed posts before AI screening throttles.', '/ hour')}
+            {numRow('rate_limits', 'ai_queries_per_hour', 'AI queries · per user', 'Caps individual chatbot usage on the student app.', '/ hour')}
           </Card>
 
           <Card>
             <SectionLabel>Trust ranking thresholds</SectionLabel>
             <p className="text-[12.5px] text-[var(--graphite)] mb-1">Publishers gain trust by submitting verified news. These thresholds map to badges in the verification feed.</p>
-            {numRow('trust_thresholds', 'bronze_verified_posts', 'Bronze Â· Verified', 'Minimum correct verified posts to earn the bronze badge.', 'posts')}
-            {numRow('trust_thresholds', 'silver_trusted_posts', 'Silver Â· Trusted', 'Verified posts to be marked Trusted.', 'posts')}
-            {numRow('trust_thresholds', 'gold_sourceful_posts', 'Gold Â· Sourceful', 'Earn the highest publisher tier.', 'posts')}
+            {numRow('trust_thresholds', 'bronze_verified_posts', 'Bronze · Verified', 'Minimum correct verified posts to earn the bronze badge.', 'posts')}
+            {numRow('trust_thresholds', 'silver_trusted_posts', 'Silver · Trusted', 'Verified posts to be marked Trusted.', 'posts')}
+            {numRow('trust_thresholds', 'gold_sourceful_posts', 'Gold · Sourceful', 'Earn the highest publisher tier.', 'posts')}
             {numRow('trust_thresholds', 'demotion_false_posts', 'Demotion threshold', 'Verified false posts that demote a publisher one tier.', 'false posts')}
           </Card>
 
           <Card>
             <SectionLabel>Ban durations</SectionLabel>
-            {numRow('bans', 'alert_false_alarm_days', 'Alert false-alarm ban', 'When a userâ€™s alert is determined false, they cannot file new alerts for this duration.', 'days')}
+            {numRow('bans', 'alert_false_alarm_days', 'Alert false-alarm ban', 'When a user’s alert is determined false, they cannot file new alerts for this duration.', 'days')}
             {numRow('bans', 'news_false_publication_days', 'News false-publication ban', 'Publishing falsely verified news.', 'days')}
             {numRow('bans', 'complaint_spam_days', 'Complaint spam ban', 'Repeated unfounded complaints flagged as spam.', 'days')}
             {selRow('bans', 'permanent_ban_requires', 'Permanent ban requires', 'Super admin approvals to make a ban permanent.', _PERMA_BAN_OPTS)}
@@ -7171,10 +7171,10 @@ function SuperPolicy() {
 
           <Card>
             <SectionLabel>AI confidence thresholds</SectionLabel>
-            {numRow('ai_thresholds', 'auto_publish_news', 'Auto-publish Â· news', 'Minimum AI confidence to auto-approve a verification-feed post.', '', 0.01)}
-            {numRow('ai_thresholds', 'auto_reject_news', 'Auto-reject Â· news', 'Below this confidence, the AI rejects the post outright.', '', 0.01)}
+            {numRow('ai_thresholds', 'auto_publish_news', 'Auto-publish · news', 'Minimum AI confidence to auto-approve a verification-feed post.', '', 0.01)}
+            {numRow('ai_thresholds', 'auto_reject_news', 'Auto-reject · news', 'Below this confidence, the AI rejects the post outright.', '', 0.01)}
             {numRow('ai_thresholds', 'auto_flag_false_alarm', 'Auto-flag false alarm', 'AI confidence that the alert is false.', '', 0.01)}
-            {selRow('ai_thresholds', 'pattern_detection_signal', 'Pattern-detection signal strength Â· alert', '', _PATTERN_OPTS)}
+            {selRow('ai_thresholds', 'pattern_detection_signal', 'Pattern-detection signal strength · alert', '', _PATTERN_OPTS)}
             {numRow('ai_thresholds', 'self_verification_min', 'Self-verification minimum pass rate', 'Below this, the output is auto-rejected and re-routed.', '', 0.01)}
           </Card>
 
@@ -7182,7 +7182,7 @@ function SuperPolicy() {
             <SectionLabel right={
               <div className="flex hair border rounded-sm overflow-hidden">
                 <button onClick={()=>setDiscLang('en')} className={`px-3 py-1 text-[12px] ${discLang==='en'?'bg-[var(--ember)] text-white':'text-[var(--graphite)]'}`}>English</button>
-                <button onClick={()=>setDiscLang('bn')} className={`px-3 py-1 text-[12px] font-bn ${discLang==='bn'?'bg-[var(--ember)] text-white':'text-[var(--graphite)]'}`}>à¦¬à¦¾à¦‚à¦²à¦¾</button>
+                <button onClick={()=>setDiscLang('bn')} className={`px-3 py-1 text-[12px] font-bn ${discLang==='bn'?'bg-[var(--ember)] text-white':'text-[var(--graphite)]'}`}>বাংলা</button>
               </div>
             }>Legal disclaimer</SectionLabel>
             <p className="text-[12px] text-[var(--graphite)] mb-3">Shown to every user on first sign-in and inside the AI chat panel. Both language versions must be present.</p>
@@ -7201,8 +7201,8 @@ function SuperPolicy() {
           </Card>
 
           <Card>
-            <SectionLabel>Bangladesh PDP Ordinance 2025 Â· compliance</SectionLabel>
-            <AuditNote tone="navy" icon="scale">These toggles map directly to sections of the Personal Data Protection Ordinance 2025. Disabling a control will fail the platformâ€™s automated compliance check.</AuditNote>
+            <SectionLabel>Bangladesh PDP Ordinance 2025 · compliance</SectionLabel>
+            <AuditNote tone="navy" icon="scale">These toggles map directly to sections of the Personal Data Protection Ordinance 2025. Disabling a control will fail the platform’s automated compliance check.</AuditNote>
             <div className="mt-2">
               {toggleRow('pdpo', 'right_to_access', 'Right to access', 'Users can request a copy of all personal data held about them within 30 days.')}
               {toggleRow('pdpo', 'right_to_rectification', 'Right to rectification', 'Users can correct inaccurate personal data.')}
@@ -7218,7 +7218,7 @@ function SuperPolicy() {
   );
 }
 
-// ---- Legal corpus Â· RAG ----
+// ---- Legal corpus · RAG ----
 const _DOC_TYPES = ['statute', 'rule', 'regulation', 'circular', 'judgment', 'commentary', 'template', 'university_policy', 'workflow'];
 
 function _healthTone(v) { return v === 'ok' ? 'sage' : v === 'disabled' ? 'mist' : 'red'; }
@@ -7277,7 +7277,7 @@ function SuperLegalCorpus() {
         text: form.text,
       });
       setAddOpen(false); setForm(blank);
-      setNotice(`Indexed â€œ${form.title.trim()}â€ â€” ${res.chunks_loaded} chunk${res.chunks_loaded === 1 ? '' : 's'}.`);
+      setNotice(`Indexed “${form.title.trim()}” — ${res.chunks_loaded} chunk${res.chunks_loaded === 1 ? '' : 's'}.`);
       setTimeout(() => setNotice(''), 4000);
       fetchDocs();
     } catch (e) { setFormErr(e.message); }
@@ -7288,7 +7288,7 @@ function SuperLegalCorpus() {
     if (!confirmDel) return;
     try {
       await AnchorAPI.apiDelete(`/v1/super-admin/corpus/documents/${encodeURIComponent(confirmDel.document_id)}?namespace=${encodeURIComponent(namespace)}`);
-      setNotice(`Removed â€œ${confirmDel.title}â€ from the ${namespace} corpus.`);
+      setNotice(`Removed “${confirmDel.title}” from the ${namespace} corpus.`);
       setTimeout(() => setNotice(''), 4000);
       fetchDocs();
     } catch (e) { setError(e.message); }
@@ -7316,7 +7316,7 @@ function SuperLegalCorpus() {
     )},
     { key: 'document_type', label: 'Type', render: r => <Tag tone="navy">{String(r.document_type).replace(/_/g, ' ')}</Tag> },
     { key: 'language', label: 'Lang', render: r => <span className="font-mono text-[12px] uppercase">{r.language}</span> },
-    { key: 'effective_date', label: 'Effective', render: r => <span className="text-[12px] text-[var(--graphite)]">{r.effective_date || 'â€”'}</span> },
+    { key: 'effective_date', label: 'Effective', render: r => <span className="text-[12px] text-[var(--graphite)]">{r.effective_date || '—'}</span> },
     { key: 'chunk_count', label: 'Chunks', align: 'right', render: r => <MonoChip>{r.chunk_count}</MonoChip> },
     { key: 'actions', label: '', align: 'right', render: r => (
       <GhostButton size="sm" danger icon="trash-2" onClick={() => setConfirmDel(r)}>Delete</GhostButton>
@@ -7325,12 +7325,12 @@ function SuperLegalCorpus() {
 
   return (
     <>
-      <PageHeader title="Legal corpus Â· RAG" bn="à¦†à¦‡à¦¨à¦¿ à¦•à¦°à§à¦ªà¦¾à¦¸"
+      <PageHeader title="Legal corpus · RAG" bn="আইনি কর্পাস"
         description="Manage the documents that feed ChromaDB across tenant namespaces. Adding a document chunks it, generates contextual prefixes, and indexes it for hybrid retrieval."
         actions={<>
           <GhostButton size="sm" icon={reloading ? 'loader' : 'refresh-cw'} onClick={reloadSample}
             disabled={reloading} className={reloading ? 'opacity-60 pointer-events-none' : ''}>
-            {reloading ? 'Reloadingâ€¦' : 'Reload sample corpus'}
+            {reloading ? 'Reloading…' : 'Reload sample corpus'}
           </GhostButton>
           <PrimaryButton mode="ember" size="sm" icon="plus" onClick={() => { setForm(blank); setFormErr(''); setAddOpen(true); }}>Add document</PrimaryButton>
         </>}
@@ -7342,7 +7342,7 @@ function SuperLegalCorpus() {
       <div className="mb-4">
         {ragDown ? (
           <AuditNote tone="red" icon="server-off">
-            RAG service is unreachable â€” corpus operations are unavailable. The pipeline runs separately (see services/rag). Start it and refresh.
+            RAG service is unreachable — corpus operations are unavailable. The pipeline runs separately (see services/rag). Start it and refresh.
           </AuditNote>
         ) : health ? (
           <Card className="flex items-center gap-4 flex-wrap" >
@@ -7372,7 +7372,7 @@ function SuperLegalCorpus() {
 
       <Card noPad>
         {loading ? (
-          <EmptyState icon="loader" title="Loading corpusâ€¦" />
+          <EmptyState icon="loader" title="Loading corpus…" />
         ) : docs.length === 0 ? (
           <EmptyState icon="book-open" title="No documents in this namespace"
             body="Add a legal document to index it for retrieval, or reload the built-in sample corpus."
@@ -7388,14 +7388,14 @@ function SuperLegalCorpus() {
       <SlideOver open={addOpen} onClose={() => setAddOpen(false)} width={560}>
         <div className="p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <SectionLabel className="mb-0">Add corpus document Â· {namespace}</SectionLabel>
+            <SectionLabel className="mb-0">Add corpus document · {namespace}</SectionLabel>
             <button onClick={() => setAddOpen(false)} className="w-7 h-7 rounded-sm hover:bg-[var(--mist)]/40 flex items-center justify-center"><Icon name="x" size={14} /></button>
           </div>
           {formErr && <AuditNote tone="red" icon="alert-triangle">{formErr}</AuditNote>}
           <div>
             <label className="smallcaps text-[var(--muted)]">Title / Act name</label>
             <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-              className="mt-1 w-full px-3 py-2 hair border rounded-sm bg-white text-[13px]" placeholder="e.g. Penal Code 1860 â€” Section 354" />
+              className="mt-1 w-full px-3 py-2 hair border rounded-sm bg-white text-[13px]" placeholder="e.g. Penal Code 1860 — Section 354" />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -7437,7 +7437,7 @@ function SuperLegalCorpus() {
             <GhostButton onClick={() => setAddOpen(false)}>Cancel</GhostButton>
             <PrimaryButton mode="ember" icon={submitting ? 'loader' : 'upload'} onClick={submitDoc}
               disabled={submitting} className={submitting ? 'opacity-60 pointer-events-none' : ''}>
-              {submitting ? 'Indexingâ€¦' : 'Ingest document'}
+              {submitting ? 'Indexing…' : 'Ingest document'}
             </PrimaryButton>
           </div>
         </div>
@@ -7448,7 +7448,7 @@ function SuperLegalCorpus() {
         onClose={() => setConfirmDel(null)}
         onConfirm={doDelete}
         title="Delete this document?"
-        body={confirmDel ? `All ${confirmDel.chunk_count} chunk${confirmDel.chunk_count===1?'':'s'} of â€œ${confirmDel.title}â€ will be removed from the ${namespace} corpus and the retrieval index.` : ''}
+        body={confirmDel ? `All ${confirmDel.chunk_count} chunk${confirmDel.chunk_count===1?'':'s'} of “${confirmDel.title}” will be removed from the ${namespace} corpus and the retrieval index.` : ''}
         confirmWord="DELETE"
         confirmLabel="Delete document"
         tone="red"
