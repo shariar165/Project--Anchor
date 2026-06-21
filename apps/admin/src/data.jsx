@@ -147,12 +147,6 @@ window.AnchorData = (() => {
     { t: '2026-05-23 12:44', actor: 'admin_e09a (Dept Head)', action: 'COMPLAINT_REJECTED', target: 'CMP-2026-A4F9', tenant: 'diu', ip: '203.81.•.•', outcome: 'OK' },
   ];
 
-  const deanonRequests = [
-    { id: 'DAR-2026-0012', case: 'CMP-2026-A4F3', requester: 'Dr. Tahmina Karim (Dean, DIU)', reason: 'Police investigation request under Information & Communication Technology Act §57. Formal letter PROV-DIU/2026/118 attached.', basis: 'Penal Code §509 + ICT Act §57', requested: '2026-05-24 13:50', status: 'Awaiting 2nd approval' },
-    { id: 'DAR-2026-0011', case: 'ALR-2026-7A88', requester: 'Senior Proctor (DIU)', reason: 'Vehicle theft report referred to Ashulia Thana, OC requested geofence trail.', basis: 'Penal Code §379', requested: '2026-05-23 09:30', status: 'Pending review' },
-    { id: 'DAR-2026-0010', case: 'CMP-2026-A4F6', requester: 'Prof. Anwar Hossain (BUET pilot)', reason: 'Internal disciplinary committee — formal hearing notice issued.', basis: 'University statute 14(c)', requested: '2026-05-22 16:20', status: 'Pending review' },
-  ];
-
   const services = [
     { name: 'AI Engine (Qwen3-8B)', status: 'healthy', latency: '412ms p50', err: '0.04%' },
     { name: 'Complaint Service', status: 'healthy', latency: '88ms p50', err: '0.00%' },
@@ -242,7 +236,7 @@ window.AnchorData = (() => {
   ];
 
   return {
-    complaints, alerts, audit, deanonRequests, services,
+    complaints, alerts, audit, services,
     inflow, categoryBreakdown, deptPerf, classroomReports,
     days, slots, timetable, sectionColors, courses, cultureReports,
   };

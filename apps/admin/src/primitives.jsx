@@ -48,6 +48,9 @@ const STATUS_STYLES = {
   'down':         { bg: '#F6E5E2', fg: '#A2362B', dot: '#E8312A' },
   'Pending review':{ bg: '#F2E8D2', fg: '#7E5A19', dot: '#B8893A' },
   'Awaiting 2nd approval':{ bg: '#F6E5E2', fg: '#A2362B', dot: '#E8312A' },
+  'Approved':      { bg: '#DDE8E1', fg: '#345249', dot: '#4A6B5C' },
+  'Denied':        { bg: '#E6E3DA', fg: '#52555C', dot: '#6B7785' },
+  'Expired':       { bg: '#E6E3DA', fg: '#52555C', dot: '#6B7785' },
   'User Safe':     { bg: '#DDE8E1', fg: '#345249', dot: '#4A6B5C' },
   'Closed':        { bg: '#E6E3DA', fg: '#52555C', dot: '#6B7785' },
 };

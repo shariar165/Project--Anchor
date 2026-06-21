@@ -4,12 +4,16 @@ function SuperDashboard({ onGo }) {
   const D = window.AnchorData;
   const [recentAudit, setRecentAudit] = useState([]);
   const [tenants, setTenants] = useState([]);
+  const [deanonStats, setDeanonStats] = useState(null);
   useEffect(() => {
     AnchorAPI.apiGet('/v1/admin/audit?limit=5')
       .then(d => setRecentAudit(d.items || []))
       .catch(() => {});
     AnchorAPI.apiGet('/v1/super-admin/tenants')
       .then(d => setTenants(d.items || []))
+      .catch(() => {});
+    AnchorAPI.apiGet('/v1/admin/deanonymization/stats')
+      .then(d => setDeanonStats(d))
       .catch(() => {});
   }, []);
   const pilotCount = tenants.filter(t => t.tier === 'pilot').length;
@@ -26,10 +30,15 @@ function SuperDashboard({ onGo }) {
         </>}
       />
 
-      <AuditNote tone="red" icon="shield-alert" className="mb-4">
-        <span>Critical: Tenant DIU is requesting identity de-anonymization for case <span className="font-mono">CMP-2026-A4F3</span>. Awaiting your second approval. </span>
-        <button onClick={()=>onGo('/super/deanonymization')} className="underline font-medium ml-1">Review →</button>
-      </AuditNote>
+      {deanonStats && deanonStats.open_total > 0 && (
+        <AuditNote tone="red" icon="shield-alert" className="mb-4">
+          <span>
+            {deanonStats.open_total} de-anonymization {deanonStats.open_total === 1 ? 'request is' : 'requests are'} awaiting review
+            {deanonStats.awaiting_second_approval > 0 && <> — {deanonStats.awaiting_second_approval} awaiting a second approval</>}.
+          </span>
+          <button onClick={()=>onGo('/super/deanonymization')} className="underline font-medium ml-1">Review →</button>
+        </AuditNote>
+      )}
 
       <div className="grid grid-cols-5 gap-4 mb-6">
         <KpiCard label="Universities" value={tenants.length} subtle={`${pilotCount} pilot · ${suspendedCount} suspended`} accent="navy" />
@@ -728,10 +737,98 @@ function SuperAuditLogs() {
 }
 
 // ---- De-anonymization ----
+const DEANON_STATUS_LABEL = {
+  pending_review: 'Pending review',
+  awaiting_second_approval: 'Awaiting 2nd approval',
+  approved: 'Approved',
+  denied: 'Denied',
+  expired: 'Expired',
+};
+
+function _deanonFmt(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }); }
+  catch { return iso; }
+}
+
 function SuperDeanonymization() {
-  const D = window.AnchorData;
-  const [selected, setSelected] = useState(null);
-  const [approving, setApproving] = useState(false);
+  const [rows, setRows]         = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [selectedId, setSelectedId]     = useState(null);
+  const [busy, setBusy]         = useState(false);
+  const [actionMsg, setActionMsg] = useState('');
+  const [denying, setDenying]   = useState(false);
+  const [denyReason, setDenyReason] = useState('');
+  const [reveal, setReveal]     = useState(null);
+
+  async function load() {
+    setLoading(true); setError('');
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter) params.set('status', statusFilter);
+      const data = await AnchorAPI.apiGet(`/v1/admin/deanonymization?${params}`);
+      setRows(data.items || []);
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, [statusFilter]);
+
+  const selected = rows.find(r => r.id === selectedId) || null;
+
+  // Reset transient panel state when switching requests.
+  useEffect(() => { setActionMsg(''); setReveal(null); setDenying(false); setDenyReason(''); }, [selectedId]);
+
+  async function refreshSelected() {
+    await load();
+  }
+
+  async function handleApprove() {
+    if (!selected) return;
+    setBusy(true); setActionMsg('');
+    try {
+      await AnchorAPI.apiPostAuth(`/v1/admin/deanonymization/${selected.id}/approve`, {});
+      await refreshSelected();
+    } catch (e) { setActionMsg(e.message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleDeny() {
+    if (!selected || !denyReason.trim()) return;
+    setBusy(true); setActionMsg('');
+    try {
+      await AnchorAPI.apiPostAuth(`/v1/admin/deanonymization/${selected.id}/deny`, { reason: denyReason.trim() });
+      setDenying(false); setDenyReason('');
+      await refreshSelected();
+    } catch (e) { setActionMsg(e.message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleReveal() {
+    if (!selected) return;
+    setBusy(true); setActionMsg('');
+    try {
+      const data = await AnchorAPI.apiPostAuth(`/v1/admin/deanonymization/${selected.id}/reveal`, {});
+      setReveal(data);
+    } catch (e) { setActionMsg(e.message); await refreshSelected(); }
+    finally { setBusy(false); }
+  }
+
+  const decisions = rows
+    .filter(r => r.status === 'approved' || r.status === 'denied' || r.status === 'expired')
+    .sort((a, b) => new Date(b.decided_at || b.created_at) - new Date(a.decided_at || a.created_at))
+    .slice(0, 6);
+
+  const FILTERS = [
+    ['', 'All'],
+    ['pending_review', 'Pending'],
+    ['awaiting_second_approval', 'Awaiting 2nd'],
+    ['approved', 'Approved'],
+    ['denied', 'Denied'],
+  ];
+
   return (
     <>
       <PageHeader
@@ -741,23 +838,44 @@ function SuperDeanonymization() {
       />
 
       <AuditNote tone="red" icon="shield-alert" className="mb-4">
-        De-anonymization requests must be reviewed against formal legal grounds. Approval releases identity mapping to the requesting admin only, with time-limited access. Every approval requires two super admins.
+        De-anonymization requests must be reviewed against formal legal grounds. Approval releases the identity mapping to the requesting admin only, with time-limited access. Releasing an identity requires two distinct super admins.
       </AuditNote>
+
+      <div className="flex items-center gap-1.5 mb-3">
+        {FILTERS.map(([val, lbl]) => (
+          <button key={val||'all'} onClick={()=>setStatusFilter(val)}
+            className="px-2.5 py-1 rounded-sm text-[12px] border hair transition-colors"
+            style={statusFilter===val
+              ? { background:'var(--navy)', color:'#fff', borderColor:'var(--navy)' }
+              : { color:'var(--muted)' }}>
+            {lbl}
+          </button>
+        ))}
+        <button onClick={load} className="ml-auto text-[12px] text-[var(--muted)] hover:text-[var(--ink)] underline">refresh</button>
+      </div>
 
       <div className="grid gap-4" style={{ gridTemplateColumns: '1fr 360px' }}>
         <Card noPad>
-          <DataTable
-            columns={[
-              { key:'id', label:'Request ID', render:r=><MonoChip tone="navy">{r.id}</MonoChip> },
-              { key:'case', label:'Case', render:r=><MonoChip>{r.case}</MonoChip> },
-              { key:'requester', label:'Requester' },
-              { key:'basis', label:'Legal basis' },
-              { key:'requested', label:'Requested', render:r=><span className="font-mono text-[11.5px] text-[var(--muted)]">{r.requested}</span> },
-              { key:'status', label:'Status', render:r=><StatusPill status={r.status} /> },
-            ]}
-            rows={D.deanonRequests}
-            onRowClick={setSelected}
-          />
+          {loading ? (
+            <div className="p-8 text-center text-[13px] text-[var(--muted)]">Loading requests…</div>
+          ) : error ? (
+            <div className="p-6 text-[12.5px]" style={{ color:'var(--ember)' }}>{error}</div>
+          ) : rows.length === 0 ? (
+            <div className="p-6"><EmptyState icon="shield-check" title="Queue is clear" body="No de-anonymization requests match this filter." /></div>
+          ) : (
+            <DataTable
+              columns={[
+                { key:'request_number', label:'Request ID', render:r=><MonoChip tone="navy">{r.request_number}</MonoChip> },
+                { key:'target_ref', label:'Case', render:r=><MonoChip>{r.target_ref}</MonoChip> },
+                { key:'requester_label', label:'Requester' },
+                { key:'legal_basis', label:'Legal basis' },
+                { key:'created_at', label:'Requested', render:r=><span className="font-mono text-[11.5px] text-[var(--muted)]">{_deanonFmt(r.created_at)}</span> },
+                { key:'status', label:'Status', render:r=><StatusPill status={DEANON_STATUS_LABEL[r.status] || r.status} /> },
+              ]}
+              rows={rows}
+              onRowClick={r=>setSelectedId(r.id)}
+            />
+          )}
         </Card>
 
         <div className="space-y-4">
@@ -765,65 +883,126 @@ function SuperDeanonymization() {
             <Card>
               <div className="flex items-center justify-between mb-2">
                 <SectionLabel className="mb-0">Review</SectionLabel>
-                <button onClick={()=>setSelected(null)} className="text-[12px] text-[var(--muted)] hover:text-[var(--ink)]">close</button>
+                <button onClick={()=>setSelectedId(null)} className="text-[12px] text-[var(--muted)] hover:text-[var(--ink)]">close</button>
               </div>
-              <MonoChip tone="navy">{selected.id}</MonoChip>
-              <h3 className="font-serif text-[20px] text-[var(--navy)] mt-2" style={{fontWeight:500, textWrap:'pretty'}}>{selected.case}</h3>
-              <div className="text-[12px] text-[var(--muted)] mt-0.5">{selected.requester}</div>
+              <div className="flex items-center gap-2">
+                <MonoChip tone="navy">{selected.request_number}</MonoChip>
+                <StatusPill status={DEANON_STATUS_LABEL[selected.status] || selected.status} />
+              </div>
+              <h3 className="font-serif text-[20px] text-[var(--navy)] mt-2" style={{fontWeight:500, textWrap:'pretty'}}>{selected.target_ref}</h3>
+              <div className="text-[12px] text-[var(--muted)] mt-0.5">{selected.requester_label}</div>
 
               <div className="mt-4 hair border rounded-sm p-3 bg-[#FBF9F2]">
                 <div className="smallcaps text-[var(--muted)] mb-1">Reason cited</div>
                 <p className="text-[12.5px] text-[var(--ink)]" style={{textWrap:'pretty'}}>{selected.reason}</p>
+                {selected.formal_letter_ref && (
+                  <div className="mt-2 text-[11.5px] text-[var(--muted)]">Formal letter: <span className="font-mono text-[var(--ink)]">{selected.formal_letter_ref}</span></div>
+                )}
               </div>
 
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <KpiCard label="Legal basis" value={selected.basis} mono={false} accent="ember" />
-                <KpiCard label="Requested" value={selected.requested.split(' ')[0]} accent="navy" />
+                <KpiCard label="Legal basis" value={selected.legal_basis} mono={false} accent="ember" />
+                <KpiCard label="Target" value={selected.target_type} accent="navy" />
               </div>
 
+              {/* Two-person control trail */}
               <div className="mt-4 space-y-2">
-                <label className="flex items-start gap-2 text-[12.5px]">
-                  <input type="checkbox" defaultChecked className="accent-[var(--ember)] mt-0.5" />
-                  <span>I have reviewed the underlying case content and the formal letter attached.</span>
-                </label>
-                <label className="flex items-start gap-2 text-[12.5px]">
-                  <input type="checkbox" defaultChecked className="accent-[var(--ember)] mt-0.5" />
-                  <span>Legal basis has been verified against Bangladesh statute.</span>
-                </label>
-                <label className="flex items-start gap-2 text-[12.5px]">
-                  <input type="checkbox" className="accent-[var(--ember)] mt-0.5" />
-                  <span>Second super admin has reviewed (required).</span>
-                </label>
+                <div className="smallcaps text-[var(--muted)]">Two-person control</div>
+                <div className="flex items-start gap-2 text-[12.5px]">
+                  <Icon name={selected.first_approval ? 'check-circle' : 'circle'} size={14}
+                    className="mt-0.5 shrink-0" style={{ color: selected.first_approval ? 'var(--sage)' : 'var(--muted)' }} />
+                  <span>
+                    First approval{selected.first_approval
+                      ? <> — <span className="font-mono">{selected.first_approval.masked_email}</span> · {_deanonFmt(selected.first_approval.at)}</>
+                      : ' — pending'}
+                  </span>
+                </div>
+                <div className="flex items-start gap-2 text-[12.5px]">
+                  <Icon name={selected.second_approval ? 'check-circle' : 'circle'} size={14}
+                    className="mt-0.5 shrink-0" style={{ color: selected.second_approval ? 'var(--sage)' : 'var(--muted)' }} />
+                  <span>
+                    Second approval (different admin){selected.second_approval
+                      ? <> — <span className="font-mono">{selected.second_approval.masked_email}</span> · {_deanonFmt(selected.second_approval.at)}</>
+                      : ' — pending'}
+                  </span>
+                </div>
               </div>
 
-              <div className="mt-4 flex items-center gap-2">
-                <PrimaryButton mode="ember" icon="check" onClick={()=>setApproving(true)}>Approve & release</PrimaryButton>
-                <GhostButton icon="x" danger>Deny</GhostButton>
+              {actionMsg && (
+                <div className="mt-3 px-3 py-2 rounded-sm text-[12px] flex items-start gap-2" style={{ background:'var(--ember-tint, #F6E5E2)', color:'var(--ember)' }}>
+                  <Icon name="circle-alert" size={13} className="mt-0.5 shrink-0" /><span>{actionMsg}</span>
+                </div>
+              )}
+
+              {/* Released identity */}
+              {reveal && (
+                <div className="mt-4 hair border rounded-sm p-3" style={{ background:'#FBF1EE', borderColor:'var(--ember)' }}>
+                  <div className="smallcaps mb-1" style={{ color:'var(--ember)' }}>Released identity</div>
+                  <div className="text-[14px] font-medium text-[var(--ink)]">{reveal.full_name || '—'}</div>
+                  <div className="text-[12.5px] font-mono text-[var(--ink)]">{reveal.email || reveal.masked_email || '—'}</div>
+                  <div className="text-[11.5px] text-[var(--muted)] mt-1">Role: {reveal.role || '—'} · Access expires {_deanonFmt(reveal.access_expires_at)}</div>
+                </div>
+              )}
+
+              {/* Actions by status */}
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {(selected.status === 'pending_review' || selected.status === 'awaiting_second_approval') && !denying && (
+                  <>
+                    <PrimaryButton mode="ember" icon="check" onClick={handleApprove} disabled={busy}>
+                      {selected.status === 'awaiting_second_approval' ? 'Give 2nd approval' : 'Approve'}
+                    </PrimaryButton>
+                    <GhostButton icon="x" danger onClick={()=>setDenying(true)} disabled={busy}>Deny</GhostButton>
+                  </>
+                )}
+                {selected.status === 'approved' && (
+                  <PrimaryButton mode="ember" icon="eye" onClick={handleReveal} disabled={busy}>
+                    {reveal ? 'Re-reveal identity' : 'Reveal identity'}
+                  </PrimaryButton>
+                )}
+                {selected.status === 'denied' && (
+                  <div className="text-[12.5px] text-[var(--muted)]">Denied{selected.denied_reason ? ` — ${selected.denied_reason}` : ''}.</div>
+                )}
+                {selected.status === 'expired' && (
+                  <div className="text-[12.5px] text-[var(--muted)]">Reveal window expired. A new request is required.</div>
+                )}
               </div>
+
+              {/* Deny form */}
+              {denying && (
+                <div className="mt-3 space-y-2">
+                  <textarea value={denyReason} onChange={e=>setDenyReason(e.target.value)}
+                    placeholder="Reason for denial (recorded in the audit log)…"
+                    className="w-full px-2.5 py-2 hair border rounded-sm bg-white text-[12.5px]" rows={2} />
+                  <div className="flex items-center gap-2">
+                    <PrimaryButton mode="ember" icon="x" onClick={handleDeny} disabled={busy || !denyReason.trim()}>Confirm deny</PrimaryButton>
+                    <GhostButton onClick={()=>{ setDenying(false); setDenyReason(''); }} disabled={busy}>Cancel</GhostButton>
+                  </div>
+                </div>
+              )}
             </Card>
           ) : (
             <Card>
-              <EmptyState icon="shield-alert" title="Select a request" body="Open any pending request from the table to review the case, legal basis, and approve or deny." />
+              <EmptyState icon="shield-alert" title="Select a request" body="Open any request from the table to review the case, legal basis, and approve or deny." />
             </Card>
           )}
 
           <Card>
             <SectionLabel>Recent decisions</SectionLabel>
-            <div className="space-y-2 text-[12.5px]">
-              <div className="flex items-center justify-between"><span>DAR-2026-0009 · approved</span><span className="font-mono text-[var(--muted)]">May 18</span></div>
-              <div className="flex items-center justify-between"><span>DAR-2026-0008 · denied (no formal letter)</span><span className="font-mono text-[var(--muted)]">May 14</span></div>
-              <div className="flex items-center justify-between"><span>DAR-2026-0007 · approved</span><span className="font-mono text-[var(--muted)]">May 02</span></div>
-            </div>
+            {decisions.length === 0 ? (
+              <div className="text-[12.5px] text-[var(--muted)]">No decisions yet.</div>
+            ) : (
+              <div className="space-y-2 text-[12.5px]">
+                {decisions.map(d => (
+                  <div key={d.id} className="flex items-center justify-between">
+                    <span>{d.request_number} · {DEANON_STATUS_LABEL[d.status] || d.status}</span>
+                    <span className="font-mono text-[var(--muted)]">{_deanonFmt(d.decided_at).split(',')[0]}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </Card>
         </div>
       </div>
-
-      <ConfirmModal
-        open={approving} onClose={()=>setApproving(false)} onConfirm={()=>{}}
-        title="Release identity mapping?"
-        body="The requesting admin will receive a time-limited access link (4 hours) to the identity mapping for this case. This action is final, audit-logged, and reviewable by external oversight."
-        confirmWord="RELEASE" confirmLabel="Release" tone="red"
-      />
     </>
   );
 }
