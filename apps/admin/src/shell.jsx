@@ -105,7 +105,7 @@ function AdminShell({ mode='uni', route, onGo, role, setRole, dark, setDark, chi
       { icon:'siren', label:'Alerts', route:'/super/alerts', dot:true },
       { icon:'map-pin', label:'Red Zone Map', route:'/super/red-zones' },
       { icon:'scroll-text', label:'Audit Logs', route:'/super/audit-logs' },
-      { icon:'shield-alert', label:'De-anonymization', route:'/super/deanonymization', badge:'3' },
+      { icon:'shield-alert', label:'De-anonymization', route:'/super/deanonymization' },
       { icon:'shield-x', label:'Content Moderation', route:'/super/moderation', badge:'12' },
       { icon:'newspaper', label:'Verification Feed', route:'/super/verification-feed' },
       { icon:'users-round', label:'Users', route:'/super/users' },

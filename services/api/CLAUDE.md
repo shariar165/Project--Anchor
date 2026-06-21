@@ -76,6 +76,7 @@ Always use the **venv** — all dependencies are isolated there:
 | `/v1/admin/campus-zones/...` | `routers/campus_zones.py` | admin | Campus polygon zones (zone_type=campus only) |
 | `/v1/super-admin/zones/...` | `routers/super_zones.py` | super_admin | Red/purple/black zone CRUD (polygon + circle) |
 | `/v1/admin/timetable/...` | `routers/admin_timetable.py` | admin | CP-SAT timetable CRUD, solver jobs, NL edits, publish |
+| `/v1/admin/deanonymization/...` | `routers/deanonymization.py` | admin creates · super_admin decides | Identity-release workflow: request, two-person approve/deny, time-limited reveal |
 | `/health` | `main.py` | none | DB + Redis liveness probe |
 
 ### Services (pure business logic, no HTTP)

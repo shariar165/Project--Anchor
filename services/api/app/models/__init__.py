@@ -5,6 +5,7 @@ from app.models.session import Session
 from app.models.mfa import MFAMethod, MFARecoveryCode, MFAType
 from app.models.audit import AuditLog
 from app.models.anonymous import AnonymousIdentityMapping
+from app.models.deanonymization import DeanonymizationRequest
 from app.models.dms import DMSRecord
 from app.models.e2ee import UserE2EEKey
 from app.models.alert import (
@@ -53,6 +54,7 @@ __all__ = [
     "MFAMethod", "MFARecoveryCode", "MFAType",
     "AuditLog",
     "AnonymousIdentityMapping",
+    "DeanonymizationRequest",
     "DMSRecord",
     "UserE2EEKey",
     # Alert system
