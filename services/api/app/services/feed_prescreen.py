@@ -1,4 +1,12 @@
-"""AI pre-screening gate for Verification Feed posts."""
+"""AI pre-screening gate for Verification Feed posts.
+
+Intentionally a fast, deterministic gate (regex + keyword + spam heuristics, with a timeout)
+rather than an LLM call — it runs on the post-submit hot path and must never delay a genuine
+emergency report or be prompt-injectable. The human-readable specification and the moderator
+playbook live in skills/src/anchor-feed-moderation/ (references/grounding.md is the canonical
+source the _BLOCK_PATTERNS / _CATEGORY_HINTS below mirror — keep the two in sync; the
+sync-guard in tests/test_skill_loader.py asserts the skill exists).
+"""
 import asyncio
 import re
 from app.config import get_settings

@@ -672,17 +672,27 @@ async def nl_to_entry_edit(text: str, entries_context: list[dict]) -> EntryEdit 
     try:
         import httpx
         from app.config import get_settings
+        from app.services import skill_loader
         settings = get_settings()
         ollama_url = getattr(settings, "ollama_base_url", "http://localhost:11434")
 
-        context_summary = json.dumps(entries_context[:20], default=str)
-        prompt = (
-            f"You are a timetable assistant. Current entries (first 20): {context_summary}\n\n"
-            f"User command: {text}\n\n"
+        # Skill grounding (day/slot indexing, reference resolution, examples); falls back to
+        # the inline schema instructions below when the skill tree isn't shipped.
+        _fallback_rules = (
+            "You are a timetable assistant. "
             "Return ONLY valid JSON matching this schema: "
             '{"entry_id": "<uuid or null>", "new_day": <0-5 or null>, "new_slot": <int or null>, '
             '"new_faculty_id": "<uuid or null>", "new_room_id": "<uuid or null>", "lock": true}. '
             "Use null for fields that don't change. Do not explain."
+        )
+        rules = skill_loader.grounding("timetable-nl-edit", fallback=_fallback_rules)
+
+        context_summary = json.dumps(entries_context[:20], default=str)
+        prompt = (
+            f"{rules}\n\n"
+            f"Current entries (first 20): {context_summary}\n\n"
+            f"User command: {text}\n\n"
+            "Return ONLY the JSON object, no explanation."
         )
 
         async with httpx.AsyncClient(timeout=15.0) as client:

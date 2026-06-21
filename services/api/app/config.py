@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # builds its own URL from the SW origin and does not need this).
     frontend_url: str = ""
 
+    # Path to the unzipped skill source tree (skills/src), used by skill_loader to ground
+    # AI prompts. Blank = repo default resolved relative to this service. Override with
+    # SKILLS_DIR if the tree ships at a different path in prod.
+    skills_dir: str = ""
+
     # Token TTLs (seconds)
     access_token_ttl: int = 900          # 15 min
     refresh_token_ttl_user: int = 604800  # 7 days
