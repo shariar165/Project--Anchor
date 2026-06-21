@@ -36,6 +36,10 @@ from app.routers import admin_timetable as admin_timetable_router
 from app.routers import deanonymization as deanonymization_router
 from app.routers import super_config as super_config_router
 from app.routers import super_corpus as super_corpus_router
+from app.routers import super_ai_health as super_ai_health_router
+from app.routers import super_keys as super_keys_router
+from app.routers import super_analytics as super_analytics_router
+from app.routers import super_incidents as super_incidents_router
 
 
 @asynccontextmanager
@@ -112,6 +116,10 @@ def create_app() -> FastAPI:
     app.include_router(deanonymization_router.router)
     app.include_router(super_config_router.router)
     app.include_router(super_corpus_router.router)
+    app.include_router(super_ai_health_router.router)
+    app.include_router(super_keys_router.router)
+    app.include_router(super_analytics_router.router)
+    app.include_router(super_incidents_router.router)
 
     # Serve uploaded feed attachments in dev
     from fastapi.staticfiles import StaticFiles

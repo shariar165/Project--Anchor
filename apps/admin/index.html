@@ -5456,63 +5456,437 @@ function SuperVerificationFeed() {
   );
 }
 
-// ---- AI Engine Health ----
+// ---- System · shared fetch helpers ----
+function _useSysFetch(path) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const load = useCallback(() => {
+    setLoading(true); setError('');
+    AnchorAPI.apiGet(path)
+      .then(d => setData(d))
+      .catch(e => setError(e.message || 'Failed to load'))
+      .finally(() => setLoading(false));
+  }, [path]);
+  useEffect(() => { load(); }, [load]);
+  return { data, loading, error, reload: load };
+}
+
+function _SysState({ loading, error, onRetry, children }) {
+  if (loading) return <div className="p-10 text-center text-[13px] text-[var(--muted)]">Loading…</div>;
+  if (error) return (
+    <AuditNote tone="red" icon="alert-triangle">
+      <span>{error} </span><button onClick={onRetry} className="underline font-medium ml-1">Retry →</button>
+    </AuditNote>
+  );
+  return children;
+}
+
+function _svcTone(v) {
+  const s = (v || '').toString().toLowerCase();
+  if (s === 'ok' || s === 'healthy') return { c: '#4A6B5C', label: 'healthy' };
+  if (s.startsWith('degraded')) return { c: '#B8893A', label: 'degraded' };
+  return { c: '#E8312A', label: s || 'down' };
+}
+
+function _fmtUptime(s) {
+  if (s == null) return '—';
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+  return Math.floor(s / 86400) + 'd ' + Math.floor((s % 86400) / 3600) + 'h';
+}
+
+// ---- System · AI Engine Health ----
 function SuperAIHealth() {
+  const { data, loading, error, reload } = _useSysFetch('/v1/super-admin/ai-health');
   return (
     <>
-      <PageHeader title="AI engine health" description="Inference latency, RAG performance, hallucination flags, and prompt-injection detection." />
-      <div className="grid grid-cols-4 gap-4 mb-4">
-        <KpiCard label="Qwen3-8B latency p50" value="412ms" delta="−18ms" deltaTone="down" accent="ember" />
-        <KpiCard label="Qwen3-1.7B p50" value="98ms" delta="−4ms" deltaTone="down" />
-        <KpiCard label="VL-7B p50" value="1.41s" subtle="vision pipeline" />
-        <KpiCard label="Self-verif pass rate" value="98.6%" delta="+0.2pp" deltaTone="up" accent="navy" />
-      </div>
-
-      <div className="grid grid-cols-3 gap-4">
-        <Card>
-          <SectionLabel>Confidence distribution · last 24h</SectionLabel>
-          <div className="space-y-2 text-[12px]">
-            {[
-              ['≥ 0.9', 64],['0.8–0.9', 22],['0.7–0.8', 9],['0.5–0.7', 4],['< 0.5 (rejected)', 1]
-            ].map(([k,v]) => (
-              <div key={k}>
-                <div className="flex justify-between mb-1"><span>{k}</span><span className="font-mono">{v}%</span></div>
-                <div className="h-1.5 bg-[var(--mist)] rounded-sm overflow-hidden"><div className="h-full bg-[var(--ember)]" style={{ width: `${v}%` }} /></div>
+      <PageHeader title="AI engine health"
+        description="Live status of the RAG pipeline, vector store, and language models — with real per-namespace corpus health. Powered by services/rag."
+        actions={<GhostButton size="sm" icon="refresh-cw" onClick={reload}>Refresh</GhostButton>} />
+      <_SysState loading={loading} error={error} onRetry={reload}>
+        {data && (() => {
+          const c = data.components || {};
+          const comps = [['Pipeline', c.pipeline], ['Embedder', c.embedder], ['Vector store (Chroma)', c.chromadb], ['LLM (Ollama)', c.ollama]];
+          const host = data.host || {};
+          const usage = data.usage || {};
+          return (
+            <>
+              {!data.rag_reachable && (
+                <div className="mb-4"><AuditNote tone="gold" icon="plug-zap">RAG service is unreachable — component status shows as unavailable. Start <span className="font-mono">services/rag</span> to see live data.</AuditNote></div>
+              )}
+              <div className="grid grid-cols-4 gap-4 mb-4">
+                {comps.map(([label, val]) => {
+                  const t = _svcTone(val);
+                  return (
+                    <div key={label} className="bg-[var(--paper)] hair border rounded-sm p-4">
+                      <div className="flex items-center justify-between">
+                        <span className="smallcaps text-[var(--muted)]">{label}</span>
+                        <span className="w-2 h-2 rounded-full" style={{ background: t.c }} />
+                      </div>
+                      <div className="mt-2 text-[15px] text-[var(--ink)] capitalize">{t.label}</div>
+                      <div className="text-[11px] text-[var(--muted)] font-mono truncate">{(val == null || val === '') ? '—' : val}</div>
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-          </div>
-        </Card>
-        <Card>
-          <SectionLabel>Hallucination flags · 24h</SectionLabel>
-          <div className="font-mono text-[36px] text-[var(--ember)]">7</div>
-          <p className="text-[12px] text-[var(--graphite)] mt-1">Outputs where verification stage didn\u2019t match source. Auto-rejected and re-routed.</p>
-        </Card>
-        <Card>
-          <SectionLabel>Prompt injection attempts</SectionLabel>
-          <div className="font-mono text-[36px] text-[var(--ember)]">14</div>
-          <p className="text-[12px] text-[var(--graphite)] mt-1">Detected and blocked at the input firewall. 3 IPs auto-rate-limited.</p>
-        </Card>
+
+              <div className="grid grid-cols-4 gap-4 mb-4">
+                <KpiCard label="AI chats · 24h" value={usage.ai_chat_24h != null ? usage.ai_chat_24h.toLocaleString() : '—'} accent="navy" />
+                <KpiCard label="CPU" value={host.cpu_percent != null ? host.cpu_percent + '%' : '—'} subtle="API host" />
+                <KpiCard label="Memory" value={host.mem_percent != null ? host.mem_percent + '%' : '—'} subtle={host.mem_used_mb != null ? `${host.mem_used_mb} / ${host.mem_total_mb} MB` : ''} accent="ember" />
+                <KpiCard label="API uptime" value={_fmtUptime(host.process_uptime_s)} mono={false} />
+              </div>
+
+              <Card>
+                <SectionLabel right={<MonoChip>chromadb</MonoChip>}>Vector DB · per-namespace corpus health</SectionLabel>
+                {(!data.namespaces || data.namespaces.length === 0)
+                  ? <div className="text-[12.5px] text-[var(--muted)]">{data.corpus_error ? `Corpus stats unavailable (${data.corpus_error}).` : 'No namespaces reported by RAG.'}</div>
+                  : <DataTable
+                      columns={[
+                        { key: 'namespace', label: 'Namespace', render: r => <MonoChip>{r.namespace}</MonoChip> },
+                        { key: 'documents', label: 'Documents', align: 'right', render: r => <span className="font-mono">{r.documents != null ? r.documents.toLocaleString() : '—'}</span> },
+                        { key: 'dense_chunks', label: 'Dense chunks', align: 'right', render: r => <span className="font-mono">{r.dense_chunks != null ? r.dense_chunks.toLocaleString() : '—'}</span> },
+                        { key: 'sparse_chunks', label: 'Sparse chunks', align: 'right', render: r => <span className="font-mono">{r.sparse_chunks != null ? r.sparse_chunks.toLocaleString() : '—'}</span> },
+                      ]}
+                      rows={data.namespaces}
+                    />}
+              </Card>
+              <div className="mt-3 text-[11px] text-[var(--muted)] font-mono">checked {data.checked_at ? new Date(data.checked_at).toLocaleString() : '—'}</div>
+            </>
+          );
+        })()}
+      </_SysState>
+    </>
+  );
+}
+
+// ---- System · Encryption & Keys (read-only) ----
+function SuperEncryption() {
+  const { data, loading, error, reload } = _useSysFetch('/v1/super-admin/keys/health');
+  return (
+    <>
+      <PageHeader title="Encryption & keys"
+        description="Read-only health of the platform's cryptographic material — JWT signing keys, password hashing, MFA secrets, the audit hash chain, and end-to-end keys. No secret material is ever exposed."
+        actions={<GhostButton size="sm" icon="refresh-cw" onClick={reload}>Refresh</GhostButton>} />
+      <_SysState loading={loading} error={error} onRetry={reload}>
+        {data && (() => {
+          const jwt = data.jwt || {}, ac = data.audit_chain || {}, totp = data.totp || {}, e2ee = data.e2ee || {}, pw = data.password || {}, dl = data.token_denylist || {}, push = data.push || {};
+          return (
+            <>
+              <div className="grid grid-cols-4 gap-4 mb-4">
+                <KpiCard label="JWT algorithm" value={jwt.algorithm || '—'} mono={false} accent="navy" subtle={jwt.curve || ''} />
+                <KpiCard label="Signing key age" value={jwt.age_days != null ? jwt.age_days + 'd' : '—'} subtle={jwt.source || ''} />
+                <KpiCard label="Audit chain" value={ac.ok === true ? 'Verified' : ac.ok === false ? 'TAMPERED' : '—'} mono={false} accent={ac.ok === false ? 'ember' : 'sage'} subtle={ac.checked != null ? `${ac.checked} rows` : ''} />
+                <KpiCard label="E2EE public keys" value={e2ee.stored_public_keys != null ? e2ee.stored_public_keys.toLocaleString() : '—'} accent="navy" />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <Card>
+                  <SectionLabel right={<MonoChip>ed25519</MonoChip>}>JWT signing key</SectionLabel>
+                  <dl className="space-y-2 text-[13px]">
+                    <div className="flex justify-between gap-4"><dt className="text-[var(--muted)]">Algorithm</dt><dd>{jwt.algorithm || '—'} · {jwt.curve || '—'}</dd></div>
+                    <div className="flex justify-between gap-4"><dt className="text-[var(--muted)]">Fingerprint</dt><dd className="font-mono text-[11.5px] break-all text-right">{jwt.fingerprint || '—'}</dd></div>
+                    <div className="flex justify-between gap-4"><dt className="text-[var(--muted)]">Source</dt><dd>{jwt.source || '—'}</dd></div>
+                    <div className="flex justify-between gap-4"><dt className="text-[var(--muted)]">Rotation</dt><dd>{jwt.rotation || '—'}</dd></div>
+                  </dl>
+                </Card>
+                <Card>
+                  <SectionLabel>Audit hash chain</SectionLabel>
+                  {ac.ok === true && <AuditNote tone="sage" icon="shield-check">Chain verified — {ac.checked} rows intact, no tampering detected.</AuditNote>}
+                  {ac.ok === false && <AuditNote tone="red" icon="shield-alert">Tampering detected at row <span className="font-mono">{ac.first_tampered_id}</span> ({ac.checked} checked).</AuditNote>}
+                  {ac.ok == null && <AuditNote tone="gold" icon="alert-triangle">Could not verify chain{ac.error ? `: ${ac.error}` : ''}.</AuditNote>}
+                  <p className="mt-3 text-[12.5px] text-[var(--graphite)]">Every privileged action appends to an append-only SHA-256 chain. Tampering invalidates all downstream hashes.</p>
+                </Card>
+              </div>
+
+              <Card className="mt-4">
+                <SectionLabel>Secrets &amp; configuration</SectionLabel>
+                <DataTable dense
+                  columns={[{ key: 'k', label: 'Control' }, { key: 'v', label: 'Status', render: r => r.v }]}
+                  rows={[
+                    { k: 'Password hashing', v: <Tag tone="sage">{pw.algorithm || 'Argon2id'}</Tag> },
+                    { k: 'Password pepper', v: pw.pepper_configured ? <Tag tone="sage" icon="check">Configured</Tag> : <Tag tone="red" icon="x">Default / unset</Tag> },
+                    { k: 'TOTP secrets at rest', v: totp.encrypted_at_rest ? <Tag tone="sage" icon="check">Encrypted</Tag> : <Tag tone="red" icon="alert-triangle">Plaintext (SEC-12)</Tag> },
+                    { k: 'Revoked tokens (deny-list)', v: <span className="font-mono text-[12px]">{dl.revoked_jti_count != null ? dl.revoked_jti_count : '—'} <span className="text-[var(--muted)]">/ {dl.backend || 'redis'}</span></span> },
+                    { k: 'Push (FCM) credentials', v: push.fcm_configured ? <Tag tone="sage" icon="check">Configured</Tag> : <Tag tone="gold">Not configured</Tag> },
+                  ]} />
+                {!totp.encrypted_at_rest && <div className="mt-3"><AuditNote tone="red" icon="shield-alert">{totp.note || 'TOTP secrets are stored unencrypted (SEC-12).'}</AuditNote></div>}
+              </Card>
+              <div className="mt-3 text-[11px] text-[var(--muted)] font-mono">checked {data.checked_at ? new Date(data.checked_at).toLocaleString() : '—'}</div>
+            </>
+          );
+        })()}
+      </_SysState>
+    </>
+  );
+}
+
+// ---- System · Platform Analytics ----
+function SuperAnalytics() {
+  const { data, loading, error, reload } = _useSysFetch('/v1/super-admin/analytics');
+  return (
+    <>
+      <PageHeader title="Platform analytics"
+        description="Cross-tenant, anonymized aggregates across all universities — users, tenants, alerts, content, and 14-day activity trends."
+        actions={<GhostButton size="sm" icon="refresh-cw" onClick={reload}>Refresh</GhostButton>} />
+      <_SysState loading={loading} error={error} onRetry={reload}>
+        {data && (() => {
+          const t = data.tenants || {}, u = data.users || {}, a = data.alerts || {}, ct = data.content || {}, dn = data.deanonymization || {}, corp = data.corpus || {}, host = data.host || {}, series = data.series || {};
+          const spark = (arr) => (arr || []).map(p => p.count);
+          const roleRows = Object.entries(u.by_role || {}).map(([k, v]) => ({ k, v }));
+          const statusRows = Object.entries(u.by_status || {}).map(([k, v]) => ({ k, v }));
+          return (
+            <>
+              <div className="grid grid-cols-5 gap-4 mb-4">
+                <KpiCard label="Users" value={(u.total || 0).toLocaleString()} accent="navy" />
+                <KpiCard label="Universities" value={t.total || 0} subtle={`${t.pilot || 0} pilot · ${t.suspended || 0} suspended`} />
+                <KpiCard label="Active alerts" value={a.active || 0} accent="ember" />
+                <KpiCard label="Filings" value={(ct.filings || 0).toLocaleString()} />
+                <KpiCard label="De-anon · open" value={dn.open || 0} accent="ember" subtle={`${dn.total || 0} total`} />
+              </div>
+
+              <div className="grid gap-4 mb-4" style={{ gridTemplateColumns: '1fr 1fr' }}>
+                <Card>
+                  <SectionLabel right={<MonoChip>14d</MonoChip>}>Activity trends</SectionLabel>
+                  <div className="space-y-3">
+                    {[['Alerts', series.alerts_14d, 'var(--ember)'], ['Filings', series.filings_14d, 'var(--navy)'], ['Feed posts', series.feed_14d, 'var(--sage)']].map(([label, arr, color]) => (
+                      <div key={label} className="flex items-center gap-3 hair-b border-b last:border-b-0 pb-2">
+                        <div className="flex-1">
+                          <div className="text-[13px] text-[var(--ink)]">{label}</div>
+                          <div className="font-mono text-[18px] text-[var(--navy)] leading-tight">{(arr || []).reduce((s, p) => s + p.count, 0)}</div>
+                        </div>
+                        <Sparkline values={spark(arr).length ? spark(arr) : [0, 0]} color={color} />
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+                <Card>
+                  <SectionLabel>Users by role</SectionLabel>
+                  {roleRows.length === 0 ? <div className="text-[12.5px] text-[var(--muted)]">No users.</div>
+                    : <DataTable dense
+                        columns={[{ key: 'k', label: 'Role', render: r => <Tag tone="navy">{r.k}</Tag> }, { key: 'v', label: 'Count', align: 'right', render: r => <span className="font-mono">{r.v.toLocaleString()}</span> }]}
+                        rows={roleRows} />}
+                  <div className="mt-3">
+                    <SectionLabel>By status</SectionLabel>
+                    <div className="flex flex-wrap gap-2">
+                      {statusRows.map(r => <span key={r.k} className="text-[12px] hair border rounded-sm px-2 py-1"><span className="text-[var(--muted)]">{r.k}:</span> <span className="font-mono">{r.v}</span></span>)}
+                    </div>
+                  </div>
+                </Card>
+              </div>
+
+              <div className="grid grid-cols-4 gap-4">
+                <KpiCard label="Feed posts" value={(ct.feed_posts || 0).toLocaleString()} accent="sage" />
+                <KpiCard label="Applications" value={(ct.applications || 0).toLocaleString()} />
+                <KpiCard label="Corpus documents" value={corp.documents != null ? corp.documents.toLocaleString() : '—'} subtle={corp.dense_chunks != null ? `${corp.dense_chunks.toLocaleString()} chunks` : ''} accent="gold" />
+                <KpiCard label="API memory" value={host.mem_percent != null ? host.mem_percent + '%' : '—'} subtle="host" accent="ember" />
+              </div>
+              <div className="mt-3 text-[11px] text-[var(--muted)] font-mono">generated {data.generated_at ? new Date(data.generated_at).toLocaleString() : '—'}</div>
+            </>
+          );
+        })()}
+      </_SysState>
+    </>
+  );
+}
+
+// ---- System · Incidents ----
+const _INC_SEV = [['sev1', 'SEV1 · Critical'], ['sev2', 'SEV2 · High'], ['sev3', 'SEV3 · Moderate'], ['sev4', 'SEV4 · Low']];
+const _INC_STATUS = ['investigating', 'identified', 'monitoring', 'resolved'];
+function _incSevTone(s) { return (s === 'sev1' || s === 'sev2') ? 'red' : s === 'sev3' ? 'gold' : 'navy'; }
+function _incStatusTone(s) { return s === 'resolved' ? 'sage' : s === 'monitoring' ? 'navy' : s === 'identified' ? 'gold' : 'red'; }
+function _incStatusLabel(s) { return { investigating: 'Investigating', identified: 'Identified', monitoring: 'Monitoring', resolved: 'Resolved' }[s] || s; }
+function _fmtMttr(secs) { if (secs == null) return '—'; const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60); return h > 0 ? `${h}h ${m}m` : `${m}m`; }
+function _incFmt(iso) { if (!iso) return '—'; try { return new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { return iso; } }
+
+function SuperIncidents() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [filter, setFilter] = useState('');
+  const [selId, setSelId] = useState(null);
+  const [creating, setCreating] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true); setError('');
+    const q = filter ? (filter === 'open' ? '?open_only=true' : `?status=${filter}`) : '';
+    AnchorAPI.apiGet(`/v1/super-admin/incidents${q}`)
+      .then(d => setRows(d.items || []))
+      .catch(e => setError(e.message || 'Failed to load'))
+      .finally(() => setLoading(false));
+  }, [filter]);
+  useEffect(() => { load(); }, [load]);
+
+  const openCount = rows.filter(r => r.is_open).length;
+  const FILTERS = [['', 'All'], ['open', 'Open'], ['investigating', 'Investigating'], ['identified', 'Identified'], ['monitoring', 'Monitoring'], ['resolved', 'Resolved']];
+
+  return (
+    <>
+      <PageHeader title="Incidents"
+        description="Operational incident log — declare, track, and resolve platform incidents. Every change is recorded in the audit trail."
+        actions={<PrimaryButton mode="ember" icon="plus" onClick={() => setCreating(true)}>Declare incident</PrimaryButton>} />
+
+      <div className="grid grid-cols-4 gap-4 mb-4">
+        <KpiCard label="Open incidents" value={openCount} accent="ember" />
+        <KpiCard label="Total (shown)" value={rows.length} />
+        <KpiCard label="SEV1/2 open" value={rows.filter(r => r.is_open && (r.severity === 'sev1' || r.severity === 'sev2')).length} accent="ember" />
+        <KpiCard label="Resolved (shown)" value={rows.filter(r => r.status === 'resolved').length} accent="sage" />
       </div>
 
-      <Card className="mt-4">
-        <SectionLabel right={<MonoChip>chroma</MonoChip>}>Vector DB · per-tenant namespace health</SectionLabel>
-        <DataTable
-          columns={[
-            { key:'ns', label:'Namespace', render:r=><MonoChip>{r.ns}</MonoChip> },
-            { key:'docs', label:'Documents', align:'right' },
-            { key:'embeds', label:'Embeddings', align:'right' },
-            { key:'last', label:'Last index', render:r=><span className="font-mono text-[11.5px] text-[var(--muted)]">{r.last}</span> },
-            { key:'status', label:'Status', render:r=><StatusPill status={r.status} dot={false} /> },
-          ]}
-          rows={[
-            { ns:'ns_diu', docs:'2,148', embeds:'412k', last:'2026-05-24 02:00', status:'healthy' },
-            { ns:'ns_buet', docs:'1,002', embeds:'188k', last:'2026-05-24 02:00', status:'healthy' },
-            { ns:'ns_du', docs:'1,402', embeds:'276k', last:'2026-05-24 02:00', status:'healthy' },
-            { ns:'ns_nsu', docs:'380', embeds:'72k', last:'2026-04-12 02:00', status:'degraded' },
-          ]}
-        />
+      <div className="flex items-center gap-1.5 mb-3">
+        {FILTERS.map(([v, l]) => (
+          <button key={v || 'all'} onClick={() => setFilter(v)} className="px-2.5 py-1 rounded-sm text-[12px] border hair transition-colors"
+            style={filter === v ? { background: 'var(--ember)', color: '#fff', borderColor: 'var(--ember)' } : { color: 'var(--muted)' }}>{l}</button>
+        ))}
+        <button onClick={load} className="ml-auto text-[12px] text-[var(--muted)] hover:text-[var(--ink)] underline">refresh</button>
+      </div>
+
+      <Card noPad>
+        {loading ? <div className="p-10 text-center text-[13px] text-[var(--muted)]">Loading incidents…</div>
+          : error ? <div className="p-6"><AuditNote tone="red" icon="alert-triangle"><span>{error} </span><button onClick={load} className="underline ml-1">Retry →</button></AuditNote></div>
+          : rows.length === 0 ? <EmptyState icon="shield-check" title="No incidents" body="Nothing matches this filter. Declare an incident to start tracking." />
+          : <DataTable
+              columns={[
+                { key: 'severity', label: 'Severity', render: r => <Tag tone={_incSevTone(r.severity)}>{r.severity.toUpperCase()}</Tag> },
+                { key: 'title', label: 'Incident', render: r => <div><div className="font-medium text-[var(--ink)]">{r.title}</div>{r.component && <div className="text-[11px] text-[var(--muted)] font-mono">{r.component}</div>}</div> },
+                { key: 'status', label: 'Status', render: r => <Tag tone={_incStatusTone(r.status)}>{_incStatusLabel(r.status)}</Tag> },
+                { key: 'started_at', label: 'Started', render: r => <span className="font-mono text-[11.5px] text-[var(--muted)]">{_incFmt(r.started_at)}</span> },
+                { key: 'mttr', label: 'MTTR', align: 'right', render: r => <span className="font-mono text-[12px]">{_fmtMttr(r.mttr_seconds)}</span> },
+              ]}
+              rows={rows} onRowClick={r => setSelId(r.id)} />}
       </Card>
+
+      <IncidentDetail id={selId} onClose={() => setSelId(null)} onChanged={load} />
+      <IncidentCreate open={creating} onClose={() => setCreating(false)} onCreated={() => { setCreating(false); load(); }} />
     </>
+  );
+}
+
+function IncidentCreate({ open, onClose, onCreated }) {
+  const [f, setF] = useState({ title: '', description: '', severity: 'sev3', component: '', status: 'investigating' });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+  useEffect(() => { if (open) { setF({ title: '', description: '', severity: 'sev3', component: '', status: 'investigating' }); setErr(''); } }, [open]);
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const submit = async () => {
+    setSaving(true); setErr('');
+    try {
+      await AnchorAPI.apiPostAuth('/v1/super-admin/incidents', {
+        title: f.title.trim(), description: f.description.trim() || null,
+        severity: f.severity, component: f.component.trim() || null, status: f.status,
+      });
+      onCreated();
+    } catch (e) { setErr(e.message || 'Failed to declare incident'); setSaving(false); }
+  };
+  return (
+    <SlideOver open={open} onClose={onClose}>
+      <div className="p-5 hair-b flex items-center justify-between">
+        <h3 className="font-serif text-[20px] text-[var(--navy)]">Declare incident</h3>
+        <button onClick={onClose} className="text-[var(--muted)] hover:text-[var(--ink)]"><Icon name="x" size={18} /></button>
+      </div>
+      <div className="p-5 space-y-3">
+        {err && <AuditNote tone="red" icon="alert-triangle">{err}</AuditNote>}
+        <Field label="Title"><input value={f.title} onChange={e => set('title', e.target.value)} placeholder="RAG latency spike" className={INPUT_CLS} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Severity"><select value={f.severity} onChange={e => set('severity', e.target.value)} className={INPUT_CLS}>{_INC_SEV.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
+          <Field label="Component"><input value={f.component} onChange={e => set('component', e.target.value)} placeholder="RAG / API / Push" className={INPUT_CLS} /></Field>
+        </div>
+        <Field label="Initial status"><select value={f.status} onChange={e => set('status', e.target.value)} className={INPUT_CLS}>{_INC_STATUS.map(s => <option key={s} value={s}>{_incStatusLabel(s)}</option>)}</select></Field>
+        <Field label="Description"><textarea value={f.description} onChange={e => set('description', e.target.value)} rows={4} className={INPUT_CLS} placeholder="What's happening, impact, scope…" /></Field>
+      </div>
+      <div className="p-4 hair-t flex items-center justify-end gap-2">
+        <GhostButton onClick={onClose}>Cancel</GhostButton>
+        <PrimaryButton mode="ember" icon="check" onClick={submit} disabled={saving || f.title.trim().length < 3} className={(saving || f.title.trim().length < 3) ? 'opacity-50 pointer-events-none' : ''}>{saving ? 'Declaring…' : 'Declare'}</PrimaryButton>
+      </div>
+    </SlideOver>
+  );
+}
+
+function IncidentDetail({ id, onClose, onChanged }) {
+  const [inc, setInc] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [note, setNote] = useState('');
+  const [pm, setPm] = useState('');
+
+  const load = useCallback(() => {
+    if (!id) return;
+    setLoading(true);
+    AnchorAPI.apiGet(`/v1/super-admin/incidents/${id}`)
+      .then(d => { setInc(d); setPm(d.postmortem || ''); })
+      .catch(e => setMsg(e.message))
+      .finally(() => setLoading(false));
+  }, [id]);
+  useEffect(() => { setInc(null); setMsg(''); setNote(''); if (id) load(); }, [id, load]);
+
+  const patch = async (body) => {
+    setBusy(true); setMsg('');
+    try { const d = await AnchorAPI.apiPatch(`/v1/super-admin/incidents/${id}`, body); setInc(d); setPm(d.postmortem || ''); onChanged && onChanged(); }
+    catch (e) { setMsg(e.message || 'Update failed'); }
+    finally { setBusy(false); }
+  };
+  const addNote = async () => {
+    if (!note.trim()) return;
+    setBusy(true); setMsg('');
+    try { const d = await AnchorAPI.apiPostAuth(`/v1/super-admin/incidents/${id}/updates`, { note: note.trim() }); setInc(d); setNote(''); onChanged && onChanged(); }
+    catch (e) { setMsg(e.message || 'Failed to add note'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <SlideOver open={!!id} onClose={onClose} width={560}>
+      {loading && !inc ? <div className="p-10 text-center text-[13px] text-[var(--muted)]">Loading…</div> : inc && (
+        <div className="p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2"><Tag tone={_incSevTone(inc.severity)}>{inc.severity.toUpperCase()}</Tag><Tag tone={_incStatusTone(inc.status)}>{_incStatusLabel(inc.status)}</Tag></div>
+            <button onClick={onClose} className="w-7 h-7 rounded-sm hover:bg-[var(--mist)]/40 flex items-center justify-center"><Icon name="x" size={14} /></button>
+          </div>
+          <h3 className="font-serif text-[22px] text-[var(--navy)]" style={{ fontWeight: 500, textWrap: 'pretty' }}>{inc.title}</h3>
+          {inc.component && <div className="text-[12px] text-[var(--muted)]">Component: <span className="font-mono">{inc.component}</span></div>}
+          {inc.description && <p className="text-[13px] text-[var(--graphite)]" style={{ textWrap: 'pretty' }}>{inc.description}</p>}
+
+          <div className="grid grid-cols-3 gap-2">
+            <KpiCard label="Started" value={_incFmt(inc.started_at)} mono={false} />
+            <KpiCard label="Resolved" value={inc.resolved_at ? _incFmt(inc.resolved_at) : '—'} mono={false} accent="sage" />
+            <KpiCard label="MTTR" value={_fmtMttr(inc.mttr_seconds)} accent="ember" />
+          </div>
+
+          {msg && <AuditNote tone="red" icon="alert-triangle">{msg}</AuditNote>}
+
+          <div>
+            <SectionLabel>Update status</SectionLabel>
+            <div className="flex flex-wrap gap-1.5">
+              {_INC_STATUS.map(s => (
+                <button key={s} onClick={() => patch({ status: s })} disabled={busy || s === inc.status}
+                  className="px-2.5 py-1 rounded-sm text-[12px] border hair disabled:opacity-100"
+                  style={s === inc.status ? { background: 'var(--navy)', color: '#fff', borderColor: 'var(--navy)' } : { color: 'var(--muted)' }}>
+                  {_incStatusLabel(s)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <SectionLabel right={<MonoChip>{(inc.updates || []).length}</MonoChip>}>Timeline</SectionLabel>
+            {(inc.updates || []).length === 0 ? <div className="text-[12.5px] text-[var(--muted)]">No updates yet.</div>
+              : <Timeline items={(inc.updates || []).map(u => ({ t: _incFmt(u.created_at), who: u.status ? _incStatusLabel(u.status) : 'note', what: u.note }))} />}
+            <div className="mt-3 flex items-center gap-2">
+              <input value={note} onChange={e => setNote(e.target.value)} placeholder="Add a timeline note…" className={INPUT_CLS} />
+              <PrimaryButton size="sm" mode="navy" icon="plus" onClick={addNote} disabled={busy || !note.trim()} className={(busy || !note.trim()) ? 'opacity-50 pointer-events-none' : ''}>Add</PrimaryButton>
+            </div>
+          </div>
+
+          <div>
+            <SectionLabel>Post-mortem</SectionLabel>
+            <textarea value={pm} onChange={e => setPm(e.target.value)} rows={4} className={INPUT_CLS} placeholder="Root cause, remediation, follow-ups…" />
+            <div className="mt-2 flex justify-end"><GhostButton size="sm" icon="save" onClick={() => patch({ postmortem: pm })} disabled={busy}>Save post-mortem</GhostButton></div>
+          </div>
+        </div>
+      )}
+    </SlideOver>
   );
 }
 
@@ -7457,7 +7831,7 @@ function SuperLegalCorpus() {
   );
 }
 
-Object.assign(window, { SuperDashboard, SuperTenants, SuperOnboard, SuperTenantDetail, SuperAuditLogs, SuperDeanonymization, SuperVerificationFeed, SuperAIHealth, SuperAlerts, SuperModeration, SuperUsers, SuperRedZones, SuperPolicy, SuperLegalCorpus });
+Object.assign(window, { SuperDashboard, SuperTenants, SuperOnboard, SuperTenantDetail, SuperAuditLogs, SuperDeanonymization, SuperVerificationFeed, SuperAIHealth, SuperEncryption, SuperAnalytics, SuperIncidents, SuperAlerts, SuperModeration, SuperUsers, SuperRedZones, SuperPolicy, SuperLegalCorpus });
 </script>
 <script type="text/babel">
 // Full Settings screen for both University Admin and Super Admin
@@ -11044,12 +11418,9 @@ function supView(route, onGo, dark, setDark) {
     case '/super/users': return <SuperUsers />;
     case '/super/dms': return <StubScreen title="Dead Man\u2019s Switch" description="Active DMS cases per tenant, recent triggers, service health. Super Admin cannot read encrypted content." icon="lock-keyhole"
       items={['Active cases · 24','Triggered · 30d · 0','Recipient verification · 18','Service health · OK']} />;
-    case '/super/encryption': return <StubScreen title="Encryption & keys" description="Master key rotation, session/chat keys count, KMS health, certificate expiry." icon="key-round"
-      items={['Master key · rotated 14d ago','Active session keys · 12,847','KMS health · OK','Certificates · 3 expiring in 90d']} />;
-    case '/super/analytics': return <StubScreen title="Platform-wide analytics" description="Cross-tenant aggregate dashboards. All anonymized." icon="bar-chart-3"
-      items={['Complaints per week (stacked)','Resolution rates by tenant','Alert frequency heatmap (national)','Most cited laws (RAG)','Lawyer engagement','Verification feed activity']} />;
-    case '/super/incidents': return <StubScreen title="Incidents" description="Ongoing technical, security and content incidents. Playbooks and post-mortems." icon="flame"
-      items={['Active incidents · 1','Playbooks · 14','Post-mortems · 22']} />;
+    case '/super/encryption': return <SuperEncryption />;
+    case '/super/analytics': return <SuperAnalytics />;
+    case '/super/incidents': return <SuperIncidents />;
     case '/super/policy': return <SuperPolicy />;
     case '/super/legal-corpus': return <SuperLegalCorpus />;
     case '/super/team': return <StubScreen title="Team members" description="Super admin accounts, role assignments, MFA enforcement, access levels." icon="users"
