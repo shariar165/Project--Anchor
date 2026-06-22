@@ -70,6 +70,10 @@ Always use the **venv** — all dependencies are isolated there:
 | `/v1/notices` | `routers/notices.py` | optional | Campus notices (draft/publish) |
 | `/v1/zones` | `routers/zones.py` | none | Active safety zones with bbox filter |
 | `/v1/lawyers` | `routers/lawyers.py` | none | Verified lawyer directory |
+| `/v1/lawyers/apply` · `/v1/lawyers/me` | `routers/lawyers.py` | required | Self-service lawyer application (one per user) + own status |
+| `/v1/admin/lawyers/...` | `routers/admin_lawyers.py` | super_admin | List applications; verify (upgrades account to `lawyer`) / reject (audit-logged) |
+| `/v1/e2ee/keys` | `routers/e2ee.py` | required | `PUT` own / `GET {user_id}` E2EE public key (JWK stored in `user_e2ee_keys`) |
+| `/v1/conversations/...` | `routers/messaging.py` | required | E2EE user↔lawyer chat: start, list, `/{id}/messages`, `/{id}/stream` (SSE), `/{id}/read` |
 | `/v1/routines` | `routers/routines.py` | optional | Academic class schedules (draft/publish) |
 | `/v1/departments/...` | `routers/dept_ratings.py` | optional | Dept ratings + per-dept summary |
 | `/v1/admin/users/...` | `routers/admin_users.py` | admin/super_admin | List users, create admin/moderator, patch role/status |
@@ -137,11 +141,12 @@ Used in: `routers/notices.py`, `routers/routines.py`.
 
 ### Roles
 
-`Role` enum in `models/user.py`: `student | user | moderator | admin | super_admin`
+`Role` enum in `models/user.py`: `student | user | lawyer | moderator | admin | super_admin`
 
 - `super_admin` bypasses all `require_role()` checks (`deps.py`). It is not assignable via the normal registration flow — use `create_superadmin.py` (see below).
 - Non-`super_admin` admins are scoped to their own `tenant_id` when listing users via `/v1/admin/users`.
 - `PATCH /v1/admin/users/{id}/role` requires `super_admin`; `PATCH /{id}/status` requires `admin` or `moderator`.
+- `lawyer` is **not** registration-assignable. A normal user applies via `POST /v1/lawyers/apply`; a `super_admin` verifies via `POST /v1/admin/lawyers/{id}/verify`, which flips the linked `User.role` to `lawyer` and sets the directory row `verified=true`. Lawyers log in through the ordinary flow and land in the national UI. Added to the Postgres enum the same way as `super_admin` (`ALTER TYPE role ADD VALUE 'lawyer'`).
 
 **Seeding a super admin** (run once after `alembic upgrade head`):
 
@@ -162,7 +167,7 @@ This creates (or resets) the `teamaivion@gmail.com` account with `role=super_adm
 - `audit_logs` is append-only (enforced at DB role level in production)
 - `sessions.refresh_token_hash` stores Argon2id hash of the raw refresh JWT string
 - Alembic auto-generates migrations from SQLAlchemy models: `alembic revision --autogenerate -m "description"`
-- Migration chain: `035cab04b834_initial_schema` → `1e240152fca9_alert_system` → `a3f7c8d2e1b5_application_system` → `b9f2a1c3d4e5_verification_feed` → `c5d3e2f1a0b9_filing_system` → `d4e5f6a7b8c9_notices_and_lawyers` → `e5f6a7b8c9d0_routine_notice_status_dept_rating` → `f0a1b2c3d4e5_add_super_admin_role` → `37afe0ddaa21_add_tenant_geofences` → `a8b3c4d5e6f7_unified_zones` → `b1c2d3e4f5a6_radius_m_nullable` → `c0d1e2f3a4b5_timetable_generator`
+- Migration chain: `035cab04b834_initial_schema` → `1e240152fca9_alert_system` → `a3f7c8d2e1b5_application_system` → `b9f2a1c3d4e5_verification_feed` → `c5d3e2f1a0b9_filing_system` → `d4e5f6a7b8c9_notices_and_lawyers` → `e5f6a7b8c9d0_routine_notice_status_dept_rating` → `f0a1b2c3d4e5_add_super_admin_role` → `37afe0ddaa21_add_tenant_geofences` → `a8b3c4d5e6f7_unified_zones` → `b1c2d3e4f5a6_radius_m_nullable` → `c0d1e2f3a4b5_timetable_generator` → … → `c3d4e5f6a7b8_incident_tracker` → `d5e6f7a8b9c0_lawyer_role_messaging` (lawyer role + account linkage, `conversations`/`messages` tables)
 - The `super_admin` enum value was added as an `ALTER TYPE` (PostgreSQL only). The SQLite test path does not run enum DDL, so the `super_admin` role works in tests via the string-based `Role` enum in Python.
 
 ## Testing

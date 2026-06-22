@@ -2368,9 +2368,12 @@ const ROLE_TAG = {
   super_admin: { label: 'Super Admin', tone: 'red' },
   admin:       { label: 'Admin',       tone: 'sage' },
   moderator:   { label: 'Moderator',   tone: 'gold' },
+  lawyer:      { label: 'Lawyer',      tone: 'gold' },
   student:     { label: 'Student',     tone: 'navy' },
   user:        { label: 'User',        tone: 'muted' },
 };
+
+const LAWYER_STATUS_TONE = { pending: 'gold', verified: 'sage', rejected: 'red' };
 
 function SuperUsers() {
   const [users, setUsers]           = useState([]);
@@ -3619,4 +3622,158 @@ function SuperLegalCorpus() {
   );
 }
 
-Object.assign(window, { SuperDashboard, SuperTenants, SuperOnboard, SuperTenantDetail, SuperAuditLogs, SuperDeanonymization, SuperVerificationFeed, SuperAIHealth, SuperEncryption, SuperAnalytics, SuperIncidents, SuperAlerts, SuperModeration, SuperUsers, SuperRedZones, SuperPolicy, SuperLegalCorpus });
+// ═══════════════════════════════════════════════════════════════
+//  VERIFY LAWYERS — super-admin reviews lawyer applications
+// ═══════════════════════════════════════════════════════════════
+function SuperVerifyLawyers() {
+  const [items, setItems]         = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState('');
+  const [page, setPage]           = useState(1);
+  const [pages, setPages]         = useState(1);
+  const [total, setTotal]         = useState(0);
+  const [statusFilter, setStatusFilter] = useState('pending');
+  const [busyId, setBusyId]       = useState(null);
+  const [rejectFor, setRejectFor] = useState(null);   // lawyer row pending rejection
+  const [rejectReason, setRejectReason] = useState('');
+
+  async function load() {
+    setLoading(true); setError('');
+    try {
+      const params = new URLSearchParams({ page });
+      if (statusFilter) params.set('status', statusFilter);
+      const data = await AnchorAPI.apiGet(`/v1/admin/lawyers?${params}`);
+      setItems(data.items); setTotal(data.total); setPages(data.pages);
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, [page, statusFilter]);
+
+  async function verify(id) {
+    setBusyId(id);
+    try { await AnchorAPI.apiPostAuth(`/v1/admin/lawyers/${id}/verify`, {}); load(); }
+    catch (e) { alert(e.message); }
+    finally { setBusyId(null); }
+  }
+
+  async function doReject() {
+    if (!rejectFor) return;
+    const reason = rejectReason.trim();
+    if (reason.length < 2) return;
+    setBusyId(rejectFor.id);
+    try {
+      await AnchorAPI.apiPostAuth(`/v1/admin/lawyers/${rejectFor.id}/reject`, { reason });
+      setRejectFor(null); setRejectReason(''); load();
+    } catch (e) { alert(e.message); }
+    finally { setBusyId(null); }
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="Verify Lawyers"
+        bn="আইনজীবী যাচাই"
+        description="Review lawyer applications. Approving a lawyer upgrades their account to the lawyer role and publishes them to the national Find-a-Lawyer directory. Every decision is audit-logged."
+      />
+
+      <div className="flex items-center gap-2 mb-4">
+        {['pending', 'verified', 'rejected', ''].map(s => (
+          <button
+            key={s || 'all'}
+            onClick={() => { setStatusFilter(s); setPage(1); }}
+            className={`px-3 py-1.5 rounded-sm text-[12px] hair border transition capitalize ${statusFilter === s ? 'bg-[var(--navy)] text-white border-[var(--navy)]' : 'text-[var(--graphite)] hover:bg-[var(--mist)]/40'}`}
+          >
+            {s || 'All'}
+          </button>
+        ))}
+        <span className="ml-auto font-mono text-[12px] text-[var(--muted)]">{total} applications</span>
+      </div>
+
+      <Card noPad>
+        {loading && <div className="p-8 text-center text-[13px] text-[var(--muted)]">Loading…</div>}
+        {error && <div className="p-4 text-[13px] text-[var(--red)]">{error}</div>}
+        {!loading && !error && items.length === 0 && (
+          <div className="p-8 text-center text-[13px] text-[var(--muted)]">No applications.</div>
+        )}
+        {!loading && !error && items.length > 0 && (
+          <DataTable
+            columns={[
+              { key: 'name', label: 'Lawyer', render: r => (
+                <div>
+                  <div className="text-[13px] font-medium text-[var(--ink)]">{r.name}</div>
+                  <div className="text-[11px] text-[var(--muted)] font-mono">{r.email || '—'}</div>
+                </div>
+              )},
+              { key: 'bar_number', label: 'Bar #', render: r => (
+                <span className="font-mono text-[12px] text-[var(--graphite)]">{r.bar_number || '—'}</span>
+              )},
+              { key: 'district', label: 'District', render: r => (
+                <span className="text-[12px] text-[var(--graphite)]">{r.district || '—'}</span>
+              )},
+              { key: 'specializations', label: 'Specializations', render: r => (
+                <div className="flex flex-wrap gap-1">
+                  {(r.specializations || []).slice(0, 4).map(s => <Tag key={s} tone="navy">{s}</Tag>)}
+                  {(r.specializations || []).length === 0 && <span className="text-[11px] text-[var(--muted)]">—</span>}
+                </div>
+              )},
+              { key: 'status', label: 'Status', render: r => (
+                <Tag tone={LAWYER_STATUS_TONE[r.status] || 'mist'}>{r.status}</Tag>
+              )},
+              { key: 'actions', label: '', render: r => (
+                <div className="flex items-center gap-2 justify-end">
+                  {r.status !== 'verified' && (
+                    <PrimaryButton mode="sage" size="sm" disabled={busyId === r.id}
+                      onClick={() => verify(r.id)}>
+                      {busyId === r.id ? '…' : 'Approve'}
+                    </PrimaryButton>
+                  )}
+                  {r.status !== 'rejected' && (
+                    <GhostButton size="sm" danger disabled={busyId === r.id}
+                      onClick={() => { setRejectFor(r); setRejectReason(''); }}>
+                      Reject
+                    </GhostButton>
+                  )}
+                </div>
+              )},
+            ]}
+            rows={items}
+          />
+        )}
+      </Card>
+
+      {pages > 1 && (
+        <div className="flex items-center justify-center gap-3 mt-4">
+          <GhostButton size="sm" disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>Prev</GhostButton>
+          <span className="font-mono text-[12px] text-[var(--muted)]">{page} / {pages}</span>
+          <GhostButton size="sm" disabled={page >= pages} onClick={() => setPage(p => Math.min(pages, p + 1))}>Next</GhostButton>
+        </div>
+      )}
+
+      {/* Reject modal — captures a reason (shown to the applicant). */}
+      {rejectFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(11,29,53,0.45)' }} onClick={() => setRejectFor(null)}>
+          <div className="bg-white rounded-md w-full max-w-md p-5" style={{ border: '1px solid var(--mist)' }} onClick={e => e.stopPropagation()}>
+            <div className="text-[15px] font-semibold text-[var(--ink)] mb-1">Reject {rejectFor.name}?</div>
+            <div className="text-[12.5px] text-[var(--muted)] mb-3">The applicant sees this reason and may correct their details and resubmit. This action is audit-logged.</div>
+            <textarea
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              placeholder="Reason (e.g. Bar number could not be verified)"
+              className="w-full hair border rounded-sm p-2.5 text-[13px] mb-4"
+              rows={3}
+            />
+            <div className="flex justify-end gap-2">
+              <GhostButton size="sm" onClick={() => setRejectFor(null)}>Cancel</GhostButton>
+              <PrimaryButton mode="ember" size="sm" disabled={rejectReason.trim().length < 2 || busyId === rejectFor.id} onClick={doReject}>
+                {busyId === rejectFor.id ? 'Rejecting…' : 'Reject application'}
+              </PrimaryButton>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+Object.assign(window, { SuperDashboard, SuperTenants, SuperOnboard, SuperTenantDetail, SuperAuditLogs, SuperDeanonymization, SuperVerificationFeed, SuperAIHealth, SuperEncryption, SuperAnalytics, SuperIncidents, SuperAlerts, SuperModeration, SuperUsers, SuperRedZones, SuperPolicy, SuperLegalCorpus, SuperVerifyLawyers });

@@ -41,6 +41,9 @@ from app.routers import super_ai_health as super_ai_health_router
 from app.routers import super_keys as super_keys_router
 from app.routers import super_analytics as super_analytics_router
 from app.routers import super_incidents as super_incidents_router
+from app.routers import admin_lawyers as admin_lawyers_router
+from app.routers import e2ee as e2ee_router
+from app.routers import messaging as messaging_router
 
 
 @asynccontextmanager
@@ -109,6 +112,9 @@ def create_app() -> FastAPI:
     app.include_router(routines_router.router)
     app.include_router(dept_ratings_router.router)
     app.include_router(admin_users_router.router)
+    app.include_router(admin_lawyers_router.router)
+    app.include_router(e2ee_router.router)
+    app.include_router(messaging_router.router)
     app.include_router(admin_timetable_router.router)
     app.include_router(geofence_router.router)
     # Campus zones (admin polygon CRUD) — must be included before zones_router to avoid /{id} conflict

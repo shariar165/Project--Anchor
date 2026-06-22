@@ -9,6 +9,7 @@ from app.models.base import Base, TimestampMixin
 class Role(str, PyEnum):
     student = "student"
     user = "user"
+    lawyer = "lawyer"
     moderator = "moderator"
     admin = "admin"
     super_admin = "super_admin"
