@@ -18,6 +18,7 @@ from app.routers import admin_alerts as admin_alerts_router
 from app.routers import admin_audit as admin_audit_router
 from app.routers import applications as applications_router
 from app.routers import admin_applications as admin_applications_router
+from app.routers import admin_analytics as admin_analytics_router
 from app.routers import feed as feed_router
 from app.routers import feed_admin as feed_admin_router
 from app.routers import filings as filings_router
@@ -97,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_audit_router.router)
     app.include_router(applications_router.router)
     app.include_router(admin_applications_router.router)
+    app.include_router(admin_analytics_router.router)
     app.include_router(feed_router.router)
     app.include_router(feed_admin_router.router)
     app.include_router(filings_router.router)
