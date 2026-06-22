@@ -227,3 +227,39 @@ async def test_list_filter_by_role(client, db_session, mock_redis):
     assert r.status_code == 200
     for u in r.json()["items"]:
         assert u["role"] == "moderator"
+
+
+@pytest.mark.asyncio
+async def test_auth_me_reflects_assigned_staff_position(client, db_session, mock_redis):
+    """A staff_position set by the super admin must surface on the user's /auth/me,
+    so the admin UI can display the assigned approval-chain role (mentor/dean/etc.)."""
+    sa = await _make_role(client, db_session, "super_admin")
+    created = await client.post("/v1/admin/users", json={
+        "full_name": "Chain Mentor",
+        "email": "mentor@example.com",
+        "password": "MentorPass!88",
+        "role": "admin",
+    }, headers=_auth(sa["tokens"]))
+    user_id = created.json()["id"]
+
+    # Super admin assigns the approval-chain position.
+    pos = await client.patch(
+        f"/v1/admin/users/{user_id}/position",
+        json={"staff_position": "mentor"},
+        headers=_auth(sa["tokens"]),
+    )
+    assert pos.status_code == 200
+    assert pos.json()["staff_position"] == "mentor"
+
+    # The assigned admin logs in with their own credentials and reads /auth/me.
+    login = await client.post(
+        "/auth/login", json={"identifier": "mentor@example.com", "password": "MentorPass!88"}
+    )
+    assert login.status_code == 200
+    me = await client.get("/auth/me", headers=_auth(login.json()))
+    assert me.status_code == 200
+    body = me.json()
+    assert body["staff_position"] == "mentor"
+    # Fields are present (nullable) for non-staffed accounts too.
+    assert "tenant_name" in body
+    assert "last_login_at" in body

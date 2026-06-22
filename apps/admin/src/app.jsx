@@ -157,8 +157,7 @@ function uniView(route, onGo, role, dark, setDark) {
     case '/university/users': return <StubScreen title="Users" description="Students, teachers, and admin staff in your tenant. CSV import, role assignment, deactivation." icon="users"
       items={['Students · 8,421','Teachers · 142','Admin staff · 14','Pending verification · 42']} />;
     case '/university/settings': return <SettingsScreen mode="uni" dark={dark} setDark={setDark} onGo={onGo} />;
-    case '/university/profile': return <StubScreen title="My profile" description="Account, role, permissions, and MFA." icon="circle-user"
-      items={['Personal info','Role & permissions','MFA settings','Recent activity']} />;
+    case '/university/profile': return <ProfileScreen mode="uni" onGo={onGo} />;
     default: return <StubScreen title="Not found" description="The page you\u2019re looking for isn\u2019t in this demo build yet." />;
   }
 }
@@ -189,7 +188,7 @@ function supView(route, onGo, dark, setDark) {
     case '/super/legal-corpus': return <SuperLegalCorpus />;
     case '/super/team': return <StubScreen title="Team members" description="Super admin accounts, role assignments, MFA enforcement, access levels." icon="users"
       items={['Members · 6','MFA enforced · 6/6','Recent activity']} />;
-    case '/super/profile': return <StubScreen title="My profile" description="Super admin account and security settings." icon="circle-user" />;
+    case '/super/profile': return <ProfileScreen mode="sup" onGo={onGo} />;
     case '/super/settings': return <SettingsScreen mode="sup" dark={dark} setDark={setDark} onGo={onGo} />;
     default: return <StubScreen title="Not found" description="The page you\u2019re looking for isn\u2019t in this demo build yet." />;
   }
