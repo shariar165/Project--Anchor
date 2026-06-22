@@ -1311,4 +1311,252 @@ function StubScreen({ title, description, items=[], icon='construction', bn }) {
   );
 }
 
-Object.assign(window, { UniNotices, UniGeofence, UniClassrooms, UniTeacherGrievances, UniDeptGrievances, UniHostel, StubScreen, UniFeedCard, UniVerificationFeed });
+// ---- University Users (tenant-scoped directory) ----
+const UNI_ROLE_TAG = {
+  super_admin: { label: 'Super Admin', tone: 'red' },
+  admin:       { label: 'Admin',       tone: 'sage' },
+  moderator:   { label: 'Moderator',   tone: 'gold' },
+  student:     { label: 'Student',     tone: 'navy' },
+  user:        { label: 'User',        tone: 'mist' },
+};
+const STAFF_POSITION_LABEL = {
+  mentor: 'Mentor', department_head: 'Department Head', dean: 'Dean', accounts: 'Accounts',
+};
+const STAFF_POSITION_OPTIONS = ['mentor', 'department_head', 'dean', 'accounts'];
+
+function UniUsers({ onGo }) {
+  const [users, setUsers]         = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState('');
+  const [page, setPage]           = useState(1);
+  const [pages, setPages]         = useState(1);
+  const [total, setTotal]         = useState(0);
+  const [roleFilter, setRoleFilter]     = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [search, setSearch]             = useState('');     // live input value
+  const [appliedSearch, setAppliedSearch] = useState('');   // debounced, sent to API
+  const [selected, setSelected]   = useState(null);         // row open in the SlideOver
+  const [savingPos, setSavingPos] = useState(false);
+  const [posError, setPosError]   = useState('');
+
+  const tenantName = (AnchorAPI.getStoredUser() || {}).tenant_name;
+
+  // Debounce the search box → appliedSearch (resets to page 1).
+  useEffect(() => {
+    const t = setTimeout(() => { setAppliedSearch(search.trim()); setPage(1); }, 350);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  function load() {
+    setLoading(true); setError('');
+    const params = new URLSearchParams({ page: String(page) });
+    if (roleFilter)   params.set('role', roleFilter);
+    if (statusFilter) params.set('status', statusFilter);
+    if (appliedSearch) params.set('q', appliedSearch);
+    AnchorAPI.apiGet(`/v1/admin/users?${params}`)
+      .then(data => {
+        setUsers(Array.isArray(data.items) ? data.items : []);
+        setTotal(data.total || 0);
+        setPages(data.pages || 1);
+        setLoading(false);
+      })
+      .catch(err => { setError(err.message || 'Could not load users.'); setLoading(false); });
+  }
+
+  useEffect(() => { load(); }, [page, roleFilter, statusFilter, appliedSearch]);
+
+  const canHavePosition = u => u && (u.role === 'admin' || u.role === 'moderator');
+
+  async function assignPosition(newPosition) {
+    if (!selected) return;
+    setSavingPos(true); setPosError('');
+    try {
+      const updated = await AnchorAPI.apiPatch(
+        `/v1/admin/users/${selected.id}/position`,
+        { staff_position: newPosition || null },
+      );
+      // Reflect the change locally without a full reload flicker, then sync the list.
+      setSelected(s => ({ ...s, staff_position: updated.staff_position }));
+      setUsers(list => list.map(u => u.id === updated.id ? { ...u, staff_position: updated.staff_position } : u));
+    } catch (err) {
+      setPosError(err.message || 'Could not update staff position.');
+    } finally {
+      setSavingPos(false);
+    }
+  }
+
+  const rt = UNI_ROLE_TAG;
+
+  return (
+    <>
+      <PageHeader
+        title="Users"
+        bn="ব্যবহারকারী"
+        description={`Accounts in ${tenantName || 'your university'}. Assign approval-chain staff positions to your admins and moderators.`}
+      />
+
+      {/* Filters */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <div className="relative">
+          <Icon name="search" size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search name or email…"
+            className="pl-8 pr-3 py-1.5 hair border rounded-sm bg-white text-[12.5px] w-[230px]"
+          />
+        </div>
+        {['', 'admin', 'moderator', 'student', 'user'].map(r => (
+          <button
+            key={r}
+            onClick={() => { setRoleFilter(r); setPage(1); }}
+            className={`px-3 py-1.5 rounded-sm text-[12px] hair border transition ${roleFilter === r ? 'bg-[var(--navy)] text-white border-[var(--navy)]' : 'text-[var(--graphite)] hover:bg-[var(--mist)]/40'}`}
+          >
+            {r ? (rt[r]?.label || r) : 'All roles'}
+          </button>
+        ))}
+        <select
+          value={statusFilter}
+          onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
+          className="px-2.5 py-1.5 hair border rounded-sm bg-white text-[12px] text-[var(--graphite)]"
+        >
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
+        </select>
+        <span className="ml-auto font-mono text-[12px] text-[var(--muted)]">{total} users</span>
+      </div>
+
+      <Card noPad>
+        {loading && <div className="p-8 text-center text-[13px] text-[var(--muted)]">Loading…</div>}
+        {error && !loading && (
+          <div className="p-4 text-[13px] text-[var(--red)] flex items-center gap-2">
+            <Icon name="circle-alert" size={14} />
+            <span>{error}</span>
+            <button onClick={load} className="ml-2 underline">Retry</button>
+          </div>
+        )}
+        {!loading && !error && users.length === 0 && (
+          <EmptyState icon="users" title="No users found"
+            body="No accounts match the current filters. Try clearing the search or role filter." />
+        )}
+        {!loading && !error && users.length > 0 && (
+          <DataTable
+            columns={[
+              { key: 'full_name', label: 'Name', render: r => (
+                <div>
+                  <div className="text-[13px] font-medium text-[var(--ink)]">{r.full_name}</div>
+                  <div className="text-[11px] text-[var(--muted)] font-mono">{r.email || r.phone || '—'}</div>
+                </div>
+              )},
+              { key: 'role', label: 'Role', render: r => {
+                const info = rt[r.role] || { label: r.role, tone: 'mist' };
+                return <Tag tone={info.tone}>{info.label}</Tag>;
+              }},
+              { key: 'status', label: 'Status', render: r => <StatusPill status={r.status} /> },
+              { key: 'staff_position', label: 'Staff position', render: r => (
+                canHavePosition(r) && r.staff_position
+                  ? <Tag tone="gold">{STAFF_POSITION_LABEL[r.staff_position] || r.staff_position}</Tag>
+                  : <span className="text-[11px] text-[var(--muted)]">—</span>
+              )},
+              { key: 'mfa_enabled', label: 'MFA', render: r => (
+                <span className={`font-mono text-[11px] ${r.mfa_enabled ? 'text-[var(--sage)]' : 'text-[var(--muted)]'}`}>
+                  {r.mfa_enabled ? 'ON' : 'off'}
+                </span>
+              )},
+            ]}
+            rows={users}
+            onRowClick={r => { setSelected(r); setPosError(''); }}
+            dense
+          />
+        )}
+      </Card>
+
+      {/* Pagination */}
+      {pages > 1 && (
+        <div className="flex items-center gap-2 mt-4 justify-end">
+          <GhostButton size="sm" icon="chevron-left" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>Prev</GhostButton>
+          <span className="text-[12px] text-[var(--muted)]">Page {page} / {pages}</span>
+          <GhostButton size="sm" icon="chevron-right" onClick={() => setPage(p => Math.min(pages, p + 1))} disabled={page === pages}>Next</GhostButton>
+        </div>
+      )}
+
+      {/* Detail SlideOver */}
+      <SlideOver open={!!selected} onClose={() => setSelected(null)} width={560}>
+        {selected && (
+          <div className="p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <SectionLabel className="mb-0">User detail</SectionLabel>
+              <button onClick={() => setSelected(null)} className="w-7 h-7 rounded-sm hover:bg-[var(--mist)]/40 flex items-center justify-center">
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+
+            <div>
+              <h3 className="font-serif text-[22px] text-[var(--navy)]" style={{ fontWeight: 500, textWrap: 'pretty' }}>{selected.full_name}</h3>
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                {(() => { const info = rt[selected.role] || { label: selected.role, tone: 'mist' }; return <Tag tone={info.tone}>{info.label}</Tag>; })()}
+                <StatusPill status={selected.status} />
+                {selected.email_verified
+                  ? <Tag tone="sage" icon="badge-check">Email verified</Tag>
+                  : <Tag tone="mist" icon="mail-question">Email unverified</Tag>}
+              </div>
+            </div>
+
+            {/* Read-only profile */}
+            <div className="hair border rounded-sm divide-y" style={{ borderColor: 'var(--mist)' }}>
+              {[
+                ['Email', selected.email || '—'],
+                ['Phone', selected.phone || '—'],
+                ['MFA', selected.mfa_enabled ? 'Enabled' : 'Disabled'],
+                ['User ID', selected.id],
+              ].map(([k, v]) => (
+                <div key={k} className="flex items-center justify-between px-3 py-2 text-[12.5px]">
+                  <span className="text-[var(--muted)]">{k}</span>
+                  <span className="font-mono text-[var(--ink)] text-[11.5px] text-right break-all max-w-[60%]">{v}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Assign staff position — the one mutating action */}
+            <SectionLabel>Approval-chain staff position</SectionLabel>
+            {canHavePosition(selected) ? (
+              <>
+                <AuditNote tone="gold" icon="shield-check">
+                  Staff positions drive the application approval chain. This action is audit-logged.
+                </AuditNote>
+                {posError && (
+                  <div className="px-3 py-2 rounded-sm text-[12px] flex items-center gap-2" style={{ background: 'var(--ember-tint)', color: 'var(--ember)' }}>
+                    <Icon name="circle-alert" size={13} />
+                    {posError}
+                  </div>
+                )}
+                <Field label="Position" hint="Which application approval stage this staff member handles.">
+                  <select
+                    value={selected.staff_position || ''}
+                    disabled={savingPos}
+                    onChange={e => assignPosition(e.target.value)}
+                    className="w-full px-3 py-2 hair border rounded-sm bg-white text-[13px] disabled:opacity-60"
+                  >
+                    <option value="">— none —</option>
+                    {STAFF_POSITION_OPTIONS.map(p => (
+                      <option key={p} value={p}>{STAFF_POSITION_LABEL[p]}</option>
+                    ))}
+                  </select>
+                </Field>
+                {savingPos && <div className="text-[12px] text-[var(--muted)]">Saving…</div>}
+              </>
+            ) : (
+              <p className="text-[13px] text-[var(--graphite)]">
+                Staff positions apply to <span className="font-medium">admin</span> and <span className="font-medium">moderator</span> staff only.
+                This account is a {rt[selected.role]?.label?.toLowerCase() || selected.role}.
+              </p>
+            )}
+          </div>
+        )}
+      </SlideOver>
+    </>
+  );
+}
+
+Object.assign(window, { UniNotices, UniGeofence, UniClassrooms, UniTeacherGrievances, UniDeptGrievances, UniHostel, StubScreen, UniFeedCard, UniVerificationFeed, UniUsers });

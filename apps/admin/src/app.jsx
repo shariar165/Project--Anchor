@@ -154,8 +154,7 @@ function uniView(route, onGo, role, dark, setDark) {
     case '/university/hostel': return <UniHostel />;
     case '/university/verification-feed': return <UniVerificationFeed />;
     case '/university/analytics': return <UniAnalytics onGo={onGo} />;
-    case '/university/users': return <StubScreen title="Users" description="Students, teachers, and admin staff in your tenant. CSV import, role assignment, deactivation." icon="users"
-      items={['Students · 8,421','Teachers · 142','Admin staff · 14','Pending verification · 42']} />;
+    case '/university/users': return <UniUsers onGo={onGo} />;
     case '/university/settings': return <SettingsScreen mode="uni" dark={dark} setDark={setDark} onGo={onGo} />;
     case '/university/profile': return <ProfileScreen mode="uni" onGo={onGo} />;
     default: return <StubScreen title="Not found" description="The page you\u2019re looking for isn\u2019t in this demo build yet." />;
