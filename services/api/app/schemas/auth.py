@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 from typing import Literal
+from datetime import datetime
 import uuid
 
 
@@ -109,6 +110,9 @@ class UserInfo(BaseModel):
     total_filings: int = 0
     resolved_filings: int = 0
     department: str | None = None
+    staff_position: str | None = None
+    tenant_name: str | None = None
+    last_login_at: datetime | None = None
 
 
 class UserProfileUpdate(BaseModel):

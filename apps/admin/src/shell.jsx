@@ -258,8 +258,8 @@ function AdminShell({ mode='uni', route, onGo, role, setRole, dark, setDark, chi
                     <div className="text-[13px] font-medium">{auth?.full_name || (mode==='uni'?'Dr. Tahmina Karim':'Asif Zaman')}</div>
                     <div className="text-[11px] text-[var(--muted)]">{auth?.email || (mode==='uni'?'tahmina@diu.edu.bd':'asif@aivion.team')}</div>
                   </div>
-                  <button className="w-full text-left px-3 py-2 text-[13px] hover:bg-[var(--mist)]/40">Profile</button>
-                  <button className="w-full text-left px-3 py-2 text-[13px] hover:bg-[var(--mist)]/40">Security & MFA</button>
+                  <button onClick={()=>{ setUserOpen(false); onGo(mode==='uni'?'/university/profile':'/super/profile'); }} className="w-full text-left px-3 py-2 text-[13px] hover:bg-[var(--mist)]/40">Profile</button>
+                  <button onClick={()=>{ setUserOpen(false); onGo(mode==='uni'?'/university/settings':'/super/settings'); }} className="w-full text-left px-3 py-2 text-[13px] hover:bg-[var(--mist)]/40">Security & MFA</button>
                   <button onClick={()=>onLogout ? onLogout() : onGo('/')} className="w-full text-left px-3 py-2 text-[13px] hair-t hover:bg-[var(--mist)]/40 text-[var(--red)]">Sign out</button>
                 </div>
               )}

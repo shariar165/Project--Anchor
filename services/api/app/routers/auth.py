@@ -481,6 +481,14 @@ async def _build_user_info(db: AsyncSession, user: User, user_id) -> UserInfo:
         campus = await db.get(StudentCampusSettings, user_id)
         if campus:
             department = campus.department
+
+    tenant_name = None
+    if user.tenant_id is not None:
+        from app.models.tenant import Tenant
+        tenant = await db.get(Tenant, user.tenant_id)
+        if tenant:
+            tenant_name = tenant.name
+
     return UserInfo(
         id=user.id,
         full_name=user.full_name,
@@ -494,6 +502,9 @@ async def _build_user_info(db: AsyncSession, user: User, user_id) -> UserInfo:
         total_filings=total or 0,
         resolved_filings=resolved or 0,
         department=department,
+        staff_position=user.staff_position,
+        tenant_name=tenant_name,
+        last_login_at=user.last_login_at,
     )
 
 
