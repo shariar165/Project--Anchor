@@ -1317,16 +1317,36 @@ function lawyerColor(id) {
 }
 
 function LawyersScreen() {
+  const { go, auth } = useApp();
   const [lawyers, setLawyers] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError]   = React.useState('');
+  const [starting, setStarting] = React.useState(null);
 
   React.useEffect(() => {
-    fetch(`${_API}/v1/lawyers`)
+    fetch(`${_API}/v1/lawyers?verified_only=true`)
       .then(r => { if (!r.ok) throw new Error('Failed to load'); return r.json(); })
       .then(data => { setLawyers(data); setLoading(false); })
       .catch(() => { setError('Could not load lawyers. Check your connection.'); setLoading(false); });
   }, []);
+
+  const startChat = async (l) => {
+    if (!auth || !auth.isAuthenticated) { go('login'); return; }
+    setStarting(l.id);
+    try {
+      if (window.E2EE) { try { await E2EE.ensureKeyPair(); } catch (e) {} }
+      const conv = await apiFetch('/v1/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lawyer_id: l.id }),
+      });
+      go('chat-thread', { conv });
+    } catch (e) {
+      setError(e.message || 'Could not start chat.');
+    } finally {
+      setStarting(null);
+    }
+  };
 
   return (
     <>
@@ -1417,14 +1437,19 @@ function LawyersScreen() {
                 )}
               </div>
             </div>
-            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--mist)', display: 'flex', justifyContent: 'flex-end' }}>
-              <button style={{
-                padding: '8px 12px', borderRadius: 10, background: 'var(--navy)', color: '#F7F3EE',
-                border: 'none', fontSize: 12, fontWeight: 500, cursor: 'pointer',
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-              }}>
-                <IconLock size={12}/> Start E2EE chat
-              </button>
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--mist)', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8 }}>
+              {l.user_id ? (
+                <button onClick={() => startChat(l)} disabled={starting === l.id} style={{
+                  padding: '8px 12px', borderRadius: 10, background: 'var(--navy)', color: '#F7F3EE',
+                  border: 'none', fontSize: 12, fontWeight: 500,
+                  cursor: starting === l.id ? 'default' : 'pointer', opacity: starting === l.id ? 0.7 : 1,
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}>
+                  <IconLock size={12}/> {starting === l.id ? 'Starting…' : 'Start E2EE chat'}
+                </button>
+              ) : (
+                <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>Directory listing</span>
+              )}
             </div>
           </div>
         ))}
@@ -1913,6 +1938,15 @@ function ProfileScreen() {
 
       {/* Settings sections */}
       <div style={{ padding: '14px 20px 0' }}>
+        <SettingsGroup title="Legal" items={[
+          { label: 'Messages', value: 'Encrypted', Icon: IconMessage, onTap: () => go('messages') },
+          ...(!isStudent ? [{
+            label: user && user.role === 'lawyer' ? 'My lawyer profile' : 'Apply as a Lawyer',
+            value: user && user.role === 'lawyer' ? 'Verified' : 'Verification',
+            Icon: IconScale,
+            onTap: () => go('apply-lawyer'),
+          }] : []),
+        ]}/>
         <SettingsGroup title="Preferences" items={[
           { label: 'Language',            value: lang === 'BN' ? 'বাংলা' : 'English', Icon: IconGlobe, onTap: () => setLang(lang === 'EN' ? 'BN' : 'EN') },
           { label: 'Notifications',       value: prefsCount + ' of 5 on',  Icon: IconBell, onTap: () => setSheet('notif') },

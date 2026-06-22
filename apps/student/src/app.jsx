@@ -276,6 +276,14 @@ function AppProvider({ children }) {
     if (window.syncPushToken) window.syncPushToken({ interactive: false });
   }, [auth.isAuthenticated]);
 
+  // Publish this device's E2EE public key on every authenticated load so that any
+  // verified lawyer is immediately reachable for encrypted chat (and citizens'
+  // first messages can be encrypted without waiting). Silent and best-effort.
+  useEffect(() => {
+    if (!auth.isAuthenticated) return;
+    if (window.E2EE && E2EE.supported) { E2EE.ensureKeyPair().catch(() => {}); }
+  }, [auth.isAuthenticated]);
+
   // Push deep-link: tapping an alert notification opens "/?alert=<event_id>"
   // (cold start) or — if the app is already open — the service worker posts an
   // "anchor-open-alert" message. Either way, land on the live map for that alert.
@@ -678,6 +686,9 @@ function RouteView() {
     'feed-admin':    FeedAdminScreen,
     'feed-moderate': FeedModerateScreen,
     lawyers:      LawyersScreen,
+    messages:      ConversationsScreen,
+    'chat-thread': ChatThreadScreen,
+    'apply-lawyer': ApplyLawyerScreen,
     notices:      NoticesScreen,
     routines:     RoutinesScreen,
     'dept-rating': DeptRatingScreen,

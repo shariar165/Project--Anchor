@@ -123,6 +123,7 @@ function supCrumbs(route) {
     '/super/deanonymization':['Operations','De-anonymization'],
     '/super/verification-feed':['Operations','Verification feed'],
     '/super/users':['Operations','Users'],
+    '/super/verify-lawyers':['Operations','Verify lawyers'],
     '/super/dms':['Operations','Dead man\u2019s switch'],
     '/super/ai-health':['System','AI engine health'],
     '/super/encryption':['System','Encryption & keys'],
@@ -178,6 +179,7 @@ function supView(route, onGo, dark, setDark) {
     case '/super/verification-feed': return <SuperVerificationFeed />;
     case '/super/ai-health': return <SuperAIHealth />;
     case '/super/users': return <SuperUsers />;
+    case '/super/verify-lawyers': return <SuperVerifyLawyers />;
     case '/super/dms': return <StubScreen title="Dead Man\u2019s Switch" description="Active DMS cases per tenant, recent triggers, service health. Super Admin cannot read encrypted content." icon="lock-keyhole"
       items={['Active cases · 24','Triggered · 30d · 0','Recipient verification · 18','Service health · OK']} />;
     case '/super/encryption': return <SuperEncryption />;

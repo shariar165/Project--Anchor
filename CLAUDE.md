@@ -84,7 +84,9 @@ The service worker (`firebase-messaging-sw.js`) requires the app to be served ov
 8. `src/applications.jsx` — Application submission screens; exports `apiFetch` and `getToken` as globals
 9. `src/filings.jsx` — Complaint/filing screens; uses `filingApiFetch` global
 10. `src/verification-feed.jsx` — Verification feed screens; uses `apiFetch` from `applications.jsx`
-11. `src/app.jsx` — App shell, AppCtx, Header, BottomNav, RouteView, GeofenceConsentModal (mounts last)
+11. `src/e2ee.jsx` — `window.E2EE` helper: WebCrypto ECDH(P-256)→AES-GCM; `ensureKeyPair/deriveKey/encrypt/decrypt`. Needs `apiFetch`
+12. `src/messaging.jsx` — `ConversationsScreen`, `ChatThreadScreen` (E2EE user↔lawyer chat), `ApplyLawyerScreen`. Uses `E2EE` + `apiFetch`
+13. `src/app.jsx` — App shell, AppCtx, Header, BottomNav, RouteView, GeofenceConsentModal (mounts last)
 
 Firebase SDK CDN scripts load between Leaflet and the component scripts — they must be before `src/auth.jsx`.
 
@@ -109,6 +111,9 @@ Navigation: `go(name, params)` pushes; `back()` pops. No router library.
 - `anchor_geofence_consent` — `'true'|'false'` geofence opt-in
 - `anchor_geofence_consent_answered` — `'true'` once the first-run modal has been dismissed
 - `anchor_device_id` — stable device identifier for FCM token registration
+- `anchor_e2ee_priv` / `anchor_e2ee_pub` — this device's ECDH keypair (JWK) for E2EE lawyer chat. **Private key never leaves the browser**; clearing storage or switching device loses the ability to decrypt old messages.
+
+**E2EE lawyer chat** — `src/messaging.jsx` + `src/e2ee.jsx` implement end-to-end encrypted user↔lawyer messaging. The server (`/v1/conversations`) only ever stores ciphertext + IV; encryption keys are derived client-side (ECDH→AES-GCM) from the counterpart's public key fetched via `/v1/e2ee/keys/{user_id}`. Live delivery uses an `EventSource` SSE stream (`/v1/conversations/{id}/stream?token=…`, token in query because `EventSource` can't set headers). `AppProvider` publishes the device public key on every authenticated load so verified lawyers are reachable immediately.
 
 **API helpers (globals)** — several modules export helper functions as window globals:
 - `apiFetch(path, opts)` from `src/applications.jsx` — adds `Authorization` header
@@ -312,6 +317,11 @@ cd services/api
 | `/v1/admin/geofence` | `routers/geofence.py` | admin | Campus boundary polygon (GET/POST) |
 | `/v1/admin/zones` | `routers/admin_alerts.py` | admin | Red zone CRUD |
 | `/v1/lawyers` | `routers/lawyers.py` | none | Verified lawyer directory |
+| `/v1/lawyers/apply` · `/v1/lawyers/me` | `routers/lawyers.py` | required | Self-service lawyer application + own application status |
+| `/v1/admin/lawyers/...` | `routers/admin_lawyers.py` | super_admin | List lawyer applications; verify (upgrades account to `lawyer` role) / reject |
+| `/v1/e2ee/keys` | `routers/e2ee.py` | required | Upload own / fetch another user's E2EE public key |
+| `/v1/conversations/...` | `routers/messaging.py` | required | E2EE user↔lawyer chat: start, list, messages, SSE stream, read |
+| `/v1/legal-rights` | `routers/legal_rights.py` | none | Legal rights reference content |
 | `/v1/routines` | `routers/routines.py` | optional | Academic class schedules (draft/publish) |
 | `/v1/departments/...` | `routers/dept_ratings.py` | optional | Dept ratings + per-dept summary |
 | `/v1/admin/users/...` | `routers/admin_users.py` | admin/super_admin | User management |
@@ -320,6 +330,7 @@ cd services/api
 | `/v1/admin/timetable/...` | `routers/admin_timetable.py` | admin | CP-SAT timetable CRUD, solver jobs, NL edits |
 | `/v1/admin/applications/...` | `routers/admin_applications.py` | admin | Application review queue + stats (stage-based approval chain) |
 | `/v1/admin/audit...` | `routers/admin_audit.py` | super_admin | Audit log read, hash-chain verify, export |
+| `/v1/admin/deanonymization/...` | `routers/deanonymization.py` | admin/super_admin | De-anonymization requests; two-person approval + time-limited identity reveal |
 | `/health` | `main.py` | none | DB + Redis liveness probe |
 
 ---
