@@ -4,7 +4,7 @@ Uses SQLite in-memory + fakeredis — no Docker required.
 """
 import uuid
 import pytest
-from sqlalchemy import update
+from sqlalchemy import update, select
 
 from app.models.user import User, Role
 
@@ -36,6 +36,120 @@ async def _make_role(client, db_session, role: str) -> dict:
     login = await client.post("/auth/login", json={"identifier": email, "password": password})
     assert login.status_code == 200
     return {"email": email, "password": password, "tokens": login.json()}
+
+
+async def _make_tenant_admin(client, db_session, tenant_id: uuid.UUID) -> dict:
+    """An `admin`-role account whose JWT carries the given tenant_id (re-login after scoping)."""
+    a = await _make_role(client, db_session, "admin")
+    await db_session.execute(
+        update(User).where(User.email == a["email"]).values(tenant_id=tenant_id)
+    )
+    await db_session.commit()
+    login = await client.post("/auth/login", json={"identifier": a["email"], "password": a["password"]})
+    assert login.status_code == 200
+    a["tokens"] = login.json()
+    return a
+
+
+async def _seed_user(client, db_session, role: str, tenant_id: uuid.UUID | None = None,
+                     name: str = "Seed User") -> dict:
+    """Register + verify a user, then set role/tenant directly. Returns {id, email, name}."""
+    email = f"{role}_{uuid.uuid4().hex[:6]}@example.com"
+    password = "Secure!Pass99"
+    reg = await client.post("/auth/register", json={
+        "full_name": name,
+        "email": email,
+        "password": password,
+        "role": "user",
+        "terms": True,
+        "data_consent": True,
+    })
+    assert reg.status_code == 201
+    otp = reg.json()["dev_otp"]
+    await client.post("/auth/verify-email", json={"token": f"{email}:{otp}"})
+
+    values = {"role": Role(role)}
+    if tenant_id is not None:
+        values["tenant_id"] = tenant_id
+    await db_session.execute(update(User).where(User.email == email).values(**values))
+    await db_session.commit()
+
+    row = (await db_session.execute(select(User).where(User.email == email))).scalars().first()
+    return {"id": str(row.id), "email": email, "name": name}
+
+
+# ── Tenant-scoped position assignment (University Admin) ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_tenant_admin_can_assign_position_in_tenant(client, db_session, mock_redis):
+    tenant = uuid.uuid4()
+    admin = await _make_tenant_admin(client, db_session, tenant)
+    target = await _seed_user(client, db_session, "moderator", tenant_id=tenant)
+
+    r = await client.patch(
+        f"/v1/admin/users/{target['id']}/position",
+        json={"staff_position": "dean"},
+        headers=_auth(admin["tokens"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["staff_position"] == "dean"
+
+
+@pytest.mark.asyncio
+async def test_tenant_admin_cannot_assign_position_cross_tenant(client, db_session, mock_redis):
+    admin = await _make_tenant_admin(client, db_session, uuid.uuid4())
+    target = await _seed_user(client, db_session, "admin", tenant_id=uuid.uuid4())  # other tenant
+
+    r = await client.patch(
+        f"/v1/admin/users/{target['id']}/position",
+        json={"staff_position": "dean"},
+        headers=_auth(admin["tokens"]),
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_tenant_admin_cannot_assign_position_to_student(client, db_session, mock_redis):
+    tenant = uuid.uuid4()
+    admin = await _make_tenant_admin(client, db_session, tenant)
+    target = await _seed_user(client, db_session, "student", tenant_id=tenant)
+
+    r = await client.patch(
+        f"/v1/admin/users/{target['id']}/position",
+        json={"staff_position": "mentor"},
+        headers=_auth(admin["tokens"]),
+    )
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_tenant_admin_cannot_suspend_cross_tenant(client, db_session, mock_redis):
+    admin = await _make_tenant_admin(client, db_session, uuid.uuid4())
+    target = await _seed_user(client, db_session, "student", tenant_id=uuid.uuid4())
+
+    r = await client.patch(
+        f"/v1/admin/users/{target['id']}/status",
+        json={"status": "suspended"},
+        headers=_auth(admin["tokens"]),
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_user_search_matches_name_and_email_scoped_to_tenant(client, db_session, mock_redis):
+    tenant = uuid.uuid4()
+    admin = await _make_tenant_admin(client, db_session, tenant)
+    await _seed_user(client, db_session, "student", tenant_id=tenant, name="Tahmid Karim")
+    await _seed_user(client, db_session, "student", tenant_id=tenant, name="Nusrat Jahan")
+    # Same name in a different tenant must NOT surface.
+    await _seed_user(client, db_session, "student", tenant_id=uuid.uuid4(), name="Tahmid Other")
+
+    r = await client.get("/v1/admin/users?q=Tahmid", headers=_auth(admin["tokens"]))
+    assert r.status_code == 200
+    names = [u["full_name"] for u in r.json()["items"]]
+    assert "Tahmid Karim" in names
+    assert "Nusrat Jahan" not in names
+    assert "Tahmid Other" not in names
 
 
 @pytest.mark.asyncio

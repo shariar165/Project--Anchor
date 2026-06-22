@@ -2,7 +2,7 @@ import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -64,6 +64,7 @@ async def list_users(
     page: int = Query(default=1, ge=1),
     role: Optional[str] = Query(default=None),
     user_status: Optional[str] = Query(default=None, alias="status"),
+    search: Optional[str] = Query(default=None, alias="q", max_length=120),
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
@@ -72,6 +73,10 @@ async def list_users(
     # Non-super_admin callers are scoped to their own tenant
     if token.role != "super_admin" and token.tenant_id:
         q = q.where(User.tenant_id == token.tenant_id)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        q = q.where(or_(User.full_name.ilike(term), User.email.ilike(term)))
 
     if role:
         try:
@@ -204,7 +209,7 @@ async def update_user_position(
     body: UpdatePositionRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    token: TokenData = Depends(require_role("super_admin")),
+    token: TokenData = Depends(require_role("admin", "moderator")),
 ):
     if body.staff_position is not None and body.staff_position not in STAFF_POSITIONS:
         raise HTTPException(
@@ -215,6 +220,12 @@ async def update_user_position(
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalars().first()
     if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    # Non-super_admin callers can only act within their own tenant; 404 (not 403)
+    # so the existence of cross-tenant users is not leaked.
+    if token.role != "super_admin" and (
+        not token.tenant_id or user.tenant_id != token.tenant_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
     if user.role not in (Role.admin, Role.moderator):
         raise HTTPException(
@@ -248,6 +259,12 @@ async def update_user_status(
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalars().first()
     if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    # Non-super_admin callers can only act within their own tenant; 404 (not 403)
+    # so the existence of cross-tenant users is not leaked.
+    if token.role != "super_admin" and (
+        not token.tenant_id or user.tenant_id != token.tenant_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
     if user.id == token.user_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Cannot change your own status")
