@@ -1866,7 +1866,130 @@ function ITDashboard({ onGo }) {
   );
 }
 
-Object.assign(window, { UniDashboard });
+// ── Insights · University analytics ────────────────────────────────────────────
+// Tenant-scoped, campus-ops aggregates from GET /v1/admin/analytics. Mirrors the
+// Super Admin "Platform analytics" layout but focused on what a uni admin manages.
+
+const _APP_STAGE_LABELS = { mentor: 'Mentor', department_head: 'Dept. head', dean: 'Dean', accounts: 'Accounts' };
+
+// One labelled row with an inline 14-day area-chart trend.
+function TrendRow({ label, series, color }) {
+  const data = (series || []).map(p => ({ d: p.date ? p.date.slice(8, 10) : '', v: p.count }));
+  const total = (series || []).reduce((s, p) => s + p.count, 0);
+  const gid = 'trend_' + label.replace(/\W+/g, '');
+  return (
+    <div className="flex items-center gap-3 hair-b border-b last:border-b-0 pb-2">
+      <div className="w-28 shrink-0">
+        <div className="text-[13px] text-[var(--ink)]">{label}</div>
+        <div className="font-mono text-[18px] text-[var(--navy)] leading-tight">{total}</div>
+      </div>
+      <div className="flex-1" style={{ height: 40 }}>
+        <ResponsiveContainer>
+          <AreaChart data={data} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+            <defs>
+              <linearGradient id={gid} x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stopColor={color} stopOpacity={0.3} />
+                <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <Tooltip contentStyle={{ background: '#FDFBF7', border: '1px solid #E5E0D6', borderRadius: 2, fontSize: 12 }} labelFormatter={() => label} />
+            <Area type="monotone" dataKey="v" stroke={color} strokeWidth={1.5} fill={`url(#${gid})`} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function UniAnalytics({ onGo }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const load = useCallback(() => {
+    setLoading(true); setError('');
+    AnchorAPI.apiGet('/v1/admin/analytics')
+      .then(d => setData(d))
+      .catch(e => setError(e.message || 'Failed to load'))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const f = data?.filings || {}, a = data?.applications || {}, al = data?.alerts || {}, u = data?.users || {}, ct = data?.content || {}, series = data?.series || {};
+  const stageData = Object.fromEntries(Object.entries(a.by_stage || {}));
+
+  return (
+    <>
+      <PageHeader
+        title="Insights"
+        bn="বিশ্লেষণ"
+        description="Aggregate, anonymized analytics for your university — complaints, applications, alerts, and 14-day activity trends."
+        actions={<GhostButton size="sm" icon="refresh-cw" onClick={load}>Refresh</GhostButton>}
+      />
+
+      {loading ? (
+        <div className="p-10 text-center text-[13px] text-[var(--muted)]">Loading…</div>
+      ) : error ? (
+        <AuditNote tone="red" icon="alert-triangle">
+          <span>{error} </span>
+          <button onClick={load} className="underline font-medium ml-1">Retry →</button>
+        </AuditNote>
+      ) : (
+        <>
+          <div className="grid grid-cols-5 gap-4 mb-4">
+            <KpiCard label="Open complaints" value={f.open ?? 0} subtle="in the pipeline" />
+            <KpiCard label="Resolution rate" value={(f.resolution_rate ?? 0) + '%'} subtle={`${f.resolved ?? 0} of ${f.total ?? 0}`} accent="sage" />
+            <KpiCard label="Escalation rate" value={(f.escalation_rate ?? 0) + '%'} subtle={`${f.escalated ?? 0} escalated`} accent="gold" />
+            <KpiCard label="Avg resolution" value={_fmtResolution(f.avg_resolution_secs)} subtle="submit → resolve" />
+            <KpiCard label="Active alerts" value={al.active ?? 0} subtle={`${al.false_alarm_30d ?? 0} false · 30d`} accent="ember" />
+          </div>
+
+          <div className="grid gap-4 mb-4" style={{ gridTemplateColumns: '1fr 1fr' }}>
+            <Card>
+              <SectionLabel right={<MonoChip>14d</MonoChip>}>Activity trends</SectionLabel>
+              <div className="space-y-3">
+                <TrendRow label="Complaints" series={series.filings_14d} color="#0B1D35" />
+                <TrendRow label="Applications" series={series.applications_14d} color="#4A6B5C" />
+                <TrendRow label="Alerts" series={series.alerts_14d} color="#C44536" />
+              </div>
+            </Card>
+            <Card>
+              <SectionLabel>Complaints by category</SectionLabel>
+              <BreakdownBars data={f.by_category} color="var(--sage)" />
+            </Card>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <Card>
+              <SectionLabel>Caseload by status</SectionLabel>
+              <BreakdownBars data={f.by_state} color="var(--navy)" />
+            </Card>
+            <Card>
+              <SectionLabel right={<MonoChip>{a.in_review ?? 0} in review</MonoChip>}>Application pipeline</SectionLabel>
+              <BreakdownBars data={stageData} color="var(--gold)" labelMap={_APP_STAGE_LABELS} />
+              <div className="mt-3 hair-t border-t pt-3 flex items-center justify-between text-[12px]">
+                <span className="text-[var(--muted)]">Approval rate</span>
+                <span className="font-mono text-[var(--ink)]">{(a.approval_rate ?? 0)}% <span className="text-[var(--muted)]">({a.approved ?? 0}/{a.decided ?? 0})</span></span>
+              </div>
+            </Card>
+            <Card>
+              <SectionLabel>Tenant overview</SectionLabel>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-[12.5px]"><span className="text-[var(--muted)]">Users</span><span className="font-mono text-[var(--ink)]">{(u.total ?? 0).toLocaleString()}</span></div>
+                <div className="flex items-center justify-between text-[12.5px]"><span className="text-[var(--muted)]">Notices</span><span className="font-mono text-[var(--ink)]">{(ct.notices ?? 0).toLocaleString()}</span></div>
+                <div className="flex items-center justify-between text-[12.5px]"><span className="text-[var(--muted)]">Feed posts</span><span className="font-mono text-[var(--ink)]">{(ct.feed_posts ?? 0).toLocaleString()}</span></div>
+                <div className="flex items-center justify-between text-[12.5px]"><span className="text-[var(--muted)]">Total complaints</span><span className="font-mono text-[var(--ink)]">{(f.total ?? 0).toLocaleString()}</span></div>
+              </div>
+            </Card>
+          </div>
+
+          <div className="text-[11px] text-[var(--muted)] font-mono">generated {data?.generated_at ? new Date(data.generated_at).toLocaleString() : '—'}</div>
+        </>
+      )}
+    </>
+  );
+}
+
+Object.assign(window, { UniDashboard, UniAnalytics });
 </script>
 <script type="text/babel">
 // University Complaints — moderation queue + slide-in detail (live API)
@@ -11289,8 +11412,7 @@ function uniView(route, onGo, role, dark, setDark) {
     case '/university/grievances/departments': return <UniDeptGrievances />;
     case '/university/hostel': return <UniHostel />;
     case '/university/verification-feed': return <UniVerificationFeed />;
-    case '/university/analytics': return <StubScreen title="Department analytics" description="Aggregate, anonymized analytics for your department." icon="bar-chart-3"
-      items={['Complaint trends','Resolution rate','Escalation rate','Avg response time','Day × hour heatmap']} />;
+    case '/university/analytics': return <UniAnalytics onGo={onGo} />;
     case '/university/users': return <StubScreen title="Users" description="Students, teachers, and admin staff in your tenant. CSV import, role assignment, deactivation." icon="users"
       items={['Students · 8,421','Teachers · 142','Admin staff · 14','Pending verification · 42']} />;
     case '/university/settings': return <SettingsScreen mode="uni" dark={dark} setDark={setDark} onGo={onGo} />;

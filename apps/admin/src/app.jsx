@@ -153,8 +153,7 @@ function uniView(route, onGo, role, dark, setDark) {
     case '/university/grievances/departments': return <UniDeptGrievances />;
     case '/university/hostel': return <UniHostel />;
     case '/university/verification-feed': return <UniVerificationFeed />;
-    case '/university/analytics': return <StubScreen title="Department analytics" description="Aggregate, anonymized analytics for your department." icon="bar-chart-3"
-      items={['Complaint trends','Resolution rate','Escalation rate','Avg response time','Day × hour heatmap']} />;
+    case '/university/analytics': return <UniAnalytics onGo={onGo} />;
     case '/university/users': return <StubScreen title="Users" description="Students, teachers, and admin staff in your tenant. CSV import, role assignment, deactivation." icon="users"
       items={['Students · 8,421','Teachers · 142','Admin staff · 14','Pending verification · 42']} />;
     case '/university/settings': return <SettingsScreen mode="uni" dark={dark} setDark={setDark} onGo={onGo} />;
