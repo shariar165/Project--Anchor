@@ -105,12 +105,12 @@ function HomeScreen() {
   ];
 
   const countryTiles = [
-    { k: 'fir',     label: 'Draft FIR / GD',   sub: 'AI-assisted document', Icon: IconGavel,  route: 'compose', params: { kind: 'gd' } },
+    { k: 'fir',     label: 'Draft FIR / GD',   sub: 'AI-assisted document', Icon: IconGavel,  route: 'police-reports' },
     { k: 'lawyer',  label: 'Find a lawyer',    sub: 'End-to-end encrypted', Icon: IconScale,  route: 'lawyers' },
     { k: 'zones',   label: 'Red zone map',     sub: 'Dhaka · live overlay',  Icon: IconMap,    route: 'map' },
     { k: 'rights',  label: 'Know your rights', sub: 'BD Penal Code · DV Act', Icon: IconBook, route: 'rights' },
     { k: 'feed',    label: 'Publish news',  sub: 'Human-moderated',     Icon: IconNews,   route: 'feed-publish' },
-    { k: 'officer', label: 'Officer scorecard',sub: 'Public accountability', Icon: IconBadge },
+    { k: 'officer', label: 'Officer scorecard',sub: 'Public accountability', Icon: IconBadge, route: 'officer-scorecard' },
   ];
   const tiles = mode === 'campus' ? campusTiles : countryTiles;
 

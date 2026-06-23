@@ -696,6 +696,13 @@ function RouteView() {
     profile: ProfileScreen,
     compose: ComposeScreen,
     rights:  RightsScreen,
+    // National-mode: FIR/GD drafting + officer scorecard
+    'police-reports':    PoliceReportsListScreen,
+    'new-police-report': NewPoliceReportScreen,
+    'police-report':     PoliceReportDetailScreen,
+    'officer-scorecard': OfficerScorecardScreen,
+    'police-station':    StationDetailScreen,
+    'rate-station':      RateStationScreen,
     // Campus application system
     'applications':    ApplicationsListScreen,
     'new-application': NewApplicationScreen,

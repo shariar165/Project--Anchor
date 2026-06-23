@@ -44,6 +44,9 @@ from app.routers import super_incidents as super_incidents_router
 from app.routers import admin_lawyers as admin_lawyers_router
 from app.routers import e2ee as e2ee_router
 from app.routers import messaging as messaging_router
+from app.routers import police_reports as police_reports_router
+from app.routers import officer_scorecards as officer_scorecards_router
+from app.routers import admin_officer_scorecards as admin_officer_scorecards_router
 
 
 @asynccontextmanager
@@ -57,9 +60,11 @@ async def lifespan(app: FastAPI):
         from app.database import AsyncSessionLocal
         from app.services.filing_svc import seed_templates
         from app.services.legal_rights_svc import seed_legal_rights
+        from app.services.officer_scorecard_svc import seed_stations
         async with AsyncSessionLocal() as _db:
             await seed_templates(_db)
             await seed_legal_rights(_db)
+            await seed_stations(_db)
     except Exception:
         pass
     yield
@@ -115,6 +120,9 @@ def create_app() -> FastAPI:
     app.include_router(admin_lawyers_router.router)
     app.include_router(e2ee_router.router)
     app.include_router(messaging_router.router)
+    app.include_router(police_reports_router.router)
+    app.include_router(officer_scorecards_router.router)
+    app.include_router(admin_officer_scorecards_router.router)
     app.include_router(admin_timetable_router.router)
     app.include_router(geofence_router.router)
     # Campus zones (admin polygon CRUD) — must be included before zones_router to avoid /{id} conflict

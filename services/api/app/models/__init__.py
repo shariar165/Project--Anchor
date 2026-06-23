@@ -43,6 +43,8 @@ from app.models.lawyer import Lawyer
 from app.models.legal_right import LegalRight
 from app.models.routine import AcademicRoutine, RoutineStatus
 from app.models.dept_rating import DepartmentRating
+from app.models.police_report import PoliceReport
+from app.models.officer_scorecard import PoliceStation, Officer, OfficerRating
 from app.models.tenant_geofence import TenantGeofence
 from app.models.timetable import (
     TimetableTerm, TimetableBatch, TimetableSection, TimetableLabGroup,
@@ -97,6 +99,9 @@ __all__ = [
     "AcademicRoutine", "RoutineStatus",
     # Department Ratings
     "DepartmentRating",
+    # National-mode police features
+    "PoliceReport",
+    "PoliceStation", "Officer", "OfficerRating",
     # Tenant Geofence
     "TenantGeofence",
     # Timetable Generator

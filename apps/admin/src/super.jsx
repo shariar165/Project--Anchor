@@ -3776,4 +3776,130 @@ function SuperVerifyLawyers() {
   );
 }
 
-Object.assign(window, { SuperDashboard, SuperTenants, SuperOnboard, SuperTenantDetail, SuperAuditLogs, SuperDeanonymization, SuperVerificationFeed, SuperAIHealth, SuperEncryption, SuperAnalytics, SuperIncidents, SuperAlerts, SuperModeration, SuperUsers, SuperRedZones, SuperPolicy, SuperLegalCorpus, SuperVerifyLawyers });
+// ─────────────────────────────────────────────────────────────────────────────
+// SuperOfficerScorecards — moderation queue for national police-accountability
+// ratings. Approving a rating makes it count toward the station's public score.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const OFFICER_RATING_TONE = { pending: 'gold', approved: 'sage', rejected: 'ember' };
+
+function SuperOfficerScorecards() {
+  const [items, setItems]     = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [page, setPage]       = useState(1);
+  const [statusFilter, setStatusFilter] = useState('pending');
+  const [busyId, setBusyId]   = useState(null);
+
+  async function load() {
+    setLoading(true); setError('');
+    try {
+      const params = new URLSearchParams({ page });
+      if (statusFilter) params.set('status', statusFilter);
+      const data = await AnchorAPI.apiGet(`/v1/admin/officer-scorecards/ratings?${params}`);
+      setItems(Array.isArray(data) ? data : (data.items || []));
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, [page, statusFilter]);
+
+  async function moderate(id, action) {
+    setBusyId(id);
+    try { await AnchorAPI.apiPostAuth(`/v1/admin/officer-scorecards/ratings/${id}/moderate`, { action }); load(); }
+    catch (e) { alert(e.message); }
+    finally { setBusyId(null); }
+  }
+
+  const Score = ({ label, v }) => (
+    <span className="font-mono text-[12px] text-[var(--graphite)]" title={label}>{v}</span>
+  );
+
+  return (
+    <>
+      <PageHeader
+        title="Officer Scorecards"
+        bn="পুলিশ স্কোরকার্ড"
+        description="Moderate community ratings of police stations and officers. Only approved ratings count toward a station's public score. Reject defamatory, abusive, or off-topic submissions."
+      />
+
+      <div className="flex items-center gap-2 mb-4">
+        {['pending', 'approved', 'rejected', ''].map(s => (
+          <button
+            key={s || 'all'}
+            onClick={() => { setStatusFilter(s); setPage(1); }}
+            className={`px-3 py-1.5 rounded-sm text-[12px] hair border transition capitalize ${statusFilter === s ? 'bg-[var(--navy)] text-white border-[var(--navy)]' : 'text-[var(--graphite)] hover:bg-[var(--mist)]/40'}`}
+          >
+            {s || 'All'}
+          </button>
+        ))}
+        <span className="ml-auto font-mono text-[12px] text-[var(--muted)]">{items.length} on this page</span>
+      </div>
+
+      <Card noPad>
+        {loading && <div className="p-8 text-center text-[13px] text-[var(--muted)]">Loading…</div>}
+        {error && <div className="p-4 text-[13px] text-[var(--red)]">{error}</div>}
+        {!loading && !error && items.length === 0 && (
+          <div className="p-8 text-center text-[13px] text-[var(--muted)]">No ratings.</div>
+        )}
+        {!loading && !error && items.length > 0 && (
+          <DataTable
+            columns={[
+              { key: 'station', label: 'Station / officer', render: r => (
+                <div>
+                  <div className="text-[13px] font-medium text-[var(--ink)]">{r.station_name || '—'}</div>
+                  <div className="text-[11px] text-[var(--muted)]">{r.officer_name ? `Officer: ${r.officer_name}` : 'Station-level'}</div>
+                </div>
+              )},
+              { key: 'scores', label: 'Scores (R/C/I/O)', render: r => (
+                <div className="flex items-center gap-2">
+                  <Score label="Responsiveness" v={r.responsiveness}/>
+                  <span className="text-[var(--mist)]">/</span>
+                  <Score label="Conduct" v={r.conduct}/>
+                  <span className="text-[var(--mist)]">/</span>
+                  <Score label="Integrity" v={r.integrity}/>
+                  <span className="text-[var(--mist)]">/</span>
+                  <span className="font-mono text-[12px] font-semibold text-[var(--ink)]" title="Overall">{r.overall}★</span>
+                </div>
+              )},
+              { key: 'comment', label: 'Comment', render: r => (
+                <div className="text-[12px] text-[var(--graphite)] max-w-[280px] truncate" title={r.comment || ''}>
+                  {r.comment || <span className="text-[var(--muted)]">—</span>}
+                  {r.anonymous && <span className="ml-1 text-[10px] text-[var(--muted)]">(anon)</span>}
+                </div>
+              )},
+              { key: 'status', label: 'Status', render: r => (
+                <Tag tone={OFFICER_RATING_TONE[r.status] || 'mist'}>{r.status}</Tag>
+              )},
+              { key: 'actions', label: '', render: r => (
+                <div className="flex items-center gap-2 justify-end">
+                  {r.status !== 'approved' && (
+                    <PrimaryButton mode="sage" size="sm" disabled={busyId === r.id}
+                      onClick={() => moderate(r.id, 'approve')}>
+                      {busyId === r.id ? '…' : 'Approve'}
+                    </PrimaryButton>
+                  )}
+                  {r.status !== 'rejected' && (
+                    <GhostButton size="sm" danger disabled={busyId === r.id}
+                      onClick={() => moderate(r.id, 'reject')}>
+                      Reject
+                    </GhostButton>
+                  )}
+                </div>
+              )},
+            ]}
+            rows={items}
+          />
+        )}
+      </Card>
+
+      <div className="flex items-center justify-center gap-3 mt-4">
+        <GhostButton size="sm" disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>Prev</GhostButton>
+        <span className="font-mono text-[12px] text-[var(--muted)]">Page {page}</span>
+        <GhostButton size="sm" disabled={items.length < 50} onClick={() => setPage(p => p + 1)}>Next</GhostButton>
+      </div>
+    </>
+  );
+}
+
+Object.assign(window, { SuperDashboard, SuperTenants, SuperOnboard, SuperTenantDetail, SuperAuditLogs, SuperDeanonymization, SuperVerificationFeed, SuperAIHealth, SuperEncryption, SuperAnalytics, SuperIncidents, SuperAlerts, SuperModeration, SuperUsers, SuperRedZones, SuperPolicy, SuperLegalCorpus, SuperVerifyLawyers, SuperOfficerScorecards });
