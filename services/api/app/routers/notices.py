@@ -17,7 +17,7 @@ from app.schemas.notices import (
     NoticeGenerateRequest,
     NoticeGenerateResponse,
 )
-from app.services import notice_svc, notice_ai_svc
+from app.services import notice_svc, notice_ai_svc, export_svc
 from app.services.token import decode_token, is_blacklisted
 
 router = APIRouter(prefix="/v1/notices", tags=["notices"])
@@ -99,6 +99,39 @@ async def create_notice(
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
     return await notice_svc.create_notice(db, body, published_by=token.user_id)
+
+
+@router.get("/{notice_id}/export")
+async def export_notice(
+    notice_id: uuid.UUID,
+    format: str = Query(default="pdf"),
+    db: AsyncSession = Depends(get_db),
+    token: TokenData | None = Depends(_opt_user),
+):
+    """Download a single notice as PDF / DOCX / CSV. Students can only export
+    published notices; admins/moderators can export any."""
+    notice = await notice_svc.get_notice(db, notice_id)
+    if notice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Notice not found")
+    if not _is_admin(token) and notice.status != NoticeStatus.published:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Notice not found")
+
+    meta = [("Scope", str(notice.scope).replace("_", " ").title())]
+    if notice.dept:
+        meta.append(("Department", notice.dept))
+    if notice.batch:
+        meta.append(("Batch", notice.batch))
+    when = notice.published_at or notice.created_at
+    if when:
+        meta.append(("Published", when.strftime("%d %b %Y")))
+
+    doc = export_svc.ExportDoc(
+        title=notice.title,
+        subtitle="Campus Notice",
+        meta=meta,
+        body=notice.body or "",
+    )
+    return export_svc.export_response(doc, format, f"notice-{str(notice.id)[:8]}")
 
 
 @router.patch("/{notice_id}", response_model=NoticeResponse)
