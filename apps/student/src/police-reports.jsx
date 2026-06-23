@@ -196,7 +196,11 @@ function PrStepBar({ step }) {
 }
 
 function NewPoliceReportScreen({ params = {} }) {
-  const { go, lang } = useApp();
+  const { go, lang: rawLang } = useApp();
+  // FIR/GD draft is content: "Both" (BI) drafts in Bangla, and the backend only
+  // accepts en/bn — collapse BI→BN so 'BI' is never forwarded.
+  const lang = (typeof contentLang === 'function') ? contentLang(rawLang)
+                                                   : ((rawLang === 'BN' || rawLang === 'BI') ? 'BN' : 'EN');
   const [step, setStep] = _prS(1);
   const [reportType, setReportType] = _prS(params.kind === 'fir' ? 'fir' : 'gd');
   const [situation, setSituation] = _prS('');
