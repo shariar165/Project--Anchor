@@ -40,7 +40,7 @@ function EntrySwitcher({ onGo, dark, setDark }) {
               tag="University Admin Panel"
               title="Run a university tenant."
               bn="বিশ্ববিদ্যালয় প্রশাসন"
-              description="Department heads, deans, proctors, provost & VC office. Complaint queues, routine builder, notices, and campus alerts."
+              description="Department heads, deans, proctors, provost & VC office. Complaint queues, routine editor, notices, and campus alerts."
               roles={['Department Head', 'Dean', 'Proctor', 'Provost', 'IT Admin']}
               cta="Enter University Admin"
               onEnter={() => onGo('/university/login')} />

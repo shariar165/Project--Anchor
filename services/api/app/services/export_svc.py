@@ -17,12 +17,13 @@ from dataclasses import dataclass, field
 from fastapi import HTTPException, status
 from fastapi.responses import Response
 
-ALLOWED_FORMATS = ("pdf", "docx", "csv")
+ALLOWED_FORMATS = ("pdf", "docx", "csv", "xlsx")
 
 _MEDIA_TYPES = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "csv": "text/csv",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
 ORG_NAME = "Daffodil International University"
@@ -180,9 +181,111 @@ def render_csv(doc: ExportDoc) -> bytes:
     return buf.getvalue().encode("utf-8-sig")  # BOM so Excel renders UTF-8 correctly
 
 
+# ── XLSX ──────────────────────────────────────────────────────────────────────
+
+def render_xlsx(doc: ExportDoc) -> bytes:
+    """Render to an editable .xlsx workbook. The table block becomes a real
+    header-row + data-rows sheet so it round-trips through ``parse_table``."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Routine"
+
+    row = 1
+    title_cell = ws.cell(row=row, column=1, value=doc.title)
+    title_cell.font = Font(bold=True, size=14)
+    row += 1
+    if doc.subtitle:
+        sub = ws.cell(row=row, column=1, value=doc.subtitle)
+        sub.font = Font(italic=True, size=10)
+        row += 1
+
+    if doc.meta:
+        row += 1
+        for k, v in doc.meta:
+            kc = ws.cell(row=row, column=1, value=str(k))
+            kc.font = Font(bold=True)
+            ws.cell(row=row, column=2, value=str(v))
+            row += 1
+
+    if doc.body:
+        row += 1
+        ws.cell(row=row, column=1, value=doc.body)
+        row += 1
+
+    if doc.table_headers and doc.table_rows:
+        row += 1
+        for j, header in enumerate(doc.table_headers, start=1):
+            hc = ws.cell(row=row, column=j, value=str(header))
+            hc.font = Font(bold=True)
+        row += 1
+        for data_row in doc.table_rows:
+            for j, cell in enumerate(data_row, start=1):
+                ws.cell(row=row, column=j, value=("" if cell is None else str(cell)))
+            row += 1
+
+        # Widen columns a little for legibility / easy editing
+        for j, header in enumerate(doc.table_headers, start=1):
+            width = max(12, min(40, len(str(header)) + 4))
+            ws.column_dimensions[ws.cell(row=1, column=j).column_letter].width = width
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ── Spreadsheet parsing (re-import) ───────────────────────────────────────────
+
+def parse_table(
+    file_bytes: bytes,
+    content_type: str = "",
+    header_hints: tuple[str, ...] | None = None,
+) -> list[dict]:
+    """Parse an uploaded CSV/XLSX into a list of lowercased-header dicts.
+
+    Standalone helper for routine re-import — independent of the timetable
+    generator's own parser. Because our own exports prepend a title/meta block,
+    the header row is located by ``header_hints`` (the first row containing any
+    hint); without hints, the first non-empty row is the header. This lets an
+    exported sheet round-trip straight back in.
+    """
+    ct = (content_type or "").lower()
+    if "spreadsheet" in ct or "xlsx" in ct or "excel" in ct or ct.endswith(".xlsx"):
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+        ws = wb.active
+        raw_rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    else:
+        text = file_bytes.decode("utf-8-sig", errors="replace")
+        raw_rows = [row for row in csv.reader(io.StringIO(text))]
+
+    # Drop fully-empty rows
+    rows = [r for r in raw_rows if any(c is not None and str(c).strip() != "" for c in r)]
+    if not rows:
+        return []
+
+    header_idx = 0
+    if header_hints:
+        hints = tuple(h.lower() for h in header_hints)
+        for i, r in enumerate(rows):
+            cells = [str(c).strip().lower() for c in r if c is not None]
+            if any(any(h in cell for h in hints) for cell in cells):
+                header_idx = i
+                break
+
+    headers = [str(h).strip().lower() if h is not None else "" for h in rows[header_idx]]
+    return [
+        {headers[j]: (str(v).strip() if v is not None else "") for j, v in enumerate(row) if j < len(headers)}
+        for row in rows[header_idx + 1:]
+    ]
+
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
-_RENDERERS = {"pdf": render_pdf, "docx": render_docx, "csv": render_csv}
+_RENDERERS = {"pdf": render_pdf, "docx": render_docx, "csv": render_csv, "xlsx": render_xlsx}
 
 
 def _safe_filename(stem: str) -> str:
