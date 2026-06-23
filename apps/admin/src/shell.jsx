@@ -110,6 +110,7 @@ function AdminShell({ mode='uni', route, onGo, role, setRole, dark, setDark, chi
       { icon:'newspaper', label:'Verification Feed', route:'/super/verification-feed' },
       { icon:'users-round', label:'Users', route:'/super/users' },
       { icon:'scale', label:'Verify Lawyers', route:'/super/verify-lawyers' },
+      { icon:'award', label:'Officer Scorecards', route:'/super/officer-scorecards' },
       { icon:'lock-keyhole', label:'Dead Man\u2019s Switch', route:'/super/dms' },
     ]},
     { group:'System', items:[
