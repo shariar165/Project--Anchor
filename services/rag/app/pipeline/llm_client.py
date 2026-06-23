@@ -17,6 +17,12 @@ MAIN_MODEL = "qwen3:1.7b"
 def _ollama_base() -> str:
     return get_settings().ollama_base_url
 
+# When OLLAMA_BASE_URL points at an ngrok tunnel, the free tier serves an HTML
+# "browser warning" interstitial unless this header is present — which would make
+# our JSON parsing fail and silently drop us to the stub. Harmless against a local
+# Ollama (it just ignores the header), so we always send it.
+_OLLAMA_HEADERS = {"ngrok-skip-browser-warning": "true"}
+
 _available: bool | None = None
 
 
@@ -25,8 +31,9 @@ async def _check_availability() -> bool:
     if _available is not None:
         return _available
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get(f"{_ollama_base()}/api/tags")
+        # 5s (not 2s) because the tunnel adds internet round-trip latency.
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{_ollama_base()}/api/tags", headers=_OLLAMA_HEADERS)
             _available = r.status_code == 200
     except Exception:
         _available = False
@@ -41,10 +48,20 @@ async def generate(prompt: str, model: str = MAIN_MODEL, temperature: float = 0.
         async with httpx.AsyncClient(timeout=180.0) as client:
             resp = await client.post(
                 f"{_ollama_base()}/api/generate",
+                headers=_OLLAMA_HEADERS,
                 json={
                     "model": model,
                     "prompt": prompt,
                     "stream": False,
+                    # qwen3 defaults to a long hidden reasoning trace before
+                    # answering, which dominates latency — especially over the
+                    # ngrok tunnel to a remote Ollama. Disable it: the pipeline
+                    # already structures reasoning in stages 4/5.
+                    "think": False,
+                    # Pin the model in memory indefinitely. On CPU-only hosts the
+                    # cold reload (after Ollama's default 5-min idle unload) costs
+                    # 60s+ and times out the pipeline; warm calls are ~3s.
+                    "keep_alive": -1,
                     "options": {"temperature": temperature},
                 },
             )

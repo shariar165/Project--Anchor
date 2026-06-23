@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 # Run the RAG service locally (Option B: RAG on your PC, API on Railway).
 #
-#   1. Start Ollama first:   ollama serve   (and: ollama pull qwen3:8b)
+#   1. Start Ollama first:   ollama serve   (and: ollama pull qwen3:1.7b)
 #   2. Run this script:      .\run-local.ps1
 #   3. In a 2nd terminal:    ngrok http 8001
 #   4. Copy the ngrok https URL into Railway API var RAG_SERVICE_URL.
