@@ -2,6 +2,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.34
 httpx>=0.28
 pydantic[email]>=2.11
+python-dotenv>=1.0
 
 # AI Engine — RAG pipeline
 sentence-transformers>=3.0

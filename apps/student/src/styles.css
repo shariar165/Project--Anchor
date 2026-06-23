@@ -78,6 +78,14 @@ body {
 .serif { font-family: var(--font-serif); font-optical-sizing: auto; }
 .bn    { font-family: var(--font-bn); }
 .mono  { font-family: var(--font-mono); }
+
+/* Full-Bangla mode: make Hind Siliguri the inherited UI font so body/labels
+   render in a proper Bangla face. Headings using an inline serif fall back to
+   the browser's Bangla font automatically (Fraunces has no Bangla glyphs), so
+   nothing renders as tofu. In EN / BI (mixed) mode the Latin stack is kept and
+   Bangla content opts in per-element via the .bn class. */
+[data-lang="BN"] body,
+[data-lang="BN"] { font-family: var(--font-bn); }
 .eyebrow {
   font-family: var(--font-sans);
   font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase;

@@ -78,8 +78,8 @@ function AdminShell({ mode='uni', route, onGo, role, setRole, dark, setDark, chi
       { icon:'map', label:'Campus Geofence', route:'/university/geofence' },
     ]},
     { group:'Academic', items:[
-      { icon:'calendar-clock', label:'Routine Builder', route:'/university/routine' },
       { icon:'layout-grid', label:'Timetable Generator', route:'/university/timetable' },
+      { icon:'calendar-clock', label:'Routine Editor', route:'/university/routine' },
       { icon:'megaphone', label:'Notices', route:'/university/notices' },
     ]},
     { group:'Insights', items:[

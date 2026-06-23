@@ -504,7 +504,11 @@ function ChatInputBar({ input, setInput, onSend, loading, lang, mode }) {
 // ─── Main ChatProScreen ───────────────────────────────────────────────────────
 
 function ChatProScreen() {
-  const { mode, go, back, lang, setLang, auth } = useApp();
+  const { mode, go, back, lang: rawLang, setLang, auth } = useApp();
+  // Chat is content: "Both" (BI / mixed) renders Bangla, and the backend only
+  // knows EN/BN — so collapse BI→BN here and never forward 'BI'.
+  const lang = (typeof contentLang === 'function') ? contentLang(rawLang)
+                                                   : ((rawLang === 'BN' || rawLang === 'BI') ? 'BN' : 'EN');
 
   const [conversations, setConversations] = useState(() => loadConversations());
   const [activeId, setActiveId] = useState(null);
@@ -637,12 +641,19 @@ function ChatProScreen() {
     const currentConvId = convId;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    // The RAG pipeline makes several LLM calls; when Ollama is remote (reached
+    // over an ngrok tunnel) the full round-trip can take well over 30s. Align
+    // with the API's 180s upstream timeout so we don't abort a live request.
+    const timeoutId = setTimeout(() => controller.abort(), 180000);
 
     try {
+      const accessToken = localStorage.getItem('anchor_access_token') || '';
       const resp = await fetch(`${AI_BASE_PRO}/ai/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { 'Authorization': 'Bearer ' + accessToken } : {}),
+        },
         body: JSON.stringify({ query: q, mode, lang, conversation_id: currentConvId || undefined }),
         signal: controller.signal,
       });
@@ -655,6 +666,10 @@ function ChatProScreen() {
       }
       if (resp.status === 502 || resp.status === 503) {
         pushError(nextMessages, aid, currentConvId, 'AI engine is offline. Please start the backend server.', 'offline', q);
+        return;
+      }
+      if (resp.status === 401) {
+        pushError(nextMessages, aid, currentConvId, 'Your session has expired. Please log in again.', 'auth', q);
         return;
       }
       if (!resp.ok) {

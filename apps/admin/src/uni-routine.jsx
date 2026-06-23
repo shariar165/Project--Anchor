@@ -1,450 +1,587 @@
-// Routine Builder — three-step workflow ending in the weekly grid timetable
+// Routine Editor — tweak the routines the Timetable Generator produces
+// (AcademicRoutine.slots). Tweak by hand, by Excel round-trip, or by
+// AI (local Ollama), see live conflicts, then publish to students. Fresh CP-SAT
+// generation lives in the untouched Timetable Generator (handoff button below).
 var { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+const RB_API = "/v1/routines";
+const RB_DAY_ORDER = ["Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+const RB_DAY_ABBR = { sat: "Saturday", sun: "Sunday", mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday" };
+const RB_SECTION_COLORS = ["#4A6B5C", "#B8893A", "#C44536", "#3B6EA5", "#7B5EA7", "#2E8B8B"];
+
+function rbDayIndex(day) {
+  const d = (day || "").trim().toLowerCase();
+  const full = RB_DAY_ABBR[d.slice(0, 3)] || day;
+  const i = RB_DAY_ORDER.findIndex(x => x.toLowerCase() === String(full).toLowerCase());
+  return i === -1 ? 99 : i;
+}
+
+function rbSlotTime(s) {
+  const t = (s.time || "").trim();
+  if (t) return t;
+  const a = (s.start_time || "").trim(), b = (s.end_time || "").trim();
+  if (a && b) return a + "-" + b;
+  return a || b || "";
+}
+
+// Sort key in minutes; campus afternoon slots (1:00–5:30) read as PM.
+function rbStartMins(timeStr) {
+  const first = String(timeStr || "").split("-")[0].trim();
+  const m = first.match(/(\d{1,2})(?::(\d{2}))?/);
+  if (!m) return 9999;
+  let h = parseInt(m[1], 10);
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  if (h < 8) h += 12; // 1:00 → 13:00
+  return h * 60 + min;
+}
+
+function rbStatusPill(status) {
+  if (status === "published") return <Tag tone="sage" icon="check-circle">Published</Tag>;
+  if (status === "archived") return <Tag tone="mist">Archived</Tag>;
+  return <Tag tone="gold" icon="pencil">Draft</Tag>;
+}
+
+// ── Root ──────────────────────────────────────────────────────────────────────
 function UniRoutine({ onGo }) {
-  const [step, setStep] = useState(2); // 0,1,2 -> Input / Generate / Review
-  const [tab, setTab] = useState('courses');
-  const [solving, setSolving] = useState(false);
-  const [solved, setSolved] = useState(true);
-  const [publishConfirm, setPublishConfirm] = useState(false);
-  const [dept, setDept] = useState('SWE');
-  const [semester, setSemester] = useState('Spring 2026');
-  const D = window.AnchorData;
+  const [routines, setRoutines] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [showNew, setShowNew] = useState(false);
+
+  const loadList = useCallback(async () => {
+    setLoading(true); setError("");
+    try {
+      const data = await AnchorAPI.apiGet(`${RB_API}?page=1`);
+      setRoutines(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setError(e.message || "Could not load routines");
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { loadList(); }, [loadList]);
+
+  if (selected) {
+    return (
+      <RoutineEditor
+        routineId={selected}
+        onBack={() => { setSelected(null); loadList(); }}
+        onGo={onGo}
+      />
+    );
+  }
 
   return (
     <>
       <PageHeader
-        title="Routine Builder"
-        bn="ক্লাসের রুটিন প্রস্তুতকারক"
-        description="Generate and publish the academic routine for your department. The solver respects hard constraints and minimises soft violations."
+        title="Routine Editor"
+        bn="ক্লাসের রুটিন সম্পাদক"
+        description="Open a routine produced by the Timetable Generator, then tweak it by hand, by Excel, or by AI — with live conflict checks — and publish it to students."
+        actions={<PrimaryButton mode="sage" icon="plus" onClick={() => setShowNew(true)}>New routine</PrimaryButton>}
+      />
+
+      {/* Generator handoff */}
+      <Card className="mb-5 flex items-center gap-4" >
+        <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: "rgba(74,107,92,0.10)" }}>
+          <Icon name="cpu" size={18} style={{ color: "var(--sage)" }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13.5px] font-medium text-[var(--ink)]">Need a fresh schedule from scratch?</div>
+          <div className="text-[12px] text-[var(--muted)]">The Timetable Generator runs the Google OR-Tools CP-SAT solver, then publishes routines here for you to fine-tune.</div>
+        </div>
+        <GhostButton icon="arrow-up-right" onClick={() => onGo && onGo("/university/timetable")}>Open Timetable Generator</GhostButton>
+      </Card>
+
+      {error && (
+        <div className="mb-4 text-[12.5px] px-3 py-2 rounded-sm" style={{ background: "rgba(232,49,42,0.08)", color: "var(--red)", border: "1px solid rgba(232,49,42,0.2)" }}>{error}</div>
+      )}
+
+      <Card noPad>
+        <div className="p-4 hair-b flex items-center gap-2">
+          <Icon name="calendar" size={14} style={{ color: "var(--sage)" }} />
+          <span className="font-medium text-[13.5px]">Your routines</span>
+          <span className="text-[12px] text-[var(--muted)]">· drafts and published</span>
+        </div>
+        {loading ? (
+          <div className="p-10 text-center text-[var(--muted)] text-[13px]">Loading…</div>
+        ) : routines.length === 0 ? (
+          <EmptyState
+            icon="calendar-plus"
+            title="No routines yet"
+            body="Generate one in the Timetable Generator, import an Excel sheet, or start a blank routine to build by hand."
+            action={<div className="flex items-center gap-2 mt-1">
+              <PrimaryButton mode="sage" icon="plus" onClick={() => setShowNew(true)}>New routine</PrimaryButton>
+              <GhostButton icon="cpu" onClick={() => onGo && onGo("/university/timetable")}>Timetable Generator</GhostButton>
+            </div>}
+          />
+        ) : (
+          <DataTable
+            onRowClick={r => setSelected(r.id)}
+            columns={[
+              { key: "title", label: "Routine", render: r => <span className="font-medium text-[var(--ink)]">{r.title}</span> },
+              { key: "department", label: "Dept", render: r => r.department ? <MonoChip>{r.department}</MonoChip> : <span className="text-[var(--muted)]">—</span> },
+              { key: "batch", label: "Batch / section", render: r => r.batch || <span className="text-[var(--muted)]">—</span> },
+              { key: "semester", label: "Semester", render: r => r.semester || <span className="text-[var(--muted)]">—</span> },
+              { key: "slots", label: "Classes", align: "right", render: r => <span className="font-mono text-[12px]">{(r.slots || []).length}</span> },
+              { key: "status", label: "Status", render: r => rbStatusPill(r.status) },
+              { key: "", label: "", render: () => <Icon name="chevron-right" size={15} className="text-[var(--muted)]" /> },
+            ]}
+            rows={routines}
+          />
+        )}
+      </Card>
+
+      {showNew && (
+        <NewRoutineForm
+          onClose={() => setShowNew(false)}
+          onCreated={id => { setShowNew(false); setSelected(id); }}
+        />
+      )}
+    </>
+  );
+}
+
+// ── New routine (blank draft) ─────────────────────────────────────────────────
+function NewRoutineForm({ onClose, onCreated }) {
+  const [form, setForm] = useState({ title: "", department: "", batch: "", semester: "", academic_year: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  async function submit() {
+    if (form.title.trim().length < 2) { setErr("Give the routine a title."); return; }
+    setBusy(true); setErr("");
+    try {
+      const created = await AnchorAPI.apiPostAuth(RB_API, {
+        title: form.title.trim(),
+        department: form.department.trim() || null,
+        batch: form.batch.trim() || null,
+        semester: form.semester.trim() || null,
+        academic_year: form.academic_year.trim() || null,
+        slots: [],
+      });
+      onCreated(created.id);
+    } catch (e) { setErr(e.message || "Could not create routine"); }
+    finally { setBusy(false); }
+  }
+
+  const field = (k, label, placeholder) => (
+    <div>
+      <label className="smallcaps text-[var(--muted)] mb-1 block">{label}</label>
+      <input value={form[k]} onChange={e => set(k, e.target.value)} placeholder={placeholder}
+        className="w-full px-2 py-1.5 hair border rounded-sm bg-white text-[13px]" />
+    </div>
+  );
+
+  return (
+    <SlideOver open={true} onClose={onClose}>
+      <div className="p-5 hair-b">
+        <div className="smallcaps text-[var(--muted)] mb-1">Routine Editor</div>
+        <h3 className="font-serif text-[22px] text-[var(--navy)]">New routine</h3>
+      </div>
+      <div className="p-5 space-y-4">
+        {field("title", "Title", "SWE Spring 2026 — Section A")}
+        <div className="grid grid-cols-2 gap-3">
+          {field("department", "Department", "SWE")}
+          {field("batch", "Batch / section", "Batch 41 (A)")}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {field("semester", "Semester", "Spring 2026")}
+          {field("academic_year", "Academic year", "2025-2026")}
+        </div>
+        {err && <div className="text-[var(--red)] text-[12px]">{err}</div>}
+        <PrimaryButton mode="sage" icon={busy ? "loader" : "plus"} className="w-full justify-center" onClick={submit} disabled={busy}>
+          {busy ? "Creating…" : "Create & edit"}
+        </PrimaryButton>
+        <div className="text-[11.5px] text-[var(--muted)]">Starts empty — add classes by hand, or import an Excel/CSV grid on the next screen.</div>
+      </div>
+    </SlideOver>
+  );
+}
+
+// ── Editor ────────────────────────────────────────────────────────────────────
+function RoutineEditor({ routineId, onBack, onGo }) {
+  const [routine, setRoutine] = useState(null);
+  const [slots, setSlots] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [conflicts, setConflicts] = useState([]);
+  const [editCell, setEditCell] = useState(null); // { slot, index|null }
+  const [publishConfirm, setPublishConfirm] = useState(false);
+  const [published, setPublished] = useState(false);
+  const [aiText, setAiText] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiPreview, setAiPreview] = useState(null); // { summary, new_slots }
+  const [aiError, setAiError] = useState("");
+  const fileRef = useRef(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await AnchorAPI.apiGet(`${RB_API}/${routineId}`);
+      setRoutine(data);
+      setSlots(Array.isArray(data.slots) ? data.slots : []);
+      setPublished(data.status === "published");
+    } catch (e) { setMsg(e.message || "Could not load routine"); }
+    finally { setLoading(false); }
+  }, [routineId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const validate = useCallback(async () => {
+    try {
+      const v = await AnchorAPI.apiGet(`${RB_API}/${routineId}/validate`);
+      setConflicts(v.conflicts || []);
+    } catch { setConflicts([]); }
+  }, [routineId]);
+
+  useEffect(() => { if (!loading) validate(); }, [loading, validate]);
+
+  const conflictIdx = useMemo(() => {
+    const set = new Set();
+    conflicts.forEach(c => (c.slot_indexes || []).forEach(i => set.add(i)));
+    return set;
+  }, [conflicts]);
+
+  // Persist the full slots array, then re-validate.
+  async function persist(nextSlots, note) {
+    setSaving(true); setMsg("");
+    try {
+      const updated = await AnchorAPI.apiPatch(`${RB_API}/${routineId}`, { slots: nextSlots });
+      setRoutine(updated);
+      setSlots(Array.isArray(updated.slots) ? updated.slots : nextSlots);
+      setPublished(updated.status === "published");
+      if (note) setMsg(note);
+      await validate();
+    } catch (e) { setMsg(e.message || "Save failed"); }
+    finally { setSaving(false); }
+  }
+
+  const days = useMemo(() => {
+    const seen = [];
+    slots.forEach(s => { const d = (s.day || "").trim(); if (d && !seen.includes(d)) seen.push(d); });
+    const arr = seen.length ? seen : RB_DAY_ORDER.slice(0, 6);
+    return arr.slice().sort((a, b) => rbDayIndex(a) - rbDayIndex(b));
+  }, [slots]);
+
+  const times = useMemo(() => {
+    const seen = [];
+    slots.forEach(s => { const t = rbSlotTime(s); if (t && !seen.includes(t)) seen.push(t); });
+    const arr = seen.length ? seen : ["8:30-10:00", "10:00-11:30", "11:30-1:00", "1:00-2:30", "2:30-4:00"];
+    return arr.slice().sort((a, b) => rbStartMins(a) - rbStartMins(b));
+  }, [slots]);
+
+  // (day|time) -> array of {slot, index}
+  const cellMap = useMemo(() => {
+    const m = {};
+    slots.forEach((s, index) => {
+      const key = (s.day || "").trim() + "||" + rbSlotTime(s);
+      (m[key] = m[key] || []).push({ slot: s, index });
+    });
+    return m;
+  }, [slots]);
+
+  function openCell(day, time, existing) {
+    if (existing) { setEditCell({ slot: existing.slot, index: existing.index }); return; }
+    const [start, end] = String(time).includes("-") ? time.split("-").map(x => x.trim()) : [time, ""];
+    setEditCell({ slot: { day, start_time: start, end_time: end, course_code: "", course_name: "", teacher: "", room: "" }, index: null });
+  }
+
+  function saveCell(slot, index) {
+    const next = slots.slice();
+    if (index === null || index === undefined) next.push(slot);
+    else next[index] = slot;
+    setEditCell(null);
+    persist(next, "Saved.");
+  }
+
+  function removeCell(index) {
+    const next = slots.filter((_, i) => i !== index);
+    setEditCell(null);
+    persist(next, "Class removed.");
+  }
+
+  // Excel import (authenticated multipart — mirrors the Timetable Generator).
+  async function handleImport(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setMsg("Importing…");
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await fetch(
+        `${window.ANCHOR_API_URL || "http://localhost:8000"}${RB_API}/${routineId}/import`,
+        { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("anchor_admin_access_token")}` }, body: fd }
+      );
+      const data = await res.json();
+      if (!res.ok) { setMsg(data.detail || "Import failed"); return; }
+      setRoutine(data.routine);
+      setSlots(Array.isArray(data.routine.slots) ? data.routine.slots : []);
+      setPublished(false);
+      setMsg(`Imported ${data.imported} class${data.imported === 1 ? "" : "es"}${data.errors && data.errors.length ? ` · ${data.errors.length} skipped` : ""}.`);
+      validate();
+    } catch (err) { setMsg("Import failed — check the file and try again."); }
+    finally { if (fileRef.current) fileRef.current.value = ""; }
+  }
+
+  function exportExcel() {
+    const stem = `routine-${routine.semester || routine.department || String(routine.id).slice(0, 8)}`;
+    AnchorAPI.apiDownload(`${RB_API}/${routineId}/export?format=xlsx`, `${stem}.xlsx`).catch(e => setMsg(e.message || "Export failed"));
+  }
+
+  async function askAI() {
+    if (aiText.trim().length < 2) return;
+    setAiBusy(true); setAiError(""); setAiPreview(null);
+    try {
+      const res = await AnchorAPI.apiPostAuth(`${RB_API}/${routineId}/ai-edit`, { text: aiText.trim() });
+      if (res.ok) setAiPreview({ summary: res.summary, new_slots: res.new_slots });
+      else setAiError(res.reason || "Couldn't apply that.");
+    } catch (e) { setAiError(e.message || "AI request failed"); }
+    finally { setAiBusy(false); }
+  }
+
+  function applyAI() {
+    const next = aiPreview.new_slots;
+    setAiPreview(null); setAiText("");
+    persist(next, "AI change applied.");
+  }
+
+  async function doPublish() {
+    setSaving(true); setMsg("");
+    try {
+      const r = await AnchorAPI.apiPostAuth(`${RB_API}/${routineId}/publish`, {});
+      setRoutine(r); setPublished(true);
+      setMsg("Published — students can see it now.");
+    } catch (e) { setMsg(e.message || "Publish failed"); }
+    finally { setSaving(false); }
+  }
+
+  if (loading) return <div className="p-10 text-center text-[var(--muted)] text-[13px]">Loading routine…</div>;
+  if (!routine) return (
+    <div className="p-10 text-center">
+      <div className="text-[13px] text-[var(--red)] mb-3">{msg || "Routine not found."}</div>
+      <GhostButton icon="arrow-left" onClick={onBack}>Back to routines</GhostButton>
+    </div>
+  );
+
+  const hasConflicts = conflicts.length > 0;
+
+  return (
+    <>
+      <div className="flex items-center gap-2 mb-4">
+        <GhostButton size="sm" icon="arrow-left" onClick={onBack}>Routines</GhostButton>
+      </div>
+
+      <PageHeader
+        title={routine.title}
+        description={[routine.department, routine.batch, routine.semester].filter(Boolean).join(" · ") || "Edit classes, then publish to students."}
         actions={
           <>
-            <div className="flex items-center gap-2 text-[12.5px] text-[var(--graphite)] mr-2">
-              <span className="smallcaps text-[var(--muted)]">Department</span>
-              <select value={dept} onChange={e=>setDept(e.target.value)} className="hair border rounded-sm bg-white px-2 py-1">
-                <option value="SWE">Department of SWE</option>
-                <option value="CSE">Department of CSE</option>
-                <option value="EEE">Department of EEE</option>
-              </select>
-              <span className="smallcaps text-[var(--muted)] ml-3">Semester</span>
-              <select value={semester} onChange={e=>setSemester(e.target.value)} className="hair border rounded-sm bg-white px-2 py-1">
-                <option>Spring 2026</option>
-                <option>Summer 2026</option>
-              </select>
-            </div>
-            <StatusPill status={step===2 && solved ? 'Submitted' : 'Submitted'} />
-            <MonoChip tone="navy">Draft</MonoChip>
+            {rbStatusPill(routine.status)}
+            {saving && <span className="text-[11px] text-[var(--muted)] flex items-center gap-1"><Icon name="loader" size={12} className="animate-spin" /> saving</span>}
           </>
         }
       />
 
-      {/* Stepper */}
-      <Card noPad className="mb-6">
-        <div className="grid grid-cols-3">
-          {[
-            { i:0, name:'Input data', sub:'Courses, teachers, rooms, constraints', icon:'database' },
-            { i:1, name:'Generate schedule', sub:'OR-Tools CP-SAT solver', icon:'cpu' },
-            { i:2, name:'Review & publish', sub:'Weekly grid, conflicts, notify', icon:'calendar-check' },
-          ].map((s, idx) => {
-            const done = idx < step;
-            const active = idx === step;
-            return (
-              <button key={s.i} onClick={()=>setStep(idx)} className={`p-5 text-left flex items-center gap-3 hair-r last:border-r-0 transition ${active?'bg-[var(--sage-tint)]/60':'hover:bg-[var(--mist)]/30'}`}>
-                <div className="w-9 h-9 rounded-full flex items-center justify-center font-mono text-[12px]"
-                  style={{ background: done?'var(--sage)':active?'var(--navy)':'var(--mist)', color: (done||active)?'white':'var(--graphite)' }}>
-                  {done ? <Icon name="check" size={14} /> : idx+1}
-                </div>
-                <div className="min-w-0">
-                  <div className={`text-[13.5px] font-medium ${active?'text-[var(--sage)]':'text-[var(--ink)]'}`}>{s.name}</div>
-                  <div className="text-[11.5px] text-[var(--muted)] truncate">{s.sub}</div>
-                </div>
-              </button>
-            );
-          })}
+      {/* Toolbar */}
+      <Card noPad className="mb-4">
+        <div className="p-3 flex items-center gap-2 flex-wrap">
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleImport} />
+          <GhostButton size="sm" icon="download" onClick={exportExcel}>Export to Excel</GhostButton>
+          <GhostButton size="sm" icon="upload" onClick={() => fileRef.current && fileRef.current.click()}>Import Excel / CSV</GhostButton>
+          <GhostButton size="sm" icon="plus" onClick={() => openCell(days[0], times[0], null)}>Add class</GhostButton>
+          <div className="flex-1" />
+          {msg && <span className="text-[12px] text-[var(--sage)]">{msg}</span>}
+          {published ? (
+            <Tag tone="sage" icon="check-circle">Live for students</Tag>
+          ) : (
+            <PrimaryButton size="sm" mode="sage" icon="send" onClick={() => setPublishConfirm(true)} disabled={saving}>Publish</PrimaryButton>
+          )}
         </div>
       </Card>
 
-      {step===0 && <RoutineInput tab={tab} setTab={setTab} D={D} />}
-      {step===1 && <RoutineGenerate solving={solving} solved={solved} onSolve={() => { setSolving(true); setTimeout(()=>{ setSolving(false); setSolved(true); setStep(2); }, 1800); }} />}
-      {step===2 && <RoutineReview D={D} dept={dept} semester={semester} onPublish={()=>setPublishConfirm(true)} />}
+      <div className="grid gap-4" style={{ gridTemplateColumns: "1fr 300px" }}>
+        {/* Grid */}
+        <Card noPad>
+          <div className="p-4">
+            <div className="grid" style={{ gridTemplateColumns: `90px repeat(${days.length}, 1fr)`, gap: 4 }}>
+              <div />
+              {days.map(d => <div key={d} className="smallcaps text-center text-[var(--muted)] pb-2">{d}</div>)}
+              {times.map(time => (
+                <React.Fragment key={time}>
+                  <div className="text-[10.5px] text-[var(--muted)] font-mono flex items-start pt-2">{time}</div>
+                  {days.map(day => {
+                    const cell = (cellMap[day + "||" + time] || [])[0];
+                    if (!cell) {
+                      return (
+                        <button key={day} onClick={() => openCell(day, time, null)}
+                          className="hair border border-dashed rounded-sm min-h-[60px] flex items-center justify-center text-[var(--muted)] hover:bg-[var(--mist)]/30 transition"
+                          style={{ borderColor: "#EDEAE0", background: "#FBF9F3" }}>
+                          <Icon name="plus" size={12} className="opacity-0 hover:opacity-100" />
+                        </button>
+                      );
+                    }
+                    const { slot, index } = cell;
+                    const color = RB_SECTION_COLORS[index % RB_SECTION_COLORS.length];
+                    const bad = conflictIdx.has(index);
+                    const dupes = (cellMap[day + "||" + time] || []).length;
+                    return (
+                      <button key={day} onClick={() => openCell(day, time, cell)}
+                        className="text-left rounded-sm p-2 min-h-[60px] relative hair border transition"
+                        style={{ borderColor: bad ? "#E8312A" : color + "33", background: color + "12", boxShadow: bad ? "inset 0 0 0 2px #E8312A" : "none" }}>
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-1 h-3 rounded-full" style={{ background: color }} />
+                          <span className="font-mono text-[11px] text-[var(--ink)] font-medium">{slot.course_code || "—"}</span>
+                        </div>
+                        <div className="mt-1 text-[11px] text-[var(--graphite)] leading-tight truncate">{slot.course_name || ""}</div>
+                        <div className="text-[10px] text-[var(--muted)] truncate">{[slot.room, slot.teacher].filter(Boolean).join(" · ")}</div>
+                        {(bad || dupes > 1) && (
+                          <span className="absolute top-1 right-1 inline-flex items-center gap-0.5 text-[9px] font-mono uppercase" style={{ color: "var(--red)" }}>
+                            <Icon name="alert-triangle" size={10} /> {dupes > 1 ? `+${dupes - 1}` : "clash"}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+            </div>
+            <div className="mt-3 text-[11px] text-[var(--muted)] flex items-center gap-1.5">
+              <Icon name="info" size={11} /> Click any cell to edit a class or add one. Conflicts are outlined in red.
+            </div>
+          </div>
+        </Card>
+
+        {/* Right rail */}
+        <div className="flex flex-col gap-4">
+          {/* AI tweak */}
+          <Card>
+            <SectionLabel right={<Tag tone="navy" icon="sparkles">AI</Tag>}>Edit by AI</SectionLabel>
+            <textarea rows={3} value={aiText} onChange={e => setAiText(e.target.value)}
+              placeholder="e.g. Move CSE-301 to Tuesday 10:00, or put Dr. Rahman's class in room KT-601"
+              className="w-full px-2 py-1.5 hair border rounded-sm bg-white text-[12.5px] resize-none" />
+            <PrimaryButton mode="sage" size="sm" icon={aiBusy ? "loader" : "wand-2"} className="w-full justify-center mt-2" onClick={askAI} disabled={aiBusy || aiText.trim().length < 2}>
+              {aiBusy ? "Thinking…" : "Suggest change"}
+            </PrimaryButton>
+            {aiError && <div className="mt-2 text-[11.5px] px-2 py-1.5 rounded-sm" style={{ background: "rgba(184,137,58,0.10)", color: "var(--gold)" }}>{aiError}</div>}
+            {aiPreview && (
+              <div className="mt-3 hair border rounded-sm p-3" style={{ background: "rgba(74,107,92,0.05)" }}>
+                <div className="text-[12px] text-[var(--ink)] mb-2">{aiPreview.summary}</div>
+                <div className="flex items-center gap-2">
+                  <PrimaryButton mode="sage" size="sm" icon="check" onClick={applyAI}>Apply</PrimaryButton>
+                  <GhostButton size="sm" onClick={() => setAiPreview(null)}>Discard</GhostButton>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* Conflicts */}
+          <Card>
+            <SectionLabel right={hasConflicts ? <Tag tone="red">{conflicts.length}</Tag> : <Tag tone="sage" icon="check">clear</Tag>}>Conflicts</SectionLabel>
+            {hasConflicts ? (
+              <div className="space-y-2 text-[12px]">
+                {conflicts.map((c, i) => (
+                  <div key={i} className="hair border rounded-sm p-2" style={{ borderColor: "rgba(232,49,42,0.3)", background: "rgba(232,49,42,0.04)" }}>
+                    <div className="font-medium text-[var(--ink)]">{c.type.replace(/_/g, " ")}</div>
+                    <div className="text-[var(--muted)]">{c.description}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[12px] text-[var(--muted)]">No teacher, room, or time clashes detected.</div>
+            )}
+          </Card>
+
+          {/* Summary */}
+          <Card>
+            <SectionLabel>At a glance</SectionLabel>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { k: "Classes", v: slots.length },
+                { k: "Days", v: days.length },
+                { k: "Time slots", v: times.length },
+                { k: "Conflicts", v: conflicts.length },
+              ].map(x => (
+                <div key={x.k} className="hair border rounded-sm p-3">
+                  <div className="font-mono text-[20px] text-[var(--ink)]">{x.v}</div>
+                  <div className="smallcaps text-[var(--muted)]">{x.k}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      </div>
+
+      {editCell && (
+        <CellEditor
+          entry={editCell}
+          onClose={() => setEditCell(null)}
+          onSave={saveCell}
+          onRemove={removeCell}
+        />
+      )}
 
       <ConfirmModal
-        open={publishConfirm} onClose={()=>setPublishConfirm(false)} onConfirm={()=>{}}
-        title={`Publish ${semester} routine?`}
-        body="This will notify 12 teachers and 320 students via push notification + SMS. Once published, edits will require a new version and re-notification."
+        open={publishConfirm} onClose={() => setPublishConfirm(false)} onConfirm={doPublish}
+        title="Publish this routine?"
+        body={hasConflicts
+          ? `This routine still has ${conflicts.length} conflict(s). You can publish, but students will see the clashes. Continue?`
+          : "Students with the app will see this class schedule immediately. You can edit and re-publish later."}
         confirmWord="PUBLISH" confirmLabel="Publish" tone="sage"
       />
     </>
   );
 }
 
-function RoutineInput({ tab, setTab, D }) {
-  return (
-    <div className="grid gap-5" style={{ gridTemplateColumns: '1fr 320px' }}>
-      <Card noPad>
-        <div className="flex items-center gap-1 px-4 pt-3 hair-b">
-          {[
-            { v:'courses', label:'Courses', count:D.courses.length },
-            { v:'teachers', label:'Teachers', count:9 },
-            { v:'rooms', label:'Rooms', count:14 },
-            { v:'sections', label:'Sections', count:5 },
-            { v:'slots', label:'Time Slots', count:8 },
-          ].map(t => (
-            <button key={t.v} onClick={()=>setTab(t.v)} className={`px-3 py-2.5 text-[13px] -mb-px hair-b border-b-2 ${tab===t.v?'border-[var(--sage)] text-[var(--sage)] font-medium':'border-transparent text-[var(--graphite)] hover:text-[var(--ink)]'}`}>
-              {t.label} <span className="font-mono text-[10px] text-[var(--muted)] ml-1">{t.count}</span>
-            </button>
-          ))}
-          <div className="flex-1" />
-          <button className="text-[12px] text-[var(--sage)] hover:underline inline-flex items-center gap-1 mb-1">
-            <Icon name="plus" size={12} /> Add
-          </button>
-        </div>
+// ── Cell editor modal ─────────────────────────────────────────────────────────
+function CellEditor({ entry, onClose, onSave, onRemove }) {
+  const [s, setS] = useState({ ...entry.slot });
+  const set = (k, v) => setS(prev => ({ ...prev, [k]: v }));
+  const isNew = entry.index === null || entry.index === undefined;
 
-        {tab==='courses' && (
-          <DataTable
-            columns={[
-              { key:'code', label:'Code', render:r=><MonoChip>{r.code}</MonoChip> },
-              { key:'name', label:'Course name' },
-              { key:'credits', label:'Cr.', align:'right' },
-              { key:'type', label:'Type', render:r=><Tag tone={r.type==='Lab'?'gold':'sage'}>{r.type}</Tag> },
-              { key:'sections', label:'Sections', align:'right' },
-              { key:'teacher', label:'Assigned teacher' },
-              { key:'', label:'', render:()=><Icon name="more-horizontal" size={14} className="text-[var(--muted)]" /> },
-            ]}
-            rows={D.courses}
-          />
-        )}
-        {tab==='teachers' && (
-          <DataTable
-            columns={[
-              { key:'name', label:'Teacher' },
-              { key:'avail', label:'Availability' },
-              { key:'max', label:'Max teaching hrs/wk', align:'right' },
-              { key:'pref', label:'Preferences' },
-            ]}
-            rows={[
-              { name:'Dr. Mahbub Alam', avail:'Sun–Wed · 09:30–17:00', max:'12', pref:'No 18:30 slots; prefers KT-504' },
-              { name:'Dr. Tahmina Karim', avail:'Sun, Tue, Thu · all day', max:'10', pref:'Lab block before noon' },
-              { name:'Dr. Farzana Rahman', avail:'Mon–Thu · 08:00–15:30', max:'14', pref:'2-day teaching window' },
-              { name:'Dr. Imran Chowdhury', avail:'Sun, Mon, Wed · 11:00–18:30', max:'10', pref:'No back-to-back 3-hour blocks' },
-            ]}
-          />
-        )}
-        {tab==='rooms' && (
-          <DataTable
-            columns={[
-              { key:'room', label:'Room', render:r=><MonoChip>{r.room}</MonoChip> },
-              { key:'type', label:'Type', render:r=><Tag tone={r.type==='Lab'?'gold':'sage'}>{r.type}</Tag> },
-              { key:'cap', label:'Capacity', align:'right' },
-              { key:'building', label:'Building' },
-            ]}
-            rows={[
-              { room:'KT-504', type:'Theory', cap:42, building:'Knowledge Tower' },
-              { room:'KT-308', type:'Lab',    cap:30, building:'Knowledge Tower' },
-              { room:'KT-712', type:'Theory', cap:38, building:'Knowledge Tower' },
-              { room:'KT-401', type:'Theory', cap:35, building:'Knowledge Tower' },
-              { room:'AB1-201', type:'Theory',cap:45, building:'Academic Building 1' },
-              { room:'AB2-105', type:'Lab',   cap:28, building:'Academic Building 2' },
-            ]}
-          />
-        )}
-        {tab==='sections' && (
-          <DataTable
-            columns={[
-              { key:'sec', label:'Section', render:r=><MonoChip>{r.sec}</MonoChip> },
-              { key:'batch', label:'Batch' },
-              { key:'cap', label:'Enrollment', align:'right' },
-            ]}
-            rows={[
-              { sec:'53-A', batch:'53', cap:38 },
-              { sec:'53-B', batch:'53', cap:36 },
-              { sec:'54-A', batch:'54', cap:42 },
-              { sec:'54-B', batch:'54', cap:40 },
-              { sec:'55-A', batch:'55', cap:34 },
-            ]}
-          />
-        )}
-        {tab==='slots' && (
-          <div className="p-5 grid grid-cols-4 gap-2">
-            {D.slots.map((s,i) => (
-              <div key={s} className="hair border rounded-sm p-3 text-center">
-                <div className="font-mono text-[14px] text-[var(--ink)]">{s}</div>
-                <div className="text-[10px] text-[var(--muted)] mt-0.5">Slot {i+1} · 90 min</div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
-
-      {/* Constraints panel */}
-      <div>
-        <Card noPad>
-          <div className="p-4 hair-b flex items-center gap-2">
-            <Icon name="sliders-horizontal" size={14} />
-            <span className="font-medium text-[13.5px]">Constraints</span>
-          </div>
-          <div className="p-4 space-y-4">
-            <div>
-              <div className="smallcaps text-[var(--muted)] mb-2">Hard · cannot violate</div>
-              {[
-                'No teacher in two rooms at once',
-                'No section in two classes at once',
-                'No room double-booked',
-                'Lab courses → Lab-type rooms only',
-                'Respect teacher availability windows',
-              ].map(c => (
-                <div key={c} className="flex items-center gap-2 py-1 text-[12.5px]">
-                  <Icon name="check-circle" size={12} style={{ color:'var(--sage)' }} />
-                  <span className="text-[var(--graphite)]">{c}</span>
-                </div>
-              ))}
-            </div>
-            <div className="hair-t border-t pt-3">
-              <div className="smallcaps text-[var(--muted)] mb-2">Soft · weighted</div>
-              {[
-                { name:'Minimise teacher gaps', val:80 },
-                { name:'Cluster lab sessions', val:60 },
-                { name:'Prefer morning blocks', val:40 },
-                { name:'Spread sections across week', val:55 },
-              ].map(s => (
-                <div key={s.name} className="py-2">
-                  <div className="flex items-center justify-between text-[12.5px] mb-1">
-                    <span className="text-[var(--ink)]">{s.name}</span>
-                    <span className="font-mono text-[var(--muted)]">{s.val}</span>
-                  </div>
-                  <input type="range" defaultValue={s.val} min={0} max={100} className="w-full accent-[var(--sage)]" />
-                </div>
-              ))}
-            </div>
-          </div>
-        </Card>
-      </div>
+  const field = (k, label, placeholder) => (
+    <div>
+      <label className="smallcaps text-[var(--muted)] mb-1 block">{label}</label>
+      <input value={s[k] || ""} onChange={e => set(k, e.target.value)} placeholder={placeholder}
+        className="w-full px-2 py-1.5 hair border rounded-sm bg-white text-[13px]" />
     </div>
   );
-}
 
-function RoutineGenerate({ solving, solved, onSolve }) {
   return (
-    <Card className="p-10 text-center flex flex-col items-center gap-4">
-      <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ background: solving?'#F2E8D2':'#E8EFEA' }}>
-        <Icon name={solving?'loader':'cpu'} size={28} style={{ color: solving?'var(--gold)':'var(--sage)' }} className={solving?'animate-spin':''} />
-      </div>
-      <div>
-        <h3 className="font-serif text-[26px] text-[var(--navy)]" style={{fontWeight:500}}>
-          {solving?'Solving…':'Generate schedule'}
-        </h3>
-        <p className="mt-2 text-[13px] text-[var(--graphite)] max-w-[60ch]">
-          {solving
-            ? 'CP-SAT solver is exploring the feasible region · 4 courses · 5 sections · 6 rooms · 8 time slots'
-            : 'Click Generate to run the Google OR-Tools CP-SAT solver against your inputs. The result will surface in step 3 with conflicts and feasibility score.'}
-        </p>
-      </div>
-      <PrimaryButton mode="sage" icon="play" onClick={onSolve} disabled={solving}>
-        {solving?'Solving…':'Generate schedule'}
-      </PrimaryButton>
-      <div className="text-[11px] text-[var(--muted)] flex items-center gap-2 mt-2">
-        <Icon name="cpu" size={11} /> <span>Google OR-Tools · CP-SAT solver · ~1.4s typical</span>
-      </div>
-      {solving && (
-        <div className="w-full max-w-[480px] mt-4 text-left">
-          <div className="text-[11px] text-[var(--muted)] mb-1 flex justify-between"><span>Constraint propagation</span><span className="font-mono">14,221 / 18,000</span></div>
-          <div className="h-1.5 bg-[var(--mist)] rounded-sm overflow-hidden">
-            <div className="h-full bg-[var(--sage)]" style={{ width:'78%', transition:'width 1.2s ease' }} />
-          </div>
+    <div className="fixed inset-0 z-40 flex items-center justify-center fade-in" style={{ background: "rgba(11,29,53,0.30)" }} onClick={onClose}>
+      <div className="bg-[var(--paper)] rounded-sm w-[460px] max-w-[92vw] hair border" onClick={e => e.stopPropagation()}>
+        <div className="p-4 hair-b">
+          <div className="smallcaps text-[var(--muted)] mb-1">{isNew ? "Add class" : "Edit class"}</div>
+          <h3 className="font-serif text-[20px] text-[var(--navy)]">{s.course_code || "New class"}</h3>
         </div>
-      )}
-    </Card>
-  );
-}
-
-function RoutineReview({ D, dept, semester, onPublish }) {
-  const [hovered, setHovered] = useState(null);
-  const [editing, setEditing] = useState(null);
-  const [publishing, setPublishing] = useState(false);
-  const [publishDone, setPublishDone] = useState(false);
-  const [publishError, setPublishError] = useState('');
-  const [existingRoutines, setExistingRoutines] = useState([]);
-
-  useEffect(() => {
-    AnchorAPI.apiGet('/v1/routines?page=1')
-      .then(data => setExistingRoutines(data))
-      .catch(() => {});
-  }, [publishDone]);
-
-  async function handlePublishToAPI() {
-    setPublishing(true); setPublishError('');
-    try {
-      const slots = D.timetable.map(t => ({ day: D.days[t.d], time: D.slots[t.s], course: t.code, room: t.room, teacher: t.teacher, section: t.sec }));
-      const routine = await AnchorAPI.apiPostAuth('/v1/routines', {
-        title: `${dept} ${semester} Routine`,
-        department: dept,
-        semester,
-        academic_year: '2025-2026',
-        slots,
-      });
-      await AnchorAPI.apiPostAuth(`/v1/routines/${routine.id}/publish`, {});
-      setPublishDone(true);
-    } catch (err) {
-      setPublishError(err.message || 'Publish failed. Try again.');
-    } finally { setPublishing(false); }
-  }
-  return (
-    <div className="grid gap-5" style={{ gridTemplateColumns:'1fr 280px' }}>
-      <Card noPad>
-        <div className="p-4 hair-b flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Icon name="calendar" size={14} />
-            <span className="font-medium text-[13.5px]">Spring 2026 · Department of SWE</span>
-            <span className="text-[12px] text-[var(--muted)]">Drag any cell to swap. Conflicts are outlined in red.</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <GhostButton size="sm" icon="rotate-ccw">Re-generate</GhostButton>
-            <GhostButton size="sm" icon="download">Export</GhostButton>
-          </div>
-        </div>
-
-        <div className="p-4">
-          <div className="grid" style={{ gridTemplateColumns: '70px repeat(5, 1fr)', gap: '4px' }}>
-            <div />
-            {D.days.map(d => (
-              <div key={d} className="smallcaps text-center text-[var(--muted)] pb-2">{d}</div>
-            ))}
-            {D.slots.map((slot, si) => (
-              <React.Fragment key={slot}>
-                <div className="text-[11px] text-[var(--muted)] font-mono flex items-start pt-2">{slot}</div>
-                {D.days.map((d, di) => {
-                  const entry = D.timetable.find(t => t.d===di && t.s===si);
-                  if (!entry) {
-                    return <div key={di} className="hair border border-dashed rounded-sm min-h-[58px]" style={{ borderColor:'#EDEAE0', background:'#FBF9F3' }} />;
-                  }
-                  const color = D.sectionColors[entry.sec] || '#4A6B5C';
-                  return (
-                    <button key={di} onClick={()=>setEditing(entry)} className={`tt-cell text-left rounded-sm p-2 min-h-[58px] relative hair border`}
-                      style={{ borderColor: entry.conflict?'#E8312A':color+'33', background: color+'12', boxShadow: entry.conflict?'inset 0 0 0 2px #E8312A':'none' }}>
-                      <div className="flex items-center gap-1.5">
-                        <span className="w-1 h-3 rounded-full" style={{ background: color }} />
-                        <span className="font-mono text-[11px] text-[var(--ink)] font-medium">{entry.code}</span>
-                      </div>
-                      <div className="mt-1 text-[11px] text-[var(--graphite)] leading-tight">
-                        {entry.sec} · {entry.room}
-                      </div>
-                      <div className="text-[10px] text-[var(--muted)] truncate">{entry.teacher}</div>
-                      {entry.conflict && (
-                        <span className="absolute top-1 right-1 inline-flex items-center gap-0.5 text-[9px] font-mono uppercase tracking-wide" style={{ color:'var(--red)' }}>
-                          <Icon name="alert-triangle" size={10} /> conflict
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </React.Fragment>
-            ))}
-          </div>
-        </div>
-
-        {/* Legend */}
-        <div className="px-4 pb-4 flex flex-wrap items-center gap-3 hair-t border-t pt-3">
-          <span className="smallcaps text-[var(--muted)]">Sections</span>
-          {Object.entries(D.sectionColors).map(([sec, color]) => (
-            <span key={sec} className="inline-flex items-center gap-1.5 text-[12px]">
-              <span className="w-2.5 h-2.5 rounded-sm" style={{ background: color }} />
-              <span>{sec}</span>
-            </span>
-          ))}
-        </div>
-      </Card>
-
-      {/* Right rail */}
-      <div className="flex flex-col gap-4">
-        <Card>
-          <SectionLabel>Solver result</SectionLabel>
-          <div className="space-y-2 text-[13px]">
-            <Row k="Hard conflicts" v="0" tone="sage" />
-            <Row k="Soft violations" v="3 teacher gaps" tone="gold" />
-            <Row k="Feasibility score" v="92 / 100" tone="sage" />
-            <Row k="Solve time" v="1.42s" />
-          </div>
-        </Card>
-        <Card>
-          <SectionLabel>Affected entities</SectionLabel>
+        <div className="p-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            {[
-              { k:'Teachers', v:12 }, { k:'Rooms', v:8 }, { k:'Sections', v:6 }, { k:'Students', v:320 },
-            ].map(x => (
-              <div key={x.k} className="hair border rounded-sm p-3">
-                <div className="font-mono text-[22px] text-[var(--ink)]">{x.v}</div>
-                <div className="smallcaps text-[var(--muted)]">{x.k}</div>
-              </div>
-            ))}
-          </div>
-        </Card>
-        <Card>
-          <SectionLabel>Conflicts to resolve</SectionLabel>
-          <div className="space-y-2 text-[12.5px]">
-            <div className="hair border rounded-sm p-2 edge-red">
-              <div className="font-medium">Room double-booked</div>
-              <div className="text-[var(--muted)]">KT-308 · Tue 12:30 · SWE-405 (54-A) and SWE-410 (53-B)</div>
-            </div>
-            <div className="text-[11px] text-[var(--muted)]">Click the conflict cell in the grid to resolve.</div>
-          </div>
-        </Card>
-        {publishError && <div className="text-[12px] px-3 py-2 rounded-sm mb-2" style={{ background:'rgba(232,49,42,0.08)', color:'var(--red)', border:'1px solid rgba(232,49,42,0.2)' }}>{publishError}</div>}
-        {publishDone ? (
-          <div className="text-[12.5px] px-3 py-2 rounded-sm" style={{ background:'rgba(74,107,92,0.08)', color:'var(--sage)', border:'1px solid rgba(74,107,92,0.2)' }}>
-            Routine published and students notified.
-          </div>
-        ) : (
-          <PrimaryButton mode="sage" icon="send" className="justify-center" disabled={publishing} onClick={handlePublishToAPI}>
-            {publishing ? 'Publishing…' : 'Publish routine'}
-          </PrimaryButton>
-        )}
-
-        {existingRoutines.length > 0 && (
-          <div className="mt-4">
-            <SectionLabel>Published routines</SectionLabel>
-            <div className="space-y-1.5">
-              {existingRoutines.slice(0, 4).map(r => (
-                <div key={r.id} className="hair border rounded-sm p-2 text-[12px] flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="font-medium text-[var(--ink)] truncate">{r.title}</div>
-                    <div className="text-[var(--muted)] font-mono">{r.department} · {r.semester || '—'}</div>
-                  </div>
-                  <Tag tone={r.status === 'published' ? 'sage' : 'mist'}>{r.status}</Tag>
-                </div>
-              ))}
+            {field("day", "Day", "Saturday")}
+            <div className="grid grid-cols-2 gap-2">
+              {field("start_time", "Start", "8:30")}
+              {field("end_time", "End", "10:00")}
             </div>
           </div>
-        )}
-      </div>
-
-      {/* Cell edit popover (simple) */}
-      {editing && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center" style={{ background:'rgba(11,29,53,0.25)' }} onClick={()=>setEditing(null)}>
-          <div className="bg-[var(--paper)] rounded-sm w-[420px] hair border" onClick={e=>e.stopPropagation()}>
-            <div className="p-4 hair-b">
-              <div className="smallcaps text-[var(--muted)] mb-1">Edit slot</div>
-              <h3 className="font-serif text-[20px] text-[var(--navy)]">{editing.code} · {editing.sec}</h3>
-            </div>
-            <div className="p-4 space-y-3 text-[13px]">
-              <Field label="Room"><select className="w-full px-2 py-1.5 hair border rounded-sm bg-white"><option>{editing.room}</option><option>KT-712</option><option>AB1-201</option></select></Field>
-              <Field label="Teacher"><select className="w-full px-2 py-1.5 hair border rounded-sm bg-white"><option>{editing.teacher}</option><option>Dr. Mahbub Alam</option><option>Dr. Farzana Rahman</option></select></Field>
-            </div>
-            <div className="p-3 hair-t flex items-center justify-end gap-2">
-              <GhostButton onClick={()=>setEditing(null)}>Cancel</GhostButton>
-              <PrimaryButton icon="check" mode="sage" onClick={()=>setEditing(null)}>Apply</PrimaryButton>
-            </div>
+          <div className="grid grid-cols-2 gap-3">
+            {field("course_code", "Course code", "CSE-301")}
+            {field("course_name", "Course name", "Algorithms")}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {field("teacher", "Teacher", "Dr. Rahman")}
+            {field("room", "Room", "KT-601")}
           </div>
         </div>
-      )}
-    </div>
-  );
-}
-
-function Row({ k, v, tone }) {
-  const c = tone==='sage' ? 'var(--sage)' : tone==='gold' ? 'var(--gold)' : 'var(--ink)';
-  return (
-    <div className="flex items-center justify-between hair-b last:border-b-0 py-1.5">
-      <span className="text-[var(--muted)]">{k}</span>
-      <span className="font-mono" style={{ color: c }}>{v}</span>
+        <div className="p-3 hair-t flex items-center justify-between gap-2">
+          {!isNew
+            ? <GhostButton size="sm" danger icon="trash-2" onClick={() => onRemove(entry.index)}>Remove</GhostButton>
+            : <span />}
+          <div className="flex items-center gap-2">
+            <GhostButton size="sm" onClick={onClose}>Cancel</GhostButton>
+            <PrimaryButton size="sm" mode="sage" icon="check" onClick={() => onSave(s, entry.index)}>Save</PrimaryButton>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

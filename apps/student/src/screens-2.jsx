@@ -1572,7 +1572,7 @@ function NoticesScreen() {
 //  PROFILE SCREEN
 // ═══════════════════════════════════════════════════════════════
 function ProfileScreen() {
-  const { go, logout, auth, geofenceConsent, setGeofenceConsent, login, lang, setLang } = useApp();
+  const { go, logout, auth, geofenceConsent, setGeofenceConsent, login, lang, tr } = useApp();
   const user = auth && auth.user;
   const displayName = user ? user.name : '';
   const isStudent = user && user.role === 'student';
@@ -1938,38 +1938,39 @@ function ProfileScreen() {
 
       {/* Settings sections */}
       <div style={{ padding: '14px 20px 0' }}>
-        <SettingsGroup title="Legal" items={[
-          { label: 'Messages', value: 'Encrypted', Icon: IconMessage, onTap: () => go('messages') },
+        <SettingsGroup title={tr('set_group_legal')} items={[
+          { label: tr('set_messages'), value: tr('set_messages_val'), Icon: IconMessage, onTap: () => go('messages') },
           ...(!isStudent ? [{
-            label: user && user.role === 'lawyer' ? 'My lawyer profile' : 'Apply as a Lawyer',
-            value: user && user.role === 'lawyer' ? 'Verified' : 'Verification',
+            label: user && user.role === 'lawyer' ? tr('set_my_lawyer') : tr('set_apply_lawyer'),
+            value: user && user.role === 'lawyer' ? tr('set_lawyer_verified') : tr('set_lawyer_pending'),
             Icon: IconScale,
             onTap: () => go('apply-lawyer'),
           }] : []),
         ]}/>
-        <SettingsGroup title="Preferences" items={[
-          { label: 'Language',            value: lang === 'BN' ? 'বাংলা' : 'English', Icon: IconGlobe, onTap: () => setLang(lang === 'EN' ? 'BN' : 'EN') },
-          { label: 'Notifications',       value: prefsCount + ' of 5 on',  Icon: IconBell, onTap: () => setSheet('notif') },
-          { label: 'Default anonymity',   value: 'Always ask',       Icon: IconEyeOff },
+        {/* Language — upgraded to a 3-option control (Bangla / Both / English) */}
+        <LanguageSetting/>
+        <SettingsGroup title={tr('set_group_prefs')} items={[
+          { label: tr('set_notifications'),  value: prefsCount + ' of 5 on',  Icon: IconBell, onTap: () => setSheet('notif') },
+          { label: tr('set_anonymity'),      value: tr('set_anonymity_val'),  Icon: IconEyeOff },
         ]}/>
-        <SettingsGroup title="Safety" items={[
-          { label: "Dead Man's Switch",   value: 'Active · 48h',     Icon: IconShield, accent: 'var(--ember)' },
-          { label: 'Two-factor auth',     value: user && user.mfa ? 'TOTP · enabled' : 'Not set up',   Icon: IconLock,   onTap: () => go('mfa-setup') },
-          { label: 'Trusted contacts',    value: contactsCount === 1 ? '1 set' : contactsCount + ' set', Icon: IconPhone, onTap: () => setSheet('contacts') },
+        <SettingsGroup title={tr('set_group_safety')} items={[
+          { label: tr('set_dms'),            value: 'Active · 48h',     Icon: IconShield, accent: 'var(--ember)' },
+          { label: tr('set_2fa'),            value: user && user.mfa ? 'TOTP · enabled' : tr('set_2fa_off'),   Icon: IconLock,   onTap: () => go('mfa-setup') },
+          { label: tr('set_contacts'),       value: contactsCount === 1 ? '1 set' : contactsCount + ' set', Icon: IconPhone, onTap: () => setSheet('contacts') },
         ]}/>
-        <SettingsGroup title="Data" items={[
-          { label: 'Export my data',      value: 'JSON',             Icon: IconUpload, onTap: handleExport },
-          { label: 'Delete account',      value: 'Permanent',         Icon: IconX, danger: true },
+        <SettingsGroup title={tr('set_group_data')} items={[
+          { label: tr('set_export'),         value: 'JSON',             Icon: IconUpload, onTap: handleExport },
+          { label: tr('set_delete'),         value: tr('set_delete_val'),         Icon: IconX, danger: true },
         ]}/>
         {/* Location consent */}
         <div style={{ marginBottom: 16 }}>
-          <div className="eyebrow" style={{ marginBottom: 8 }}>Location</div>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>{tr('set_group_location')}</div>
           <div style={{ background:'rgba(255,255,255,0.7)', border:'1px solid var(--mist)',
                         borderRadius:14, padding:'12px 14px',
                         display:'flex', alignItems:'center', justifyContent:'space-between' }}>
             <div>
               <div style={{ fontSize:14, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-sans)' }}>
-                Nearby alerts
+                {tr('set_nearby_alerts')}
               </div>
               <div style={{ fontSize:12, color: locBlocked ? 'var(--red)' : 'var(--muted)',
                             fontFamily:'var(--font-sans)', marginTop:2 }}>
@@ -1988,13 +1989,13 @@ function ProfileScreen() {
         </div>
         {/* Push notifications consent */}
         <div style={{ marginBottom: 16 }}>
-          <div className="eyebrow" style={{ marginBottom: 8 }}>Notifications</div>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>{tr('set_group_notifications')}</div>
           <div style={{ background:'rgba(255,255,255,0.7)', border:'1px solid var(--mist)',
                         borderRadius:14, padding:'12px 14px',
                         display:'flex', alignItems:'center', justifyContent:'space-between' }}>
             <div>
               <div style={{ fontSize:14, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-sans)' }}>
-                Safety alert notifications
+                {tr('set_safety_notif')}
               </div>
               <div style={{ fontSize:12, color: pushState === 'denied' ? 'var(--red)' : 'var(--muted)',
                             fontFamily:'var(--font-sans)', marginTop:2 }}>
@@ -2063,6 +2064,54 @@ function ProfileScreen() {
       {sheet === 'notif' && <NotifPrefsSheet onClose={closeSheet}/>}
       {sheet === 'contacts' && <TrustedContactsSheet onClose={closeSheet}/>}
     </>
+  );
+}
+
+// Language picker — 3-option segmented control (Bangla / Both / English).
+// "Both" (BI) is bilingual/mixed: English UI chrome + Bangla AI/content.
+function LanguageSetting() {
+  const { lang, setLang, tr } = useApp();
+  const opts = [
+    { v: 'BN', label: 'বাংলা',   sub: 'Bangla' },
+    { v: 'BI', label: 'Both',    sub: 'Mixed' },
+    { v: 'EN', label: 'English', sub: 'English' },
+  ];
+  const isBangla = (s) => /[ঀ-৿]/.test(s);
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div className="eyebrow" style={{ marginBottom: 8 }}>{tr('lang_title')}</div>
+      <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: 14 }}>
+        <div className={isBangla(tr('lang_question')) ? 'serif bn' : 'serif'}
+             style={{ fontSize: 15, fontWeight: 500, color: 'var(--navy)' }}>
+          {tr('lang_question')}
+        </div>
+        <div className={isBangla(tr('lang_switch_anytime')) ? 'bn' : undefined}
+             style={{ fontSize: 12, color: 'var(--muted)', marginTop: 3, fontFamily: 'var(--font-sans)' }}>
+          {tr('lang_switch_anytime')}
+        </div>
+        <div role="radiogroup" aria-label={tr('lang_title')}
+             style={{ marginTop: 12, padding: 4, borderRadius: 12, background: 'var(--cream-2)',
+                      display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4 }}>
+          {opts.map(opt => {
+            const active = lang === opt.v;
+            return (
+              <button key={opt.v} role="radio" aria-checked={active} onClick={() => setLang(opt.v)}
+                style={{
+                  padding: '9px 6px', borderRadius: 9, border: 'none', cursor: 'pointer',
+                  background: active ? 'var(--navy)' : 'transparent',
+                  color: active ? '#fff' : 'var(--navy)',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                  transition: 'background 0.18s, color 0.18s',
+                }}>
+                <span className={isBangla(opt.label) ? 'bn' : undefined} style={{ fontSize: 13, fontWeight: 600 }}>{opt.label}</span>
+                <span style={{ fontSize: 9, opacity: active ? 0.75 : 0.5, fontWeight: 500,
+                               letterSpacing: '0.04em', fontFamily: 'var(--font-sans)' }}>{opt.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2389,7 +2438,9 @@ var _MOCK_ROUTINE = {
 
 function RoutinesScreen() {
   var appCtx = useApp ? useApp() : {};
-  var lang = (appCtx.lang === 'BN') ? 'BN' : 'EN';
+  // Day-names / labels are content → Bangla in both BN and BI (mixed) modes.
+  var lang = (typeof contentLang === 'function') ? contentLang(appCtx.lang)
+                                                 : ((appCtx.lang === 'BN' || appCtx.lang === 'BI') ? 'BN' : 'EN');
   var L = _ROUTINE_L[lang];
   var fontBN = lang === 'BN' ? { fontFamily: 'var(--font-bn, inherit)' } : {};
 

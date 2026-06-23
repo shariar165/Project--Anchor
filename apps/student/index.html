@@ -81,6 +81,17 @@
 <!-- API base URL — auto-detects localhost vs production -->
 <script src="config.js"></script>
 
+<!-- i18n dictionary + resolver (plain JS — must run before the Babel scripts
+     below so window.tStr exists by first render). -->
+<script src="src/strings.jsx"></script>
+<!-- Safety guard: if strings.jsx fails to load, tStr/contentLang still work. -->
+<script>
+  if (!window.tStr) window.tStr = function (k) { return k; };
+  if (!window.contentLang) window.contentLang = function (l) {
+    var u = String(l || '').toUpperCase(); return (u === 'BN' || u === 'BI') ? 'BN' : 'EN';
+  };
+</script>
+
 <!-- Firebase Web SDK (compat/UMD) for push notifications -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js"></script>

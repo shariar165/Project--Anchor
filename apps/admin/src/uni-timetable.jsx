@@ -1132,6 +1132,9 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
     loadEntries();
   }, [termId, version]);
 
+  // Clear any in-flight resolve poll if the tab unmounts mid-solve.
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
   async function loadEntries() {
     setLoading(true);
     try {
@@ -1770,8 +1773,8 @@ function TimetablePublish({ termId, version, onGo }) {
           <div className="text-[12px] text-[var(--muted)] mb-3">
             Students can now view their schedule in the Anchor app.
           </div>
-          <GhostButton size="sm" onClick={() => onGo && onGo("/university/routine")}>
-            View in Routine Builder
+          <GhostButton size="sm" icon="sliders-horizontal" onClick={() => onGo && onGo("/university/routine")}>
+            Tweak in Routine Editor →
           </GhostButton>
         </Card>
       )}

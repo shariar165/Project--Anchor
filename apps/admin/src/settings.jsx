@@ -252,7 +252,7 @@ function LanguageSection({ mode }) {
       <SettingRow title="Date format" hint="Used in tables, audit logs, and case timestamps.">
         <select className="px-2 py-1.5 hair border rounded-sm bg-white text-[12.5px] font-mono"><option>YYYY-MM-DD HH:mm</option><option>DD/MM/YYYY HH:mm</option><option>MMM D, YYYY h:mm A</option></select>
       </SettingRow>
-      <SettingRow title="First day of week" hint="Used in the routine builder grid and analytics charts.">
+      <SettingRow title="First day of week" hint="Used in the routine editor grid and analytics charts.">
         <select className="px-2 py-1.5 hair border rounded-sm bg-white text-[12.5px]"><option>Sunday</option><option>Monday</option><option>Saturday</option></select>
       </SettingRow>
       <SaveBar accent={mode==='sup'?'ember':'sage'} />

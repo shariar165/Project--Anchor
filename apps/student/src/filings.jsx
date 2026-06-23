@@ -1206,6 +1206,18 @@ function FilingDetailScreen({ params = {} }) {
           <TrackingCodeCard code={filing.anonymous_tracking_code}/>
         )}
 
+        {/* Download a copy */}
+        {filing.state !== 'draft' && (
+          <div style={{ marginTop: 14 }}>
+            <DownloadMenu
+              path={`/v1/filings/${filing.id}/export`}
+              stem={filing.filing_number || `filing-${String(filing.id).slice(0, 8)}`}
+              label="Download a copy"
+              accent="var(--sage)"
+            />
+          </div>
+        )}
+
         {/* View in cases */}
         <button onClick={() => go('cases')} className="btn btn-ghost" style={{ width: '100%', marginTop: 14, fontSize: 12 }}>
           ← Back to Active Cases

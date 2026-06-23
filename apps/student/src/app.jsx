@@ -172,14 +172,18 @@ function AppProvider({ children }) {
   const [mode, setMode] = useState(
     (stored?.isAuthenticated && stored?.user?.role !== 'student') ? 'country' : 'campus'
   );
-  const [lang, setLangRaw] = useState(
-    localStorage.getItem('anchor_lang') === 'BN' ? 'BN' : 'EN'
-  );       // 'EN' | 'BN'
+  // 'EN' | 'BN' | 'BI' (bilingual/mixed). Any unknown/stale stored value → 'EN'.
+  const normLang = (v) => (v === 'BN' || v === 'BI') ? v : 'EN';
+  const [lang, setLangRaw] = useState(() => {
+    try { return normLang(localStorage.getItem('anchor_lang')); } catch { return 'EN'; }
+  });
   const setLang = (next) => {
-    const val = next === 'BN' ? 'BN' : 'EN';
+    const val = normLang(next);
     try { localStorage.setItem('anchor_lang', val); } catch { /* storage unavailable */ }
     setLangRaw(val);
   };
+  // Translate helper bound to the active language. type: 'ui' (default) | 'content'.
+  const tr = (key, type) => (window.tStr ? window.tStr(key, lang, type) : key);
   const [history, setHistory] = useState([]);
   const [auth, setAuth] = useState(
     stored || { isAuthenticated: false, user: null, authStep: null, pendingIdentifier: null }
@@ -258,6 +262,12 @@ function AppProvider({ children }) {
       return next;
     });
   };
+
+  // Reflect the active language on <html> so CSS can swap in the Bangla font for
+  // full-BN mode (styles.css [data-lang="BN"]). EN / BI keep the Latin stack.
+  useEffect(() => {
+    try { document.documentElement.setAttribute('data-lang', lang); } catch (_) { /* SSR/no-DOM */ }
+  }, [lang]);
 
   // Soft logout when a fetch helper detects an unrecoverable 401 (refresh failed
   // or refresh token gone). Avoids the full-page reload that flashes the login screen.
@@ -350,7 +360,7 @@ function AppProvider({ children }) {
     };
   }, [auth.isAuthenticated, geofenceConsent]);
 
-  const value = { mode, setMode, route, go, back, replace, lang, setLang, auth, login, logout,
+  const value = { mode, setMode, route, go, back, replace, lang, setLang, tr, auth, login, logout,
                   setAuthPending, updateUser, geofenceConsent, setGeofenceConsent };
   return (
     <AppCtx.Provider value={value}>
@@ -406,7 +416,7 @@ function AppProvider({ children }) {
 // Header — logo, mode word, bell, avatar
 // ─────────────────────────────────────────────────────────────
 function Header({ title, subtitle, back: showBack = false, transparent = false }) {
-  const { back, go, mode, auth } = useApp();
+  const { back, go, mode, auth, tr } = useApp();
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
   const unread = (typeof unreadCount === 'function') ? unreadCount(mode) : 0;
   const user = auth && auth.user;
@@ -431,7 +441,7 @@ function Header({ title, subtitle, back: showBack = false, transparent = false }
             alignItems: 'center', gap: 4, cursor: 'pointer', color: 'var(--navy)',
             fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
           }}>
-            <IconArrowLeft size={14}/> Back
+            <IconArrowLeft size={14}/> {tr('btn_back')}
           </button>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -449,8 +459,8 @@ function Header({ title, subtitle, back: showBack = false, transparent = false }
               </div>
               <div className="eyebrow" style={{ marginTop: 3, color: 'var(--muted)' }}>
                 {mode === 'campus'
-                  ? `Campus · ${user && user.tenant_id ? user.tenant_id.toUpperCase() : 'DIU'}`
-                  : 'National · BD'}
+                  ? `${tr('hdr_campus')} · ${user && user.tenant_id ? user.tenant_id.toUpperCase() : 'DIU'}`
+                  : tr('hdr_national')}
               </div>
             </div>
           </div>
@@ -509,7 +519,7 @@ function Header({ title, subtitle, back: showBack = false, transparent = false }
 // C2C Toggle — the signature element
 // ─────────────────────────────────────────────────────────────
 function C2CToggle() {
-  const { mode, setMode } = useApp();
+  const { mode, setMode, tr } = useApp();
   const isCampus = mode === 'campus';
 
   return (
@@ -518,17 +528,17 @@ function C2CToggle() {
       <div className={`c2c-thumb ${isCampus ? 'campus' : 'country'}`}/>
       <div className={`c2c-label ${isCampus ? 'on' : 'off'}`} style={{ paddingRight: 26 }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <IconBuilding size={14}/> Campus
+          <IconBuilding size={14}/> {tr('c2c_campus')}
         </span>
-        <span className="sub">DIU</span>
+        <span className="sub">{tr('c2c_campus_sub')}</span>
       </div>
       {/* Center C2C badge */}
       <div className="c2c-badge" aria-label="Campus to Country">C2C</div>
       <div className={`c2c-label ${!isCampus ? 'on' : 'off'}`} style={{ paddingLeft: 26 }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <IconGlobe size={14}/> National
+          <IconGlobe size={14}/> {tr('c2c_national')}
         </span>
-        <span className="sub">Bangladesh</span>
+        <span className="sub">{tr('c2c_national_sub')}</span>
       </div>
     </div>
   );
@@ -538,14 +548,14 @@ function C2CToggle() {
 // Bottom nav
 // ─────────────────────────────────────────────────────────────
 function BottomNav() {
-  const { route, go } = useApp();
+  const { route, go, tr } = useApp();
   const here = route.name;
   const items = [
-    { k: 'home',    label: 'Home',    icon: IconHome },
-    { k: 'cases',   label: 'My Cases',icon: IconFile },
-    { k: 'alert',   label: 'Alert',   icon: IconShield, alert: true },
-    { k: 'chat',    label: 'Anchor AI', icon: IconMessage },
-    { k: 'profile', label: 'Profile', icon: IconUser },
+    { k: 'home',    label: tr('nav_home'),    icon: IconHome },
+    { k: 'cases',   label: tr('nav_cases'),   icon: IconFile },
+    { k: 'alert',   label: tr('nav_alert'),   icon: IconShield, alert: true },
+    { k: 'chat',    label: tr('nav_chat'),    icon: IconMessage },
+    { k: 'profile', label: tr('nav_profile'), icon: IconUser },
   ];
 
   return (

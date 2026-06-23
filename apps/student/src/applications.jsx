@@ -76,6 +76,69 @@ async function apiFetch(path, opts = {}, _retry = true) {
   return res.json();
 }
 
+// ── Download / export (PDF · DOCX · CSV) ──────────────────────────────────────
+// Cannot use apiFetch — it parses JSON. Mirrors the blob pattern in
+// ApplicationDetailScreen.handleDownloadPDF: fetch with Bearer, refresh-once on
+// 401, then blob -> object URL -> anchor click.
+
+async function downloadExport(path, filenameStem, fmt) {
+  const url = `${APP_BASE}${path}?format=${fmt}`;
+  const opts = { headers: { 'Authorization': 'Bearer ' + getToken() } };
+  let res = await fetch(url, opts);
+  if (res.status === 401) {
+    const refreshed = await tryRefreshToken();
+    if (!refreshed) { redirectToLogin(); return; }
+    res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + getToken() } });
+  }
+  if (!res.ok) {
+    let detail = 'Download failed';
+    try { const d = await res.json(); detail = d.detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objUrl;
+  a.download = `${filenameStem}.${fmt}`;
+  a.click();
+  URL.revokeObjectURL(objUrl);
+}
+
+// Reusable "Download as PDF / DOCX / CSV" control. `path` is an export endpoint
+// (without ?format=); `stem` is the downloaded filename without extension.
+function DownloadMenu({ path, stem, label = 'Download', accent = 'var(--navy)' }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState('');
+  const FORMATS = [['pdf', 'PDF'], ['docx', 'DOCX'], ['csv', 'CSV']];
+  const pick = async (fmt) => {
+    setBusy(fmt);
+    try { await downloadExport(path, stem, fmt); setOpen(false); }
+    catch (e) { alert('Download failed: ' + e.message); }
+    finally { setBusy(''); }
+  };
+  return (
+    <div style={{ width: '100%' }}>
+      <button onClick={() => setOpen(o => !o)} className="btn btn-ghost" style={{ width: '100%', gap: 8 }}>
+        <IconDownload size={15}/> {label}
+        <IconChevronRight size={12} stroke="var(--muted)" style={{ marginLeft: 'auto', transform: open ? 'rotate(90deg)' : '' }}/>
+      </button>
+      {open && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          {FORMATS.map(([fmt, lbl]) => (
+            <button key={fmt} onClick={() => pick(fmt)} disabled={!!busy} style={{
+              flex: 1, padding: '9px 4px', borderRadius: 10, cursor: 'pointer',
+              border: '1px solid var(--mist)', background: 'rgba(255,255,255,0.85)',
+              fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, color: accent,
+            }}>
+              {busy === fmt ? '…' : lbl}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── State pill ────────────────────────────────────────────────────────────────
 
 const STATE_META = {
@@ -1244,6 +1307,12 @@ function ApplicationDetailScreen({ params = {} }) {
               {pdfLoading ? 'Preparing PDF…' : <><IconDownload size={15}/> Download Signed PDF</>}
             </button>
           )}
+          <DownloadMenu
+            path={`/v1/applications/${app.id}/export`}
+            stem={`DIU-APP-${short}`}
+            label="Download a copy"
+            accent="var(--sage)"
+          />
           {isRejected && (
             <button onClick={handleApplyAgain} className="btn btn-primary">Apply again →</button>
           )}
@@ -1464,4 +1533,6 @@ Object.assign(window, {
   NewApplicationScreen,
   ApplicationDetailScreen,
   CampusSettingsScreen,
+  DownloadMenu,
+  downloadExport,
 });

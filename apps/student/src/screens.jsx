@@ -68,7 +68,7 @@ function IOSInstallBanner({ persistDismiss = true }) {
 //  HOME SCREEN
 // ═══════════════════════════════════════════════════════════════
 function HomeScreen() {
-  const { mode, go, lang, auth } = useApp();
+  const { mode, go, lang, auth, tr } = useApp();
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
   const isStudent = auth?.user?.role === 'student';
 
@@ -94,23 +94,23 @@ function HomeScreen() {
   }, [mode]);
 
   const campusTiles = [
-    { k: 'complaint', label: 'File', sub: 'Complaint · Report · Grievance', Icon: IconFile, route: 'new-filing' },
-    { k: 'application', label: 'Apply formally', sub: 'AI-drafted · 13 templates', Icon: IconDoc, route: 'applications' },
-    { k: 'routine',   label: 'Academic routine', sub: 'Today · 4 classes',  Icon: IconClock,  route: 'routines' },
-    { k: 'notices',   label: 'University notices', sub: '3 new this week',   Icon: IconNews, route: 'notices' },
-    { k: 'my-filings', label: 'My filings', sub: 'Track complaints & reports', Icon: IconFile, route: 'filings' },
-    { k: 'classroom', label: 'Report classroom', sub: 'AC · Projector · Net', Icon: IconBuilding, route: 'classroom-report' },
-    { k: 'feed',      label: 'Publish news',   sub: 'Notices & rumours',     Icon: IconNews, route: 'feed-publish' },
-    { k: 'rate',      label: 'Rate department', sub: 'SWE · CSE · BBA',     Icon: IconStar,   route: 'dept-rating' },
+    { k: 'complaint', label: tr('tile_file'), sub: tr('tile_file_sub'), Icon: IconFile, route: 'new-filing' },
+    { k: 'application', label: tr('tile_apply'), sub: tr('tile_apply_sub'), Icon: IconDoc, route: 'applications' },
+    { k: 'routine',   label: tr('tile_routine'), sub: tr('tile_routine_sub'),  Icon: IconClock,  route: 'routines' },
+    { k: 'notices',   label: tr('tile_notices'), sub: tr('tile_notices_sub'),   Icon: IconNews, route: 'notices' },
+    { k: 'my-filings', label: tr('tile_my_filings'), sub: tr('tile_my_filings_sub'), Icon: IconFile, route: 'filings' },
+    { k: 'classroom', label: tr('tile_classroom'), sub: tr('tile_classroom_sub'), Icon: IconBuilding, route: 'classroom-report' },
+    { k: 'feed',      label: tr('tile_feed'),   sub: tr('tile_feed_sub_campus'),     Icon: IconNews, route: 'feed-publish' },
+    { k: 'rate',      label: tr('tile_rate'), sub: tr('tile_rate_sub'),     Icon: IconStar,   route: 'dept-rating' },
   ];
 
   const countryTiles = [
-    { k: 'fir',     label: 'Draft FIR / GD',   sub: 'AI-assisted document', Icon: IconGavel,  route: 'police-reports' },
-    { k: 'lawyer',  label: 'Find a lawyer',    sub: 'End-to-end encrypted', Icon: IconScale,  route: 'lawyers' },
-    { k: 'zones',   label: 'Red zone map',     sub: 'Dhaka · live overlay',  Icon: IconMap,    route: 'map' },
-    { k: 'rights',  label: 'Know your rights', sub: 'BD Penal Code · DV Act', Icon: IconBook, route: 'rights' },
-    { k: 'feed',    label: 'Publish news',  sub: 'Human-moderated',     Icon: IconNews,   route: 'feed-publish' },
-    { k: 'officer', label: 'Officer scorecard',sub: 'Public accountability', Icon: IconBadge, route: 'officer-scorecard' },
+    { k: 'fir',     label: tr('tile_fir'),   sub: tr('tile_fir_sub'), Icon: IconGavel,  route: 'police-reports' },
+    { k: 'lawyer',  label: tr('tile_lawyer'),    sub: tr('tile_lawyer_sub'), Icon: IconScale,  route: 'lawyers' },
+    { k: 'zones',   label: tr('tile_zones'),     sub: tr('tile_zones_sub'),  Icon: IconMap,    route: 'map' },
+    { k: 'rights',  label: tr('tile_rights'), sub: tr('tile_rights_sub'), Icon: IconBook, route: 'rights' },
+    { k: 'feed',    label: tr('tile_feed'),  sub: tr('tile_feed_sub_national'),     Icon: IconNews,   route: 'feed-publish' },
+    { k: 'officer', label: tr('tile_officer'),sub: tr('tile_officer_sub'), Icon: IconBadge, route: 'officer-scorecard' },
   ];
   const tiles = mode === 'campus' ? campusTiles : countryTiles;
 
@@ -123,7 +123,7 @@ function HomeScreen() {
         {isStudent ? (
           <>
             <div className="eyebrow" style={{ marginBottom: 8, color: 'var(--muted)' }}>
-              Choose your context
+              {tr('home_choose_context')}
             </div>
             <C2CToggle/>
             <div style={{
@@ -131,8 +131,8 @@ function HomeScreen() {
               fontSize: 13, color: 'var(--muted)', textAlign: 'center', letterSpacing: '0.005em',
             }}>
               {mode === 'campus'
-                ? 'Governance, complaints, and routine — within Daffodil.'
-                : 'Legal aid, safety, and verification — across Bangladesh.'}
+                ? tr('home_campus_tag')
+                : tr('home_national_tag')}
             </div>
           </>
         ) : (
@@ -144,10 +144,10 @@ function HomeScreen() {
             <IconGlobe size={18} stroke="var(--ember)" />
             <div>
               <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--navy)', fontFamily: 'var(--font-sans)' }}>
-                National · Bangladesh
+                {tr('home_national_title')}
               </div>
               <div style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>
-                Legal aid, safety &amp; verification
+                {tr('home_national_sub')}
               </div>
             </div>
           </div>
@@ -163,14 +163,14 @@ function HomeScreen() {
             <IconAlert size={16}/>
           </div>
           <div style={{ flex: 1, lineHeight: 1.3 }}>
-            <div className="eyebrow eyebrow-dark" style={{ color: 'rgba(247,243,238,0.55)' }}>Phase 2 alert</div>
-            <div style={{ fontSize: 13, marginTop: 2 }}>Hold 4 seconds to broadcast emergency</div>
+            <div className="eyebrow eyebrow-dark" style={{ color: 'rgba(247,243,238,0.55)' }}>{tr('home_alert_eyebrow')}</div>
+            <div style={{ fontSize: 13, marginTop: 2 }}>{tr('home_alert_text')}</div>
           </div>
           <button onClick={() => go('alert')} style={{
             background: 'var(--red)', color: '#fff', border: 'none', cursor: 'pointer',
             padding: '8px 12px', borderRadius: 999, fontFamily: 'var(--font-sans)',
             fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase',
-          }}>Hold</button>
+          }}>{tr('home_alert_hold')}</button>
         </div>
       </div>
 
@@ -185,8 +185,8 @@ function HomeScreen() {
       {/* Quick action tiles */}
       <div style={{ padding: '20px 20px 8px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-          <div className="eyebrow">Quick actions · {mode === 'campus' ? 'Campus' : 'National'}</div>
-          <div className="serif" style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--muted)' }}>{tiles.length} routes</div>
+          <div className="eyebrow">{tr('home_quick_actions')} · {mode === 'campus' ? tr('c2c_campus') : tr('c2c_national')}</div>
+          <div className="serif" style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--muted)' }}>{tiles.length} {tr('home_routes')}</div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {tiles.map((t, i) => {
@@ -220,11 +220,11 @@ function HomeScreen() {
       {/* My Cases preview — real filings from API */}
       <div style={{ padding: '20px 0 8px 20px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingRight: 20, marginBottom: 10 }}>
-          <div className="eyebrow">My filings · recent</div>
+          <div className="eyebrow">{tr('home_my_filings')}</div>
           <button onClick={() => go('cases')} style={{
             background: 'transparent', border: 'none', cursor: 'pointer',
             color: 'var(--navy)', fontSize: 12, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
-          }}>View all →</button>
+          }}>{tr('home_view_all')}</button>
         </div>
         {previewFilings.length === 0 ? (
           /* Empty state — no filed cases yet */
@@ -241,8 +241,8 @@ function HomeScreen() {
                 <IconFile size={16}/>
               </div>
               <div>
-                <div className="serif" style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--navy)', marginBottom: 2 }}>No filings yet</div>
-                <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>Tap to file a complaint, report, or grievance</div>
+                <div className="serif" style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--navy)', marginBottom: 2 }}>{tr('home_no_filings_title')}</div>
+                <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{tr('home_no_filings_sub')}</div>
               </div>
               <IconChevronRight size={14} stroke="var(--mist-2)" style={{ marginLeft: 'auto', flexShrink: 0 }}/>
             </button>
@@ -284,11 +284,11 @@ function HomeScreen() {
       {/* Verification feed preview */}
       <div style={{ padding: '16px 20px 28px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-          <div className="eyebrow">{mode === 'campus' ? 'Campus verified' : 'Verified news'}</div>
+          <div className="eyebrow">{mode === 'campus' ? tr('home_campus_verified') : tr('home_verified_news')}</div>
           <button onClick={() => go('news-feed')} style={{
             background: 'transparent', border: 'none', cursor: 'pointer',
             color: 'var(--muted)', fontSize: 11.5, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
-          }}>Newspaper →</button>
+          }}>{tr('home_newspaper')}</button>
         </div>
         {(feedPosts.length
           ? feedPosts
@@ -306,7 +306,10 @@ function HomeScreen() {
 }
 
 function AIInputCard({ onActivate }) {
-  const { lang, setLang } = useApp();
+  const { lang: rawLang, setLang } = useApp();
+  // Content surface: "Both" (BI) shows Bangla. Collapse BI→BN for display.
+  const lang = (typeof contentLang === 'function') ? contentLang(rawLang)
+                                                   : ((rawLang === 'BN' || rawLang === 'BI') ? 'BN' : 'EN');
   const suggestions = lang === 'BN'
     ? ['হোস্টেলে harassment হলে কী করব?', 'GD draft করো', 'আমার অধিকার কী?']
     : ['What if I face harassment in hostel?', 'Help me draft a GD', 'Know my rights'];
@@ -579,7 +582,11 @@ function AIBubbleTyping() {
 
 // ── ChatScreen ───────────────────────────────────────────────────
 function ChatScreen() {
-  const { lang, setLang, mode, go } = useApp();
+  const { lang: rawLang, setLang, mode, go } = useApp();
+  // Chat is content: "Both" (BI) renders Bangla, and the backend only knows
+  // EN/BN — collapse BI→BN so 'BI' is never sent or branched on as English.
+  const lang = (typeof contentLang === 'function') ? contentLang(rawLang)
+                                                   : ((rawLang === 'BN' || rawLang === 'BI') ? 'BN' : 'EN');
   const [messages, setMessages] = _useS([]);
   const [input, setInput] = _useS('');
   const [loading, setLoading] = _useS(false);
@@ -2681,7 +2688,10 @@ function RightCard({ r, lang, open, onToggle }) {
 }
 
 function RightsScreen() {
-  const { lang } = useApp();
+  const { lang: rawLang } = useApp();
+  // Legal-rights text is content: "Both" (BI) shows Bangla.
+  const lang = (typeof contentLang === 'function') ? contentLang(rawLang)
+                                                   : ((rawLang === 'BN' || rawLang === 'BI') ? 'BN' : 'EN');
   const [rights, setRights] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [offline, setOffline] = React.useState(false);

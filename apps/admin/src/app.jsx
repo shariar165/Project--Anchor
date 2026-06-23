@@ -99,7 +99,7 @@ function uniCrumbs(route) {
     '/university/hostel':['Hostel'],
     '/university/alerts':['Campus geofence'],
     '/university/geofence':['Campus geofence'],
-    '/university/routine':['Routine builder'],
+    '/university/routine':['Routine editor'],
     '/university/timetable':['Timetable generator'],
     '/university/notices':['Notices'],
     '/university/verification-feed':['Verification feed'],
