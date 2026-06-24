@@ -226,9 +226,152 @@
   html.dark[data-surface="canvas"] {
     --cream:#0F0E0B; --paper:#1A1812; --mist:#2E2A21; --graphite:#D5CEBA;
   }
+
+  /* ─────────────────────────────────────────────────────────
+   * BOOT SPLASH + BOOT ERROR
+   * Painted instantly (plain HTML/CSS) before Babel compiles the app.
+   * Uses design tokens so it respects dark mode + active palette.
+   * ───────────────────────────────────────────────────────── */
+  .anchor-boot {
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 22px; background: var(--cream); color: var(--ink);
+    font-family: 'Inter Tight', system-ui, sans-serif;
+    transition: opacity 360ms ease;
+  }
+  .anchor-boot__loading { display: flex; flex-direction: column; align-items: center; gap: 22px; }
+  .anchor-boot__mark {
+    font-family: 'Fraunces', Georgia, serif; font-weight: 600;
+    font-size: 34px; letter-spacing: -0.01em; color: var(--navy);
+  }
+  .anchor-boot__mark span { color: var(--ember); }
+  .anchor-boot__ring {
+    width: 38px; height: 38px; border-radius: 50%;
+    border: 3px solid var(--mist); border-top-color: var(--ember);
+    animation: anchor-spin 0.8s linear infinite;
+  }
+  .anchor-boot__label {
+    text-transform: uppercase; letter-spacing: 0.22em; font-size: 11px;
+    font-weight: 600; color: var(--graphite);
+  }
+  .anchor-boot__sub { font-size: 13px; color: var(--muted); animation: anchor-pulse 1.6s ease-in-out infinite; }
+  @keyframes anchor-spin { to { transform: rotate(360deg); } }
+  @keyframes anchor-pulse { 0%,100%{ opacity: 1; } 50%{ opacity: 0.45; } }
+  @media (prefers-reduced-motion: reduce) {
+    .anchor-boot { transition: none; }
+    .anchor-boot__ring, .anchor-boot__sub { animation: none; }
+  }
+  /* error variant — toggled by adding .is-error to .anchor-boot */
+  .anchor-boot__err { display: none; max-width: 460px; text-align: center; padding: 0 24px; }
+  .anchor-boot.is-error .anchor-boot__loading { display: none; }
+  .anchor-boot.is-error .anchor-boot__err { display: block; }
+  .anchor-boot__err h1 {
+    font-family: 'Fraunces', Georgia, serif; font-weight: 600; font-size: 22px;
+    color: var(--navy); margin: 0 0 8px;
+  }
+  .anchor-boot__err p { font-size: 13.5px; color: var(--muted); margin: 0 0 18px; line-height: 1.5; }
+  .anchor-boot__btn {
+    appearance: none; border: 0; cursor: pointer; background: var(--navy); color: #fff;
+    font-family: 'Inter Tight', system-ui, sans-serif; font-size: 13px; font-weight: 600;
+    padding: 10px 22px; border-radius: 8px; transition: background 140ms ease;
+  }
+  .anchor-boot__btn:hover { background: var(--ember); }
+  .anchor-boot__details { margin-top: 18px; text-align: left; }
+  .anchor-boot__details summary { font-size: 12px; color: var(--graphite); cursor: pointer; }
+  .anchor-boot__details pre {
+    margin-top: 8px; font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11.5px; color: var(--ember); background: var(--paper);
+    border: 1px solid var(--mist); border-radius: 8px; padding: 12px;
+    white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto;
+  }
 </style>
 <body>
-<div id="root"><div id="_anchor_loading" style="padding:40px;font-family:monospace;color:#C44536;background:#F7F3EE;min-height:100vh"><strong style="font-size:15px">Loading Anchor AI admin panel…</strong><p style="margin-top:8px;font-size:13px;color:#3A4754">If this message persists more than 3 seconds, open DevTools (F12) → Console to see the error.</p></div></div>
+<div id="root"><div id="_anchor_loading" class="anchor-boot">
+  <div class="anchor-boot__loading">
+    <div class="anchor-boot__mark">Anchor<span>.</span></div>
+    <div class="anchor-boot__ring" role="status" aria-label="Loading"></div>
+    <div class="anchor-boot__label">Administration</div>
+    <div class="anchor-boot__sub">Loading workspace…</div>
+  </div>
+  <div class="anchor-boot__err">
+    <h1>Couldn't load the admin panel</h1>
+    <p>Something interrupted startup. Check your connection and try again.</p>
+    <button type="button" class="anchor-boot__btn" id="_anchor_reload">Reload</button>
+    <details class="anchor-boot__details" id="_anchor_errdetails" hidden>
+      <summary>Technical details</summary>
+      <pre id="_anchor_errmsg"></pre>
+    </details>
+  </div>
+</div></div>
+<script>
+// Boot guard — runs before Babel compiles the app. Pre-applies the saved theme,
+// watches for a stuck/failed boot, and surfaces compile/load errors on-brand so
+// the splash never hangs forever with no recovery path.
+(function () {
+  // 1. Pre-apply saved theme so neither the splash nor the app flashes wrong colors.
+  try {
+    var stored = localStorage.getItem('anchor:dark');
+    var dark = stored !== null
+      ? stored === '1'
+      : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.classList.toggle('dark', !!dark);
+  } catch (e) {}
+
+  var WATCHDOG_MS = 12000;
+  var booted = false, errored = false, timer = null;
+  var splash = document.getElementById('_anchor_loading');
+
+  // React replaces #root's children on a successful mount, removing the splash node.
+  function mounted() { return !document.getElementById('_anchor_loading'); }
+
+  function showBootError(msg) {
+    if (errored || booted) return;
+    var el = document.getElementById('_anchor_loading');
+    if (!el) return; // already mounted — ignore late errors
+    errored = true;
+    if (timer) { clearTimeout(timer); timer = null; }
+    el.classList.add('is-error');
+    if (msg) {
+      var pre = document.getElementById('_anchor_errmsg');
+      var det = document.getElementById('_anchor_errdetails');
+      if (pre) pre.textContent = String(msg);
+      if (det) det.hidden = false;
+    }
+  }
+
+  var btn = document.getElementById('_anchor_reload');
+  if (btn) btn.addEventListener('click', function () { window.location.reload(); });
+
+  // 2. Capture script-load failures + Babel compile (SyntaxError) + early runtime errors.
+  window.addEventListener('error', function (ev) {
+    if (booted || mounted()) return;
+    var m = (ev && (ev.message || (ev.error && ev.error.message))) ||
+            (ev && ev.target && ev.target.src ? 'Failed to load ' + ev.target.src : 'Unknown error');
+    showBootError(m);
+  }, true);
+  window.addEventListener('unhandledrejection', function (ev) {
+    if (booted || mounted()) return;
+    showBootError(ev && ev.reason ? (ev.reason.message || ev.reason) : 'Unhandled promise rejection');
+  });
+
+  // 3. Watchdog: if React still hasn't mounted, show the error screen.
+  timer = setTimeout(function () {
+    if (!mounted()) showBootError('Startup timed out. The app did not finish loading.');
+  }, WATCHDOG_MS);
+
+  // 4. Success handshake: stop watching once React has mounted.
+  if (window.MutationObserver && splash && splash.parentNode) {
+    var obs = new MutationObserver(function () {
+      if (mounted()) {
+        booted = true;
+        if (timer) { clearTimeout(timer); timer = null; }
+        obs.disconnect();
+      }
+    });
+    obs.observe(splash.parentNode, { childList: true });
+  }
+})();
+</script>
 <script type="text/babel">
 // Demo data for the Anchor AI admin panel.
 //
@@ -12471,10 +12614,15 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.error) {
       return (
-        <div style={{ padding: 40, fontFamily: 'monospace', color: '#E8312A', background: '#F7F3EE', minHeight: '100vh' }}>
-          <strong style={{ fontSize: 16 }}>Admin panel render error</strong>
-          <pre style={{ marginTop: 12, fontSize: 13, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{String(this.state.error)}</pre>
-          <p style={{ marginTop: 8, fontSize: 12, color: '#6B7785' }}>Open browser DevTools → Console for the full stack trace.</p>
+        <div style={{ minHeight: '100vh', background: 'var(--cream)', color: 'var(--ink)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, padding: 40, fontFamily: "'Inter Tight', system-ui, sans-serif", textAlign: 'center' }}>
+          <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontWeight: 600, fontSize: 30, color: 'var(--navy)' }}>Anchor<span style={{ color: 'var(--ember)' }}>.</span></div>
+          <h1 style={{ fontFamily: "'Fraunces', Georgia, serif", fontWeight: 600, fontSize: 22, color: 'var(--navy)', margin: 0 }}>Something went wrong</h1>
+          <p style={{ fontSize: 13.5, color: 'var(--muted)', margin: 0, maxWidth: 460, lineHeight: 1.5 }}>The admin panel hit an unexpected error. Reloading usually fixes it.</p>
+          <button type="button" onClick={() => window.location.reload()} style={{ appearance: 'none', border: 0, cursor: 'pointer', background: 'var(--navy)', color: '#fff', fontFamily: "'Inter Tight', system-ui, sans-serif", fontSize: 13, fontWeight: 600, padding: '10px 22px', borderRadius: 8 }}>Reload</button>
+          <details style={{ marginTop: 6, maxWidth: 520, width: '100%', textAlign: 'left' }}>
+            <summary style={{ fontSize: 12, color: 'var(--graphite)', cursor: 'pointer' }}>Technical details</summary>
+            <pre style={{ marginTop: 8, fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: 11.5, color: 'var(--ember)', background: 'var(--paper)', border: '1px solid var(--mist)', borderRadius: 8, padding: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 200, overflow: 'auto' }}>{String(this.state.error)}</pre>
+          </details>
         </div>
       );
     }
