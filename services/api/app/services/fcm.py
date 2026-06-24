@@ -119,26 +119,42 @@ _NOTIF_ICON = "/icons/icon-192.png"
 _NOTIF_BADGE = "/icons/badge.png"
 
 
+def _abs_https(path: str) -> str | None:
+    """Turn a relative deep-link path into an absolute HTTPS URL via FRONTEND_URL.
+
+    Returns None when no usable https base is configured. The FCM encoder hard-rejects
+    a non-https WebpushFCMOptions.link with ValueError (which would fail EVERY web push
+    to encode), so callers must omit fcm_options entirely when this returns None.
+    """
+    from app.config import get_settings
+    base = get_settings().frontend_url.rstrip("/")
+    if not base.startswith("https://"):
+        return None
+    return base + (path if path.startswith("/") else "/" + path)
+
+
 def _webpush_config(title: str, body: str, data: dict[str, str] | None):
     """Webpush block with native-looking chrome (icon/badge) and a deep link.
 
-    The service worker's onBackgroundMessage ultimately controls rendering, but
-    these fields make the fallback render look right and carry the click target.
+    The service worker's onBackgroundMessage ultimately controls rendering (and its
+    notificationclick handler drives the tap target), so fcm_options.link is only a
+    fallback — attached ONLY when we can build an absolute https URL, since the FCM
+    encoder rejects any non-https link and that would break delivery for all pushes.
     """
     from firebase_admin import messaging
     d = data or {}
     event_id = d.get("event_id")
-    link = d.get("deep_link") or "/"
+    link = _abs_https(d.get("deep_link") or "/")
     return messaging.WebpushConfig(
         notification=messaging.WebpushNotification(
             title=title,
             body=body,
-            icon=_NOTIF_ICON,
+            icon=_NOTIF_ICON,  # relative is fine — not URL-validated by the encoder
             badge=_NOTIF_BADGE,
             tag=f"anchor-alert-{event_id}" if event_id else "anchor-alert",
             renotify=True,
         ),
-        fcm_options=messaging.WebpushFCMOptions(link=link),
+        fcm_options=messaging.WebpushFCMOptions(link=link) if link else None,
     )
 
 
