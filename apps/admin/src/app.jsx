@@ -203,10 +203,15 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.error) {
       return (
-        <div style={{ padding: 40, fontFamily: 'monospace', color: '#E8312A', background: '#F7F3EE', minHeight: '100vh' }}>
-          <strong style={{ fontSize: 16 }}>Admin panel render error</strong>
-          <pre style={{ marginTop: 12, fontSize: 13, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{String(this.state.error)}</pre>
-          <p style={{ marginTop: 8, fontSize: 12, color: '#6B7785' }}>Open browser DevTools → Console for the full stack trace.</p>
+        <div style={{ minHeight: '100vh', background: 'var(--cream)', color: 'var(--ink)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, padding: 40, fontFamily: "'Inter Tight', system-ui, sans-serif", textAlign: 'center' }}>
+          <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontWeight: 600, fontSize: 30, color: 'var(--navy)' }}>Anchor<span style={{ color: 'var(--ember)' }}>.</span></div>
+          <h1 style={{ fontFamily: "'Fraunces', Georgia, serif", fontWeight: 600, fontSize: 22, color: 'var(--navy)', margin: 0 }}>Something went wrong</h1>
+          <p style={{ fontSize: 13.5, color: 'var(--muted)', margin: 0, maxWidth: 460, lineHeight: 1.5 }}>The admin panel hit an unexpected error. Reloading usually fixes it.</p>
+          <button type="button" onClick={() => window.location.reload()} style={{ appearance: 'none', border: 0, cursor: 'pointer', background: 'var(--navy)', color: '#fff', fontFamily: "'Inter Tight', system-ui, sans-serif", fontSize: 13, fontWeight: 600, padding: '10px 22px', borderRadius: 8 }}>Reload</button>
+          <details style={{ marginTop: 6, maxWidth: 520, width: '100%', textAlign: 'left' }}>
+            <summary style={{ fontSize: 12, color: 'var(--graphite)', cursor: 'pointer' }}>Technical details</summary>
+            <pre style={{ marginTop: 8, fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: 11.5, color: 'var(--ember)', background: 'var(--paper)', border: '1px solid var(--mist)', borderRadius: 8, padding: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 200, overflow: 'auto' }}>{String(this.state.error)}</pre>
+          </details>
         </div>
       );
     }
