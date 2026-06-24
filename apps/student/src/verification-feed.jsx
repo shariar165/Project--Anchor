@@ -189,7 +189,7 @@ function VerificationFeedScreen() {
             {[['national','National'],['campus','Campus · DIU']].map(([s,l]) => (
               <button key={s} onClick={() => setScope(s)} style={{
                 fontSize: 10, padding: '2px 10px', borderRadius: 999, fontWeight: 600,
-                background: scope === s ? 'var(--navy)' : 'transparent',
+                background: scope === s ? 'var(--brand)' : 'transparent',
                 color: scope === s ? 'white' : 'var(--muted)',
                 border: `1px solid ${scope === s ? 'var(--navy)' : 'var(--mist)'}`,
                 cursor: 'pointer',
@@ -202,7 +202,7 @@ function VerificationFeedScreen() {
           {[['top','Top stories'],['latest','Latest'],['trusted','Trusted only']].map(([k,l]) => (
             <button key={k} onClick={() => setTab(k)} style={{
               fontSize: 12, padding: '6px 14px', borderRadius: 999,
-              background: tab === k ? 'var(--navy)' : 'transparent',
+              background: tab === k ? 'var(--brand)' : 'transparent',
               color: tab === k ? 'white' : 'var(--muted)',
               border: `1px solid ${tab === k ? 'var(--navy)' : 'var(--mist)'}`,
               fontWeight: tab === k ? 700 : 500, cursor: 'pointer',
@@ -224,7 +224,7 @@ function VerificationFeedScreen() {
 
       {/* ── Breaking strip ── */}
       {hero && (
-        <div style={{ background: 'var(--navy)', padding: '7px 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ background: 'var(--brand)', padding: '7px 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700, color: accent, letterSpacing: 1, textTransform: 'uppercase' }}>
             Anchor Verified · {scope === 'campus' ? 'Campus Edition' : 'National'}
           </span>
@@ -238,11 +238,11 @@ function VerificationFeedScreen() {
       {hero && (
         <div onClick={() => go('feed-post', { id: hero.id })} style={{ cursor: 'pointer', borderBottom: '1px solid var(--mist)' }}>
           {/* Hero illustration */}
-          <div style={{ width: '100%', height: 210, position: 'relative', overflow: 'hidden', background: 'var(--navy)' }}>
+          <div style={{ width: '100%', height: 210, position: 'relative', overflow: 'hidden', background: 'var(--brand)' }}>
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <NewsArt variant={VF_CAT_ART[hero.category] || 'protest'}/>
             </div>
-            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(247,243,238,0.93)', padding: '5px 14px', borderTop: '1px solid var(--mist)' }}>
+            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'var(--bar-bg)', padding: '5px 14px', borderTop: '1px solid var(--mist)' }}>
               <span style={{ fontSize: 10, color: 'var(--muted)', fontStyle: 'italic' }}>
                 <strong style={{ fontStyle: 'normal', color: 'var(--navy)' }}>Photo —</strong> community report, cross-checked against official sources
               </span>
@@ -306,7 +306,7 @@ function VerificationFeedScreen() {
                   </span>
                 </div>
               </div>
-              <div style={{ width: 68, height: 68, borderRadius: 8, overflow: 'hidden', flexShrink: 0, background: 'var(--navy)', position: 'relative' }}>
+              <div style={{ width: 68, height: 68, borderRadius: 8, overflow: 'hidden', flexShrink: 0, background: 'var(--brand)', position: 'relative' }}>
                 <NewsArt variant={VF_CAT_ART[p.category] || ['protest','traffic','court','road'][i % 4]}/>
               </div>
             </div>
@@ -447,7 +447,7 @@ function PublishScreen() {
               <button key={c.k} onClick={() => { set('category', c.k); setStep(1); }} style={{
                 display: 'flex', alignItems: 'center', gap: 14, width: '100%',
                 padding: '14px 16px', borderRadius: 12, marginBottom: 10,
-                background: form.category === c.k ? `${accent}15` : 'rgba(255,255,255,0.7)',
+                background: form.category === c.k ? `${accent}15` : 'var(--surface)',
                 border: `1.5px solid ${form.category === c.k ? accent : 'var(--mist)'}`,
                 textAlign: 'left',
               }}>
@@ -471,7 +471,7 @@ function PublishScreen() {
               <button key={s.k} onClick={() => set('scope', s.k)} style={{
                 display: 'block', width: '100%', padding: '14px 16px', borderRadius: 12,
                 marginBottom: 10, textAlign: 'left',
-                background: form.scope === s.k ? `${accent}15` : 'rgba(255,255,255,0.7)',
+                background: form.scope === s.k ? `${accent}15` : 'var(--surface)',
                 border: `1.5px solid ${form.scope === s.k ? accent : 'var(--mist)'}`,
               }}>
                 <div style={{ fontWeight: 600, color: 'var(--navy)', fontSize: 14 }}>{s.label}</div>
@@ -1046,7 +1046,7 @@ function FeedModerateScreen({ params = {} }) {
 
         {/* Publisher trust */}
         {post.publisher_trust && (
-          <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.6)', border: '1px solid var(--mist)', marginBottom: 12, fontSize: 12 }}>
+          <div style={{ padding: '10px 14px', borderRadius: 10, background: 'var(--surface)', border: '1px solid var(--mist)', marginBottom: 12, fontSize: 12 }}>
             <span style={{ fontWeight: 600 }}>Publisher: </span>
             <TrustBadge tier={post.publisher_trust.trust_tier}/>
             <span style={{ color: 'var(--muted)', marginLeft: 8 }}>
@@ -1057,7 +1057,7 @@ function FeedModerateScreen({ params = {} }) {
 
         {/* Signal counts */}
         {post.signal_counts && (
-          <div style={{ display: 'flex', gap: 16, padding: '10px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.6)', border: '1px solid var(--mist)', marginBottom: 12, fontSize: 13 }}>
+          <div style={{ display: 'flex', gap: 16, padding: '10px 14px', borderRadius: 10, background: 'var(--surface)', border: '1px solid var(--mist)', marginBottom: 12, fontSize: 13 }}>
             <span style={{ color: 'var(--sage)', fontWeight: 700 }}>✓ {post.signal_counts.corroborate}</span>
             <span style={{ color: 'var(--ember)', fontWeight: 700 }}>✗ {post.signal_counts.challenge}</span>
             {post.signal_counts.flags > 0 && <span style={{ color: 'var(--red)', fontWeight: 700 }}>⚑ {post.signal_counts.flags} flags</span>}

@@ -49,13 +49,13 @@ function ConversationsScreen() {
         {convs.map((c) => (
           <button key={c.id} onClick={() => go('chat-thread', { conv: c })} style={{
             width: '100%', textAlign: 'left', cursor: 'pointer',
-            padding: 14, background: 'rgba(255,255,255,0.7)',
+            padding: 14, background: 'var(--surface)',
             border: '1px solid var(--mist)', borderRadius: 14, marginBottom: 10,
             display: 'flex', alignItems: 'center', gap: 12,
           }}>
             <div style={{
               width: 46, height: 46, borderRadius: 12, flexShrink: 0,
-              background: 'linear-gradient(135deg, var(--navy), #1c3a5e)', color: '#F7F3EE',
+              background: 'linear-gradient(135deg, var(--brand), #1c3a5e)', color: '#F7F3EE',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 16,
             }}>{(c.counterpart_name || '?').slice(0, 1).toUpperCase()}</div>
@@ -184,7 +184,7 @@ function ChatThreadScreen({ params }) {
           <div key={m.id} style={{ display: 'flex', justifyContent: m.mine ? 'flex-end' : 'flex-start', marginBottom: 8 }}>
             <div style={{
               maxWidth: '78%', padding: '9px 12px', borderRadius: 14,
-              background: m.mine ? 'var(--navy)' : 'rgba(255,255,255,0.85)',
+              background: m.mine ? 'var(--brand)' : 'var(--surface)',
               color: m.mine ? '#F7F3EE' : 'var(--ink)',
               border: m.mine ? 'none' : '1px solid var(--mist)',
               fontSize: 14, fontFamily: 'var(--font-sans)', lineHeight: 1.4,
@@ -210,13 +210,13 @@ function ChatThreadScreen({ params }) {
           rows={1}
           style={{
             flex: 1, resize: 'none', maxHeight: 100, padding: '10px 13px', borderRadius: 12,
-            border: '1px solid var(--mist-2)', background: '#fff', outline: 'none',
+            border: '1px solid var(--mist-2)', background: 'var(--surface-solid)', outline: 'none',
             fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--navy)',
           }}
         />
         <button onClick={send} disabled={sending || !text.trim()} style={{
           width: 42, height: 42, borderRadius: 12, flexShrink: 0, border: 'none',
-          background: text.trim() ? 'var(--navy)' : 'var(--mist)', color: '#F7F3EE',
+          background: text.trim() ? 'var(--brand)' : 'var(--mist)', color: '#F7F3EE',
           cursor: text.trim() ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}><IconSend size={17}/></button>
       </div>
@@ -275,7 +275,7 @@ function ApplyLawyerScreen() {
 
   const field = {
     width: '100%', padding: '10px 13px', borderRadius: 10, border: '1px solid var(--mist-2)',
-    background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--navy)',
+    background: 'var(--surface-solid)', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--navy)',
     outline: 'none', boxSizing: 'border-box',
   };
 
@@ -314,7 +314,7 @@ function ApplyLawyerScreen() {
         )}
 
         {(profile === null || (profile && profile.status === 'rejected')) && (
-          <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 16, padding: 16 }}>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 16, padding: 16 }}>
             <div style={{ fontSize: 13.5, color: 'var(--ink-2)', fontFamily: 'var(--font-sans)', marginBottom: 16, lineHeight: 1.5 }}>
               Are you a practising lawyer? Submit your Bar Council credentials. Once a super-admin verifies you, you'll be listed in Find-a-Lawyer and citizens can reach you over encrypted chat.
             </div>
@@ -335,7 +335,7 @@ function ApplyLawyerScreen() {
                   return (
                     <span key={s} onClick={() => toggleSpec(s)} style={{
                       padding: '6px 11px', borderRadius: 999, cursor: 'pointer', fontSize: 12, fontWeight: 500,
-                      background: on ? 'var(--navy)' : 'rgba(255,255,255,0.7)', color: on ? '#F7F3EE' : 'var(--ink-2)',
+                      background: on ? 'var(--brand)' : 'var(--surface)', color: on ? '#F7F3EE' : 'var(--ink-2)',
                       border: '1px solid ' + (on ? 'var(--navy)' : 'var(--mist)'),
                     }}>{s}</span>
                   );

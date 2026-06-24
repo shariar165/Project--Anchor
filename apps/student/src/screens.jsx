@@ -230,7 +230,7 @@ function HomeScreen() {
           /* Empty state — no filed cases yet */
           <div style={{ paddingRight: 20 }}>
             <button onClick={() => go('new-filing')} style={{
-              width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.6)',
+              width: '100%', textAlign: 'left', background: 'var(--surface)',
               border: '1px dashed var(--mist-2)', borderRadius: 14, padding: '14px 16px', cursor: 'pointer',
               display: 'flex', alignItems: 'center', gap: 12,
             }}>
@@ -258,7 +258,7 @@ function HomeScreen() {
               const displayState = stateMap[f.state] || 'submitted';
               return (
                 <button key={f.id} onClick={() => go('filing', { id: f.id })} style={{
-                  width: 240, flexShrink: 0, textAlign: 'left', background: 'rgba(255,255,255,0.7)',
+                  width: 240, flexShrink: 0, textAlign: 'left', background: 'var(--surface)',
                   border: '1px solid var(--mist)', borderRadius: 14, padding: 14, cursor: 'pointer',
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -316,12 +316,12 @@ function AIInputCard({ onActivate }) {
   return (
     <div onClick={onActivate} style={{
       border: '1px solid var(--mist-2)', borderRadius: 18, padding: '14px 14px 12px',
-      background: 'rgba(255,255,255,0.7)', cursor: 'pointer',
+      background: 'var(--surface)', cursor: 'pointer',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{
           width: 30, height: 30, borderRadius: 999,
-          background: 'var(--navy)', color: '#F7F3EE',
+          background: 'var(--brand)', color: '#F7F3EE',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontWeight: 500, fontSize: 14,
         }}>A</div>
@@ -443,7 +443,7 @@ function _renderLine(line, i, accentColor) {
     const badge = React.createElement('span', {
       key: 'b', style: {
         flexShrink: 0, width: 20, height: 20, borderRadius: 999,
-        background: accentColor || 'var(--navy)', color: '#F7F3EE',
+        background: accentColor || 'var(--brand)', color: '#F7F3EE',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontFamily: 'var(--font-serif)', fontSize: 11, fontWeight: 500,
       }
@@ -508,7 +508,7 @@ function AIBubble({ msg, accent, accentBg, accentBd, lang, go }) {
       {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <div style={{
-          width: 22, height: 22, borderRadius: 999, background: 'var(--navy)', color: '#F7F3EE',
+          width: 22, height: 22, borderRadius: 999, background: 'var(--brand)', color: '#F7F3EE',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontWeight: 500, fontSize: 11,
         }}>A</div>
@@ -566,7 +566,7 @@ function AIBubbleTyping() {
     <div className="bubble-ai">
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <div style={{
-          width: 22, height: 22, borderRadius: 999, background: 'var(--navy)', color: '#F7F3EE',
+          width: 22, height: 22, borderRadius: 999, background: 'var(--brand)', color: '#F7F3EE',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontWeight: 500, fontSize: 11,
         }}>A</div>
@@ -686,7 +686,7 @@ function ChatScreen() {
         </div>
         <div style={{ flex: 1 }}/>
         <button onClick={() => setLang(lang === 'EN' ? 'BN' : 'EN')} style={{
-          padding: '7px 11px', borderRadius: 999, background: 'rgba(255,255,255,0.7)',
+          padding: '7px 11px', borderRadius: 999, background: 'var(--surface)',
           border: '1px solid var(--mist-2)', fontSize: 11, fontWeight: 600, letterSpacing: '0.1em',
           color: 'var(--ink-2)', cursor: 'pointer',
         }}>{lang === 'EN' ? 'EN · BN' : 'BN · EN'}</button>
@@ -736,11 +736,11 @@ function ChatScreen() {
       {/* Sticky input bar */}
       <div style={{
         position: 'sticky', bottom: 80, padding: '8px 12px',
-        background: 'linear-gradient(180deg, transparent, rgba(247,243,238,0.98) 30%)',
+        background: 'linear-gradient(180deg, transparent, var(--bar-bg) 30%)',
       }}>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 8, padding: '6px 6px 6px 14px',
-          background: '#fff', border: '1px solid var(--mist-2)', borderRadius: 999,
+          background: 'var(--surface-solid)', border: '1px solid var(--mist-2)', borderRadius: 999,
           boxShadow: '0 4px 18px rgba(11,29,53,0.06)',
         }}>
           <input
@@ -763,7 +763,7 @@ function ChatScreen() {
             disabled={!canSend}
             style={{
               width: 36, height: 36, borderRadius: 999,
-              background: canSend ? 'var(--navy)' : 'var(--mist-2)',
+              background: canSend ? 'var(--brand)' : 'var(--mist-2)',
               border: 'none', cursor: canSend ? 'pointer' : 'not-allowed',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               color: '#F7F3EE', transition: 'background 0.15s',
@@ -1031,7 +1031,7 @@ function AlertScreen() {
             <button key={p} onClick={() => setPhase(p)}
               className={phase === p ? 'on' : ''}
               style={phase === p
-                ? { background: phase === 'during' ? '#E8312A' : 'var(--navy)' }
+                ? { background: phase === 'during' ? '#E8312A' : 'var(--brand)' }
                 : { color: phase === 'during' ? 'rgba(247,243,238,0.7)' : 'var(--ink-2)' }}>
               <span style={{ textTransform: 'capitalize' }}>{p}</span>
             </button>
@@ -1581,7 +1581,7 @@ function AlertBefore({ token }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {/* Risk zone list — live from backend */}
-      <div className="card" style={{ background: 'rgba(255,255,255,0.7)' }}>
+      <div className="card" style={{ background: 'var(--surface)' }}>
         <div className="eyebrow" style={{ marginBottom: 8 }}>Around you</div>
         {zones.length === 0 ? (
           <div style={{ fontSize: 12, color: 'var(--ink-2)', padding: '8px 0' }}>
@@ -1610,7 +1610,7 @@ function AlertBefore({ token }) {
       </div>
 
       {/* Threat documentation */}
-      <div className="card" style={{ background: 'rgba(255,255,255,0.7)' }}>
+      <div className="card" style={{ background: 'var(--surface)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
           <IconLock size={14} stroke="var(--navy)"/>
           <div className="eyebrow">Document a threat (encrypted)</div>
@@ -1633,7 +1633,7 @@ function AlertBefore({ token }) {
         {contacts.map((c, i) => (
           <div key={i} style={{
             display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-            background: 'rgba(255,255,255,0.6)', border: '1px solid var(--mist)',
+            background: 'var(--surface)', border: '1px solid var(--mist)',
             borderRadius: 12, marginBottom: 6,
           }}>
             <div style={{
@@ -1740,7 +1740,7 @@ function AlertAfter({ eventId, token, go }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {/* Evidence upload */}
-      <div className="card" style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(74,107,92,0.3)' }}>
+      <div className="card" style={{ background: 'var(--surface)', borderColor: 'rgba(74,107,92,0.3)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <IconLock size={16} stroke="var(--sage-2)"/>
           <div className="eyebrow" style={{ color: 'var(--sage-2)' }}>Evidence vault · encrypted</div>
@@ -1754,7 +1754,7 @@ function AlertAfter({ eventId, token, go }) {
           {mediaTypes.map(t => (
             <button key={t} onClick={() => setMediaType(t)} style={{
               padding: '5px 12px', borderRadius: 999, fontSize: 12,
-              background: mediaType === t ? 'var(--navy)' : 'var(--cream)',
+              background: mediaType === t ? 'var(--brand)' : 'var(--cream)',
               color: mediaType === t ? '#fff' : 'var(--ink-2)',
               border: `1px solid ${mediaType === t ? 'var(--navy)' : 'var(--mist)'}`,
               cursor: 'pointer', fontFamily: 'var(--font-sans)',
@@ -1813,7 +1813,7 @@ function AlertAfter({ eventId, token, go }) {
           <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 0' }}>No previous alerts.</div>
         ) : history.map((a, i) => (
           <div key={a.event_id || i} style={{
-            padding: '12px 14px', background: 'rgba(255,255,255,0.6)',
+            padding: '12px 14px', background: 'var(--surface)',
             border: '1px solid var(--mist)', borderRadius: 12, marginBottom: 8,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2351,7 +2351,7 @@ function ComposeScreen({ params = {} }) {
       <div style={{ padding: '10px 20px 0' }}>
         <div style={{
           padding: '12px 14px', borderRadius: 12,
-          background: 'rgba(255,255,255,0.6)', border: '1px solid var(--mist)',
+          background: 'var(--surface)', border: '1px solid var(--mist)',
         }}>
           <div className="eyebrow" style={{ marginBottom: 4 }}>You told Anchor AI</div>
           <div className="serif" style={{ fontStyle: 'italic', fontSize: 13.5, color: 'var(--ink)', lineHeight: 1.5 }}>
@@ -2389,7 +2389,7 @@ function ComposeScreen({ params = {} }) {
       <div style={{ padding: '12px 20px 0' }}>
         <div style={{
           padding: '10px 14px', borderRadius: 12,
-          background: 'rgba(255,255,255,0.6)', border: '1px solid var(--mist)',
+          background: 'var(--surface)', border: '1px solid var(--mist)',
           display: 'flex', alignItems: 'center', gap: 10,
         }}>
           <div style={{
@@ -2672,7 +2672,7 @@ function RightCard({ r, lang, open, onToggle }) {
 
         <button onClick={onToggle} style={{
           marginTop: 12, width: '100%', padding: '9px 12px', borderRadius: 10,
-          background: open ? 'transparent' : 'var(--navy)', color: open ? 'var(--ink-2)' : '#F7F3EE',
+          background: open ? 'transparent' : 'var(--brand)', color: open ? 'var(--ink-2)' : '#F7F3EE',
           border: open ? '1px solid var(--mist)' : 'none', cursor: 'pointer',
           fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500,
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -2742,7 +2742,7 @@ function RightsScreen() {
             return (
               <span key={c} onClick={() => setCategory(c)} className={bn ? 'bn' : ''} style={{
                 padding: '6px 11px', borderRadius: 999, whiteSpace: 'nowrap', cursor: 'pointer',
-                background: active ? 'var(--ember)' : 'rgba(255,255,255,0.7)',
+                background: active ? 'var(--ember)' : 'var(--surface)',
                 color: active ? '#F7F3EE' : 'var(--ink-2)',
                 border: '1px solid ' + (active ? 'var(--ember)' : 'var(--mist)'),
                 fontSize: 11.5, fontWeight: 500,
