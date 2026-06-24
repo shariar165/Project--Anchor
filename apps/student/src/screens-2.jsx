@@ -1716,7 +1716,19 @@ function ProfileScreen() {
       if (!res.ok) setTestMsg({ ok: false, text: 'Could not send test — please try again.' });
       else if (!data.tokens) setTestMsg({ ok: false, text: 'No registered devices yet. Turn on notifications first.' });
       else if (data.delivered > 0) setTestMsg({ ok: true, text: 'Sent ✓ A notification should appear on this device.' });
-      else setTestMsg({ ok: false, text: 'Delivery failed on this device — toggle notifications off and on, then retry.' });
+      else {
+        // Delivered to none — surface the actual reason the backend reported per device
+        // instead of always blaming the toggle.
+        const errs = (data.results || []).map(r => r.error).filter(Boolean);
+        const cat = errs[0];
+        const text =
+          cat === 'unconfigured' ? 'Push isn’t set up on the server yet.'
+          : (cat === 'unregistered' || cat === 'sender_id_mismatch')
+              ? 'This device’s notification token expired — turn notifications off and on to refresh.'
+          : cat === 'unavailable' ? 'Push service is busy — try again in a moment.'
+          : 'Couldn’t deliver to this device — please try again.';
+        setTestMsg({ ok: false, text });
+      }
     } catch (_) {
       setTestMsg({ ok: false, text: 'Network error — please try again.' });
     }
