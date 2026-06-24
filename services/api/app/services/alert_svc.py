@@ -14,6 +14,7 @@ import secrets
 import string
 import uuid
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, and_, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,9 +23,29 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Bangladesh Standard Time (UTC+6). All user-facing alert timestamps are rendered
+# here — Bangladeshi users can't read UTC.
+_BD_TZ = ZoneInfo("Asia/Dhaka")
+
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+def format_bd_time(dt: datetime | None) -> str:
+    """Format a datetime in Bangladesh Standard Time, e.g. '25 Jun, 3:45 PM (BdST)'.
+
+    Treats naive datetimes (SQLite) as UTC. Returns 'unknown time' for None.
+    Avoids platform-specific strftime padding flags (%-d/%#d) for cross-OS safety.
+    """
+    if dt is None:
+        return "unknown time"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local = dt.astimezone(_BD_TZ)
+    day = str(local.day)                         # no leading zero
+    hour12 = local.hour % 12 or 12
+    return f"{day} {local.strftime('%b')}, {hour12}:{local.strftime('%M %p')} (BdST)"
 
 
 def _today_str() -> str:
@@ -316,9 +337,10 @@ async def notify_proctor(event_id: uuid.UUID) -> None:
                 q2 = select(User).where(User.role == Role.admin)
                 proctors = (await db.execute(q2)).scalars().all()
 
-            ts = event.created_at.strftime("%H:%M UTC") if event.created_at else "unknown time"
-            lat_str = f"{event.lat:.4f}" if event.lat else "N/A"
-            lng_str = f"{event.lng:.4f}" if event.lng else "N/A"
+            ts = format_bd_time(event.created_at)
+            # Full precision — truncating to 4dp drops ~11 m and shifts the map pin.
+            lat_str = str(event.lat) if event.lat is not None else "N/A"
+            lng_str = str(event.lng) if event.lng is not None else "N/A"
 
             from app.models.alert import UserFCMToken
             for proctor in proctors:
@@ -420,8 +442,9 @@ async def notify_nearby_users(event_id: uuid.UUID, zone_id: uuid.UUID) -> None:
 
             settings = get_settings()
             redis = get_redis()
-            lat_str = f"{event.lat:.4f}"
-            lng_str = f"{event.lng:.4f}"
+            # Full precision — truncating to 4dp drops ~11 m and shifts the map pin.
+            lat_str = str(event.lat)
+            lng_str = str(event.lng)
 
             for i in range(0, len(nearby), settings.alert_nearby_batch_size):
                 if await is_fanout_paused(redis, event.event_id):
@@ -437,16 +460,18 @@ async def notify_nearby_users(event_id: uuid.UUID, zone_id: uuid.UUID) -> None:
                         token_to_hash[tok] = user["user_id_hash"]
 
                 if all_tokens:
+                    ts = format_bd_time(event.created_at)
                     results = await fcm_svc.send_batch(
                         all_tokens,
                         title="Anchor: Someone nearby needs help",
-                        body="An emergency alert was just triggered near you. Tap to see how you can help.",
+                        body=f"An emergency alert was triggered near you at {ts}. Tap to see how you can help.",
                         data={
                             "event_id": str(event.event_id),
                             "category": "nearby_alert",
                             "deep_link": f"/?alert={event.event_id}",
                             "lat": lat_str,
                             "lng": lng_str,
+                            "time": ts,
                         },
                     )
                     dead_tokens: list[str] = []
@@ -515,7 +540,7 @@ async def notify_contacts(event_id: uuid.UUID) -> None:
                 logger.warning("[ALERT] Could not decrypt contacts for event %s", event_id)
                 return
 
-            ts = event.created_at.strftime("%H:%M") if event.created_at else "unknown time"
+            ts = format_bd_time(event.created_at)
             for contact in contacts:
                 phone = contact.get("phone", "")
                 name  = contact.get("name", "Someone")
@@ -542,6 +567,102 @@ async def notify_contacts(event_id: uuid.UUID) -> None:
             await db.commit()
     except Exception as exc:
         logger.exception("[ALERT] notify_contacts failed for event %s: %s", event_id, exc)
+
+
+async def notify_responders_safe(event_id: uuid.UUID) -> None:
+    """Tell everyone who came to help that the alerting user is now safe.
+
+    Targets users who responded 'responding' (we stored their real user_id for this
+    purpose). Opens its own DB session — runs as a background task.
+    """
+    from app.database import AsyncSessionLocal
+    from app.models.alert import (
+        AlertEvent, AlertResponse, AlertNotification, UserFCMToken,
+        RecipientType, NotifChannel, NotifStatus, ResponseType,
+    )
+    from app.services import fcm as fcm_svc
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(AlertEvent).where(AlertEvent.event_id == event_id)
+            )
+            event = result.scalars().first()
+            if not event:
+                return
+
+            # Responders who said they were coming and whose identity we can resolve.
+            resp_rows = await db.execute(
+                select(AlertResponse).where(
+                    and_(
+                        AlertResponse.event_id == event.id,
+                        AlertResponse.response_type == ResponseType.responding,
+                        AlertResponse.responder_user_id.isnot(None),
+                    )
+                )
+            )
+            responder_ids = {r.responder_user_id for r in resp_rows.scalars().all()}
+            if not responder_ids:
+                return
+
+            tok_result = await db.execute(
+                select(UserFCMToken).where(
+                    and_(
+                        UserFCMToken.user_id.in_(responder_ids),
+                        UserFCMToken.disabled_at.is_(None),
+                    )
+                )
+            )
+            tok_rows = tok_result.scalars().all()
+            tokens = [t.fcm_token for t in tok_rows]
+            token_to_user: dict[str, uuid.UUID] = {t.fcm_token: t.user_id for t in tok_rows}
+            if not tokens:
+                return
+
+            results = await fcm_svc.send_batch(
+                tokens,
+                title="Anchor: They are safe now",
+                body="The person you were helping has marked themselves safe. Thank you for responding.",
+                data={
+                    "event_id": str(event.event_id),
+                    "category": "alert_safe",
+                    "deep_link": f"/?alert={event.event_id}",
+                },
+            )
+
+            dead_tokens: list[str] = []
+            for tok, res in results.items():
+                msg_id = res["message_id"]
+                if res["error"] in fcm_svc.PERMANENT_ERRORS:
+                    dead_tokens.append(tok)
+                uid = token_to_user.get(tok)
+                db.add(AlertNotification(
+                    event_id=event.id,
+                    recipient_type=RecipientType.nearby_user,
+                    recipient_ref=str(uid) if uid else tok[:20],
+                    channel=NotifChannel.push,
+                    fcm_message_id=msg_id,
+                    status=NotifStatus.sent if msg_id else NotifStatus.failed,
+                    attempts=1,
+                    last_attempt_at=_now(),
+                    sent_at=_now() if msg_id else None,
+                ))
+
+            if dead_tokens:
+                await db.execute(
+                    update(UserFCMToken)
+                    .where(
+                        and_(
+                            UserFCMToken.fcm_token.in_(dead_tokens),
+                            UserFCMToken.disabled_at.is_(None),
+                        )
+                    )
+                    .values(disabled_at=_now())
+                )
+
+            await db.commit()
+    except Exception as exc:
+        logger.exception("[ALERT] notify_responders_safe failed for event %s: %s", event_id, exc)
 
 
 # ─── State transitions ───────────────────────────────────────────────────────

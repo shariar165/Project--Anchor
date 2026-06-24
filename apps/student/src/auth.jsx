@@ -41,6 +41,37 @@ const FIREBASE_VAPID_KEY = window.ENV?.FIREBASE_VAPID_KEY;
 
 let _fcmForegroundBound = false;  // bind messaging.onMessage only once per page
 
+// Rich foreground notification — mirrors buildAnchorNotification in
+// firebase-messaging-sw.js so the in-app (foreground) push looks identical to the
+// background one: icon, badge, vibration, and action buttons for emergencies.
+function buildForegroundNotification(payload) {
+  const n = payload.notification || {};
+  const data = payload.data || {};
+  const category = data.category || 'nearby_alert';
+  const isEmergency = category === 'nearby_alert' || category === 'campus_alert';
+  const title = n.title
+    || (category === 'alert_safe' ? 'Anchor: They are safe now' : 'Anchor Alert');
+  const opts = {
+    body: n.body || 'Someone nearby needs help.',
+    icon: '/icons/icon-192.png',
+    badge: '/icons/badge.png',
+    tag: 'anchor-alert-' + (data.event_id || 'general'),
+    renotify: true,
+    dir: 'auto',
+    timestamp: Date.now(),
+    requireInteraction: isEmergency,
+    vibrate: isEmergency ? [200, 100, 200, 100, 200] : [120],
+    data: { event_id: data.event_id, lat: data.lat, lng: data.lng, category, deep_link: data.deep_link },
+  };
+  if (category === 'nearby_alert') {
+    opts.actions = [
+      { action: 'help', title: "I'm coming" },
+      { action: 'view', title: 'View map' },
+    ];
+  }
+  return { title, opts };
+}
+
 // ── Push capability detection ────────────────────────────────────────────────
 // Browsers cannot silently enable notifications — permission is granted only on a
 // user gesture, and several environments (iOS browser tabs, insecure origins) can
@@ -145,14 +176,8 @@ async function syncPushToken({ interactive = false } = {}) {
       _fcmForegroundBound = true;
       try {
         messaging.onMessage((payload) => {
-          const n = payload.notification || {};
-          const data = payload.data || {};
-          swReg.showNotification(n.title || 'Anchor Alert', {
-            body: n.body || 'Someone nearby needs help.',
-            tag: 'anchor-alert-' + (data.event_id || 'general'),
-            data: { event_id: data.event_id, lat: data.lat, lng: data.lng },
-            renotify: true,
-          }).catch(() => {});
+          const { title, opts } = buildForegroundNotification(payload);
+          swReg.showNotification(title, opts).catch(() => {});
         });
       } catch (e) { console.warn('[FCM] onMessage setup failed:', e); }
     }

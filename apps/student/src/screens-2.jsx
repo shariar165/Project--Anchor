@@ -488,12 +488,14 @@ function MapScreen({ params } = {}) {
   const [respondStatus, setRespondStatus] = React.useState((eventId && responderToken) ? 'loading' : 'idle');
   const [respondError,  setRespondError]  = React.useState(null);
 
-  // Prefer authoritative backend coordinates; fall back to the push params.
+  // Prefer authoritative backend coordinates (full precision, and updated live as
+  // the victim moves); fall back to the push params only until the backend loads.
   const pushLat = params ? parseFloat(params.lat) : NaN;
   const pushLng = params ? parseFloat(params.lng) : NaN;
-  const focusLat = isFinite(pushLat) ? pushLat : (alertInfo && isFinite(alertInfo.lat) ? alertInfo.lat : NaN);
-  const focusLng = isFinite(pushLng) ? pushLng : (alertInfo && isFinite(alertInfo.lng) ? alertInfo.lng : NaN);
+  const focusLat = (alertInfo && isFinite(alertInfo.lat)) ? alertInfo.lat : (isFinite(pushLat) ? pushLat : NaN);
+  const focusLng = (alertInfo && isFinite(alertInfo.lng)) ? alertInfo.lng : (isFinite(pushLng) ? pushLng : NaN);
   const hasFocus = isFinite(focusLat) && isFinite(focusLng);
+  const didCenterRef = React.useRef(false);
 
   const [radiusKm,    setRadiusKm]    = React.useState(10);
   const [userLoc,     setUserLoc]     = React.useState({ lat: 23.7450, lng: 90.3718 });
@@ -564,42 +566,61 @@ function MapScreen({ params } = {}) {
     };
   }, []);
 
-  // Center on the alert location and drop a marker when arriving from a push.
+  // Drop a marker on the alert location and FOLLOW it as the victim moves (the
+  // alert poll below refreshes alertInfo). Re-center the view only on first focus
+  // so we don't yank the map while the responder is panning.
   React.useEffect(() => {
     const map = leafletMapRef.current;
     if (!map || !hasFocus) return;
-    map.setView([focusLat, focusLng], 16);
-    if (alertMarkerRef.current) { try { map.removeLayer(alertMarkerRef.current); } catch (_) {} }
-    alertMarkerRef.current = L.circleMarker([focusLat, focusLng], {
-      radius: 11, color: '#E8312A', fillColor: '#E8312A', fillOpacity: 0.85, weight: 3,
-    }).addTo(map)
-      .bindPopup('<b style="color:#E8312A">Active alert here</b><br>Someone nearby needs help. Tap zones for details.')
-      .openPopup();
-    return () => {
-      if (alertMarkerRef.current) { try { map.removeLayer(alertMarkerRef.current); } catch (_) {} alertMarkerRef.current = null; }
-    };
+    if (alertMarkerRef.current) {
+      alertMarkerRef.current.setLatLng([focusLat, focusLng]);
+    } else {
+      alertMarkerRef.current = L.circleMarker([focusLat, focusLng], {
+        radius: 11, color: '#E8312A', fillColor: '#E8312A', fillOpacity: 0.85, weight: 3,
+      }).addTo(map)
+        .bindPopup('<b style="color:#E8312A">Active alert here</b><br>Someone nearby needs help. Tap zones for details.');
+    }
+    if (!didCenterRef.current) {
+      map.setView([focusLat, focusLng], 16);
+      alertMarkerRef.current.openPopup();
+      didCenterRef.current = true;
+    }
   }, [focusLat, focusLng]);
 
-  // Responder flow — fetch the authoritative alert location + state so we know
-  // whether to prompt the user to help and where the person actually is.
+  // Responder flow — poll the authoritative alert location + state every 5s so the
+  // map FOLLOWS the moving victim and we detect when they mark themselves safe.
   React.useEffect(() => {
     if (!eventId || !responderToken) { setRespondStatus('idle'); return; }
     let cancelled = false;
+    let firstLoad = true;
     setRespondStatus('loading');
     setRespondError(null);
-    alertApiGet('/v1/alerts/' + eventId, responderToken)
-      .then(d => {
+    const tick = async () => {
+      try {
+        const d = await alertApiGet('/v1/alerts/' + eventId, responderToken);
         if (cancelled) return;
         setAlertInfo({ lat: d.lat, lng: d.lng, state: d.state });
-        setRespondStatus(d.state === 'active' ? 'prompt' : 'closed');
-      })
-      .catch(e => {
+        const active = d.state === 'active';
+        setRespondStatus(prev => {
+          if (firstLoad) { firstLoad = false; return active ? 'prompt' : 'closed'; }
+          if (active) return prev;  // keep prompt / sending / responded as-is
+          // Alert resolved: if we were helping, show "they're safe"; else it closed.
+          if (prev === 'responded' || prev === 'sending') return 'safe';
+          if (prev === 'prompt' || prev === 'loading') return 'closed';
+          return prev;
+        });
+      } catch (e) {
         if (cancelled) return;
+        if (!firstLoad) return;  // transient poll error — keep current state
+        firstLoad = false;
         const msg = String(e && e.message || '').toLowerCase();
         if (msg.includes('not found') || msg.includes('404')) setRespondStatus('closed');
         else { setRespondError('Could not load this alert.'); setRespondStatus('error'); }
-      });
-    return () => { cancelled = true; };
+      }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(id); };
   }, [eventId, responderToken]);
 
   // Distance from this responder to the person who needs help — only when we have a
@@ -618,8 +639,17 @@ function MapScreen({ params } = {}) {
     setRespondError(null);
     setRespondStatus('sending');
     try {
+      // Share the responder's real position so the alerting user sees who is
+      // coming and from where (only when we have an actual GPS fix).
+      const me = userLocRef.current;
+      const haveFix = locStatus === 'found' && me && isFinite(me.lat) && isFinite(me.lng);
       await alertApiPost('/v1/alerts/' + eventId + '/respond',
-        { response_type: 'responding', distance_m: responderDistanceM() }, responderToken);
+        {
+          response_type: 'responding',
+          distance_m: responderDistanceM(),
+          lat: haveFix ? me.lat : null,
+          lng: haveFix ? me.lng : null,
+        }, responderToken);
       setRespondStatus('responded');
     } catch (e) {
       const msg = String(e && e.message || '').toLowerCase();
@@ -868,6 +898,26 @@ function AlertRespondSheet({ status, error, distanceTxt, onYes, onNo, onClose })
                     fontSize:14, fontFamily:'var(--font-sans)' }}>
         Loading alert…
       </div>
+    );
+  }
+
+  if (status === 'safe') {
+    return sheet(
+      <>
+        <div style={{ width:52, height:52, borderRadius:999, margin:'0 auto 14px',
+                      background:'rgba(74,107,92,0.15)', border:'1px solid rgba(74,107,92,0.4)',
+                      display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <IconCheck size={26} sw={2.4} stroke="var(--sage)"/>
+        </div>
+        <div style={{ fontSize:21, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)',
+                      textAlign:'center', marginBottom:8 }}>They're safe now</div>
+        <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.6, textAlign:'center',
+                    fontFamily:'var(--font-sans)', marginBottom:20 }}>
+          The person you were helping has marked themselves safe. Thank you for responding.
+        </p>
+        <button onClick={onClose} className="btn btn-primary"
+          style={{ width:'100%', height:48, borderRadius:12, fontSize:15, fontWeight:600 }}>Close</button>
+      </>
     );
   }
 
