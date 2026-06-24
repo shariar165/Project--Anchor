@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from app.models.alert import (
     AlertEvent, AlertPhase1Record, AlertBan, AlertResponse,
-    AlertEvidence, UserFCMToken, UserLocationSnapshot,
+    AlertEvidence, UserFCMToken, UserLocationSnapshot, Zone,
     AlertState, ResponseType,
 )
 
@@ -39,6 +39,7 @@ def _mock_notifications(monkeypatch):
     monkeypatch.setattr("app.services.alert_svc.notify_proctor", _noop)
     monkeypatch.setattr("app.services.alert_svc.notify_nearby_users", _noop)
     monkeypatch.setattr("app.services.alert_svc.notify_contacts", _noop)
+    monkeypatch.setattr("app.services.alert_svc.notify_responders_safe", _noop)
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -199,7 +200,8 @@ async def test_lazy_autoclose(client: AsyncClient, registered_user, db_session, 
 @pytest.mark.asyncio
 async def test_respond_to_alert(client: AsyncClient, registered_user, second_user, db_session, mock_redis, alert_event_id):
     resp = await client.post(f"/v1/alerts/{alert_event_id}/respond",
-                             json={"response_type": "responding", "distance_m": 450},
+                             json={"response_type": "responding", "distance_m": 450,
+                                   "lat": 23.7110, "lng": 90.4080},
                              headers=_auth(second_user["tokens"]))
     assert resp.status_code == 200
     assert resp.json()["response_type"] == "responding"
@@ -207,7 +209,13 @@ async def test_respond_to_alert(client: AsyncClient, registered_user, second_use
     result = await db_session.execute(select(AlertResponse))
     responses = result.scalars().all()
     assert len(responses) == 1
-    assert responses[0].response_type == ResponseType.responding
+    r = responses[0]
+    assert r.response_type == ResponseType.responding
+    # Responder's real position + identity are persisted (for the live map and the
+    # "victim is safe" push back to responders).
+    assert r.responder_lat == 23.7110
+    assert r.responder_lng == 90.4080
+    assert r.responder_user_id is not None
 
 
 @pytest.mark.asyncio
@@ -218,14 +226,16 @@ async def test_respond_cannot_help(client: AsyncClient, registered_user, second_
     assert resp.status_code == 200
 
 
-# ─── Responder listing tests (owner-only, distance-only) ─────────────────────
+# ─── Responder listing tests (owner-only, with real responder coordinates) ───
 
 @pytest.mark.asyncio
 async def test_list_responders_owner(client: AsyncClient, registered_user, second_user, db_session, mock_redis, alert_event_id):
-    """Owner can list responders; response carries zone radius + distance, never coordinates."""
-    # Second user responds with a known distance
+    """Owner can list responders; response carries zone radius, distance, and the
+    responder's real coordinates (shared between the two parties of one alert)."""
+    # Second user responds with a known distance + real position
     await client.post(f"/v1/alerts/{alert_event_id}/respond",
-                      json={"response_type": "responding", "distance_m": 200},
+                      json={"response_type": "responding", "distance_m": 200,
+                            "lat": 23.7120, "lng": 90.4090},
                       headers=_auth(second_user["tokens"]))
 
     resp = await client.get(f"/v1/alerts/{alert_event_id}/responders",
@@ -239,9 +249,9 @@ async def test_list_responders_owner(client: AsyncClient, registered_user, secon
     item = data["responders"][0]
     assert item["distance_m"] == 200
     assert item["response_type"] == "responding"
-    # Privacy: responder coordinates are never exposed
-    assert "lat" not in item
-    assert "lng" not in item
+    # Responder's real position is now returned so the victim can see who is coming.
+    assert item["lat"] == 23.7120
+    assert item["lng"] == 90.4090
 
 
 @pytest.mark.asyncio
@@ -267,6 +277,66 @@ async def test_list_responders_no_zone(client: AsyncClient, registered_user, db_
     assert data["zone_radius_m"] is None
     assert data["responder_count"] == 0
     assert data["responders"] == []
+
+
+# ─── Live-location tracking tests ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_update_alert_location_owner(client: AsyncClient, registered_user, db_session, mock_redis, alert_event_id):
+    """Owner updates live location; event AND its fan-out zone re-centre."""
+    new_lat, new_lng = 23.7200, 90.4100
+    resp = await client.post(f"/v1/alerts/{alert_event_id}/location",
+                             json={"lat": new_lat, "lng": new_lng},
+                             headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["lat"] == new_lat
+
+    db_session.expire_all()
+    event = (await db_session.execute(
+        select(AlertEvent).where(AlertEvent.event_id == uuid.UUID(alert_event_id))
+    )).scalars().first()
+    assert event.lat == new_lat and event.lng == new_lng
+    assert event.location_updated_at is not None
+
+    zone = (await db_session.execute(
+        select(Zone).where(Zone.id == event.alert_zone_id)
+    )).scalars().first()
+    assert zone.center_lat == new_lat and zone.center_lng == new_lng
+
+
+@pytest.mark.asyncio
+async def test_update_alert_location_non_owner_forbidden(client: AsyncClient, registered_user, second_user, db_session, mock_redis, alert_event_id):
+    resp = await client.post(f"/v1/alerts/{alert_event_id}/location",
+                             json={"lat": 23.72, "lng": 90.41},
+                             headers=_auth(second_user["tokens"]))
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_update_alert_location_rejected_after_safe(client: AsyncClient, registered_user, db_session, mock_redis, alert_event_id):
+    """Once the alert is no longer active, live-location updates are rejected."""
+    safe = await client.post(f"/v1/alerts/{alert_event_id}/safe",
+                             headers=_auth(registered_user["tokens"]))
+    assert safe.status_code == 200
+    resp = await client.post(f"/v1/alerts/{alert_event_id}/location",
+                             json={"lat": 23.72, "lng": 90.41},
+                             headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_mark_safe_notifies_responders(client: AsyncClient, registered_user, db_session, mock_redis, alert_event_id, monkeypatch):
+    """Marking safe schedules the 'victim is safe' push back to responders."""
+    called = {}
+
+    async def _spy(event_id):
+        called["event_id"] = event_id
+
+    monkeypatch.setattr("app.services.alert_svc.notify_responders_safe", _spy)
+    resp = await client.post(f"/v1/alerts/{alert_event_id}/safe",
+                             headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 200
+    assert str(called.get("event_id")) == alert_event_id
 
 
 # ─── Evidence upload tests ───────────────────────────────────────────────────

@@ -363,7 +363,7 @@ function AppProvider({ children }) {
       const a = params.get('alert');
       if (a && auth.isAuthenticated) {
         openAlert(a, params.get('lat'), params.get('lng'));
-        ['alert', 'lat', 'lng'].forEach(k => params.delete(k));
+        ['alert', 'lat', 'lng', 'respond'].forEach(k => params.delete(k));
         const qs = params.toString();
         window.history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
       }

@@ -114,6 +114,34 @@ def _result(message_id: str | None = None, error: str | None = None) -> SendResu
     return {"message_id": message_id, "ok": message_id is not None, "error": error}
 
 
+# Notification chrome assets (served at the student-app web root).
+_NOTIF_ICON = "/icons/icon-192.png"
+_NOTIF_BADGE = "/icons/badge.png"
+
+
+def _webpush_config(title: str, body: str, data: dict[str, str] | None):
+    """Webpush block with native-looking chrome (icon/badge) and a deep link.
+
+    The service worker's onBackgroundMessage ultimately controls rendering, but
+    these fields make the fallback render look right and carry the click target.
+    """
+    from firebase_admin import messaging
+    d = data or {}
+    event_id = d.get("event_id")
+    link = d.get("deep_link") or "/"
+    return messaging.WebpushConfig(
+        notification=messaging.WebpushNotification(
+            title=title,
+            body=body,
+            icon=_NOTIF_ICON,
+            badge=_NOTIF_BADGE,
+            tag=f"anchor-alert-{event_id}" if event_id else "anchor-alert",
+            renotify=True,
+        ),
+        fcm_options=messaging.WebpushFCMOptions(link=link),
+    )
+
+
 def _message(token: str, title: str, body: str, data: dict[str, str] | None, ttl: int):
     from firebase_admin import messaging
     return messaging.Message(
@@ -127,9 +155,7 @@ def _message(token: str, title: str, body: str, data: dict[str, str] | None, ttl
                 aps=messaging.Aps(sound="default", content_available=True),
             ),
         ),
-        webpush=messaging.WebpushConfig(
-            notification=messaging.WebpushNotification(title=title, body=body),
-        ),
+        webpush=_webpush_config(title, body, data),
     )
 
 
@@ -195,9 +221,7 @@ async def send_batch(
                 data=data or {},
                 tokens=chunk,
                 android=messaging.AndroidConfig(priority="high", ttl=ttl),
-                webpush=messaging.WebpushConfig(
-                    notification=messaging.WebpushNotification(title=title, body=body),
-                ),
+                webpush=_webpush_config(title, body, data),
             )
             loop = asyncio.get_event_loop()
             resp = await loop.run_in_executor(

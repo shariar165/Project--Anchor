@@ -49,6 +49,15 @@ class AlertStatusResponse(BaseModel):
 class RespondRequest(BaseModel):
     response_type: Literal["responding", "cannot_help", "flagged_fake"]
     distance_m: int | None = None
+    # Responder's real position — plotted live on the alerting user's map.
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
+
+
+class AlertLiveLocationRequest(BaseModel):
+    """Live-location update from the alerting user while their alert is active."""
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
 
 
 class EvidenceUploadRequest(BaseModel):
@@ -75,9 +84,12 @@ class NearbyAlertItem(BaseModel):
 
 
 class ResponderItem(BaseModel):
-    # Distance only — responder coordinates are never exposed (privacy).
+    # Responder's real position is shared with the alerting user (the two parties of
+    # one active alert) so the victim can see who is coming and from where.
     model_config = ConfigDict(from_attributes=True)
     distance_m: int | None = None
+    lat: float | None = None
+    lng: float | None = None
     response_type: str
     created_at: datetime
 

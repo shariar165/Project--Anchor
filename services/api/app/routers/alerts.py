@@ -26,6 +26,7 @@ from app.models.alert import (
 from app.models.user import User, AccountStatus
 from app.redis import get_redis
 from app.schemas.alerts import (
+    AlertLiveLocationRequest,
     AlertRespondersResponse, AlertStatusResponse, AlertTriggerRequest, AlertTriggerResponse,
     EvidenceUploadRequest, EvidenceUploadResponse,
     FCMTokenRegisterRequest, LocationUpdateRequest,
@@ -422,9 +423,9 @@ async def list_alert_responders(
     """
     List responders for an alert — owner only.
 
-    Returns distance-only data (never responder coordinates) plus the alert
-    zone radius, so the client can draw the fan-out ring and place responder
-    dots at their real distance with a client-side randomised bearing.
+    Returns each responder's real position (lat/lng) and distance plus the alert
+    zone radius, so the alerting user can see who is coming and from where. Real
+    coordinates are shared only between the two parties of one active alert.
     """
     result = await db.execute(select(AlertEvent).where(AlertEvent.event_id == event_id))
     event = result.scalars().first()
@@ -455,6 +456,8 @@ async def list_alert_responders(
     responders = [
         ResponderItem(
             distance_m=r.distance_m,
+            lat=r.responder_lat,
+            lng=r.responder_lng,
             response_type=r.response_type.value,
             created_at=r.created_at,
         )
@@ -473,6 +476,7 @@ async def list_alert_responders(
 async def mark_safe(
     event_id: uuid.UUID,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis),
     token: TokenData = Depends(get_current_user),
@@ -489,7 +493,54 @@ async def mark_safe(
     await audit_log(db, "alert_marked_safe", token.user_id, get_ip(request),
                     {"event_id": str(event_id)})
     await db.commit()
+
+    # Tell everyone who came to help that the person is now safe.
+    background_tasks.add_task(alert_svc.notify_responders_safe, event.event_id)
+
     return {"message": "Alert closed. Stay safe.", "state": event.state.value}
+
+
+@router.post("/v1/alerts/{event_id}/location")
+@limiter.limit("30/minute")
+async def update_alert_location(
+    event_id: uuid.UUID,
+    body: AlertLiveLocationRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(get_current_user),
+):
+    """
+    Live-location update from the alerting user while their alert is active.
+
+    Moves the event location (and the linked fan-out zone centre) so responders
+    following the alert see the victim's current position instead of where they
+    first pressed the button. Owner-only; rejected once the alert is no longer active.
+    """
+    result = await db.execute(select(AlertEvent).where(AlertEvent.event_id == event_id))
+    event = result.scalars().first()
+    if not event:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    actor_hash = alert_svc.compute_anonymous_hash(token.user_id)
+    if event.anonymous_actor_hash != actor_hash:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Not authorized for this alert")
+    if event.state != AlertState.active:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Alert is no longer active")
+
+    event.lat = body.lat
+    event.lng = body.lng
+    event.gps_status = GPSStatus.ok
+    event.location_updated_at = datetime.now(tz=timezone.utc)
+
+    # Keep the fan-out ring centred on the victim's current position.
+    if event.alert_zone_id:
+        zone = await db.scalar(select(Zone).where(Zone.id == event.alert_zone_id))
+        if zone:
+            zone.center_lat = body.lat
+            zone.center_lng = body.lng
+
+    await db.commit()
+    return {"message": "Location updated", "lat": event.lat, "lng": event.lng}
 
 
 @router.post("/v1/alerts/{event_id}/need_more_help")
@@ -539,8 +590,11 @@ async def respond_to_alert(
     response = AlertResponse(
         event_id=event.id,
         responder_user_hash=responder_hash,
+        responder_user_id=token.user_id,
         response_type=ResponseType(body.response_type),
         distance_m=body.distance_m,
+        responder_lat=body.lat,
+        responder_lng=body.lng,
     )
     db.add(response)
 

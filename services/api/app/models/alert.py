@@ -186,6 +186,11 @@ class AlertEvent(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # user | timeout | admin | false_alert_finding
     closed_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Updated whenever the live location is refreshed while the alert is active, so
+    # responders can follow a moving victim and the UI can show location freshness.
+    location_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True,
     )
@@ -241,10 +246,18 @@ class AlertResponse(Base):
         Uuid, ForeignKey("alert_events.id", ondelete="CASCADE"), nullable=False, index=True,
     )
     responder_user_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Real responder identity — needed to fetch FCM tokens for the "victim is safe"
+    # push (the anonymized hash above can't be reversed). SET NULL on account delete.
+    responder_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     response_type: Mapped[ResponseType] = mapped_column(
         Enum(ResponseType, name="responsetype"), nullable=False,
     )
     distance_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Responder's real position, plotted live on the alerting user's map.
+    responder_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    responder_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

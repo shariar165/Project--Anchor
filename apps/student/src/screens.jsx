@@ -822,19 +822,50 @@ function AlertScreen() {
   const [noticeMsg, setNoticeMsg] = _useS(null);
   const startRef = _useR(null);
   const rafRef = _useR(null);
+  const liveWatchRef = _useR(null);
+  const lastLivePostRef = _useR(0);
   const token = localStorage.getItem('anchor_access_token');
+
+  // While the alert is active, keep the victim's location live so responders
+  // following the alert see where they are NOW, not where they first pressed.
+  // Throttled to one POST per 8s; stops on mark-safe / unmount.
+  _useE(() => {
+    if (!activated || !alertEventId || safeMarked) return;
+    if (!navigator.geolocation) return;
+    const LIVE_THROTTLE_MS = 8000;
+    const id = navigator.geolocation.watchPosition(
+      (pos) => {
+        const now = Date.now();
+        if (now - lastLivePostRef.current < LIVE_THROTTLE_MS) return;
+        lastLivePostRef.current = now;
+        alertApiPost(`/v1/alerts/${alertEventId}/location`,
+          { lat: pos.coords.latitude, lng: pos.coords.longitude }, token
+        ).catch((e) => console.info('[Alert] live location post failed:', e?.message));
+      },
+      (err) => console.info('[Alert] live watch error:', err && err.code),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
+    );
+    liveWatchRef.current = id;
+    return () => {
+      if (liveWatchRef.current !== null) {
+        try { navigator.geolocation.clearWatch(liveWatchRef.current); } catch (_) {}
+        liveWatchRef.current = null;
+      }
+    };
+  }, [activated, alertEventId, safeMarked]);
 
   // Pre-check GPS when confirmation modal opens so the warning appears before the user taps SEND
   _useE(() => {
     if (!showConfirm) { setGpsResult(null); return; }
     if (!navigator.geolocation) { setGpsResult({ gps_status: 'unavailable' }); return; }
-    // iOS often returns POSITION_UNAVAILABLE quickly for low-accuracy requests, so
-    // give iPhones high accuracy + a longer timeout. Android keeps its original
-    // (fast, low-accuracy) options since it works well there.
+    // Use high accuracy on ALL platforms — low-accuracy (network) fixes can be off
+    // by hundreds of metres, which put a wrong pin on the victim. iOS gets a longer
+    // timeout (it returns POSITION_UNAVAILABLE quickly otherwise); keep maximumAge
+    // small so we don't broadcast a stale cached location.
     const isIOS = !!(window.getPushCapability && window.getPushCapability().isIOS);
     const gpsOpts = isIOS
-      ? { timeout: 15000, maximumAge: 30000, enableHighAccuracy: true }
-      : { timeout: 10000, maximumAge: 30000, enableHighAccuracy: false };
+      ? { timeout: 15000, maximumAge: 10000, enableHighAccuracy: true }
+      : { timeout: 12000, maximumAge: 10000, enableHighAccuracy: true };
     navigator.geolocation.getCurrentPosition(
       (pos) => setGpsResult({
         lat: pos.coords.latitude,
@@ -1204,9 +1235,14 @@ function AlertLiveMap({ eventId, gpsResult, token, onCount }) {
   const [poll, setPoll] = _useS({ zoneRadiusM: null, responders: [] });
   const [reconnecting, setReconnecting] = _useS(false);
 
-  const hasGps = gpsResult && gpsResult.gps_status === 'ok'
+  // The victim's live location. Seeded from the GPS captured at trigger, then kept
+  // current by the poll below (authoritative event.lat/lng) so the beacon follows
+  // the victim as they move.
+  const gpsOk = gpsResult && gpsResult.gps_status === 'ok'
     && typeof gpsResult.lat === 'number' && typeof gpsResult.lng === 'number';
-  const center = hasGps ? { lat: gpsResult.lat, lng: gpsResult.lng } : ALERT_MAP_DEFAULT;
+  const [victimLoc, setVictimLoc] = _useS(gpsOk ? { lat: gpsResult.lat, lng: gpsResult.lng } : null);
+  const hasGps = !!victimLoc;
+  const center = victimLoc || ALERT_MAP_DEFAULT;
   const leafletReady = typeof window !== 'undefined' && window.L;
 
   // 1) Init map once
@@ -1227,33 +1263,48 @@ function AlertLiveMap({ eventId, gpsResult, token, onCount }) {
     // Container mounts inside an already-laid-out view; nudge sizing just in case.
     setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 120);
 
-    // User beacon (only when we actually have the user's location)
-    if (hasGps) {
-      const icon = L.divIcon({
-        className: '',
-        html: '<div class="alert-beacon"><span class="alert-beacon-ring"></span><span class="alert-beacon-dot"></span></div>',
-        iconSize: [22, 22], iconAnchor: [11, 11],
-      });
-      userLayerRef.current = L.marker([center.lat, center.lng], { icon, interactive: false }).addTo(map);
-    }
-
     return () => {
       if (mapRef.current) { try { mapRef.current.remove(); } catch (_) {} mapRef.current = null; }
       userLayerRef.current = null; zoneRingRef.current = null; dotLayersRef.current = [];
     };
   }, [leafletReady]);
 
-  // 2) Poll responders every 5s while the alert is live
+  // 1b) Victim beacon — create lazily once we have a location, then follow it live.
+  _useE(() => {
+    const map = mapRef.current;
+    if (!map || !victimLoc) return;
+    if (!userLayerRef.current) {
+      const icon = L.divIcon({
+        className: '',
+        html: '<div class="alert-beacon"><span class="alert-beacon-ring"></span><span class="alert-beacon-dot"></span></div>',
+        iconSize: [22, 22], iconAnchor: [11, 11],
+      });
+      userLayerRef.current = L.marker([victimLoc.lat, victimLoc.lng], { icon, interactive: false }).addTo(map);
+      map.setView([victimLoc.lat, victimLoc.lng], 15);
+    } else {
+      userLayerRef.current.setLatLng([victimLoc.lat, victimLoc.lng]);
+    }
+  }, [victimLoc && victimLoc.lat, victimLoc && victimLoc.lng]);
+
+  // 2) Poll every 5s: responders (with real coords) + the victim's live location.
   _useE(() => {
     if (!eventId) return;
     let cancelled = false;
     const tick = async () => {
       try {
-        const data = await alertApiGet(`/v1/alerts/${eventId}/responders`, token);
+        const [resp, status] = await Promise.all([
+          alertApiGet(`/v1/alerts/${eventId}/responders`, token),
+          alertApiGet(`/v1/alerts/${eventId}`, token).catch(() => null),
+        ]);
         if (cancelled) return;
         setReconnecting(false);
-        setPoll({ zoneRadiusM: data.zone_radius_m ?? null, responders: data.responders || [] });
-        if (onCount) onCount(data.responder_count || 0);
+        setPoll({ zoneRadiusM: resp.zone_radius_m ?? null, responders: resp.responders || [] });
+        if (onCount) onCount(resp.responder_count || 0);
+        if (status && typeof status.lat === 'number' && typeof status.lng === 'number') {
+          setVictimLoc((prev) =>
+            prev && prev.lat === status.lat && prev.lng === status.lng
+              ? prev : { lat: status.lat, lng: status.lng });
+        }
       } catch (e) {
         if (cancelled) return;
         setReconnecting(true);  // keep last drawn state, surface a subtle indicator
@@ -1265,13 +1316,13 @@ function AlertLiveMap({ eventId, gpsResult, token, onCount }) {
     return () => { cancelled = true; clearInterval(id); };
   }, [eventId, token]);
 
-  // 3) Draw zone ring + responder dots whenever poll data changes
+  // 3) Draw zone ring + responder dots whenever poll data or the victim moves.
   _useE(() => {
     const map = mapRef.current;
     if (!map) return;
     const radius = poll.zoneRadiusM || 1000;  // fall back to backend default if no zone
 
-    // Zone ring
+    // Zone ring (re-centres on the victim's current position)
     if (zoneRingRef.current) { try { map.removeLayer(zoneRingRef.current); } catch (_) {} zoneRingRef.current = null; }
     if (poll.zoneRadiusM) {
       zoneRingRef.current = L.circle([center.lat, center.lng], {
@@ -1279,24 +1330,31 @@ function AlertLiveMap({ eventId, gpsResult, token, onCount }) {
       }).addTo(map);
     }
 
-    // Responder dots — clear then redraw
+    // Responder dots — plot each responder at their REAL position when shared.
+    // Fall back to distance + a stable obfuscated bearing only when a responder
+    // didn't send coordinates (older client / GPS unavailable on their side).
     dotLayersRef.current.forEach(l => { try { map.removeLayer(l); } catch (_) {} });
     dotLayersRef.current = [];
     const cosLat = Math.cos(center.lat * Math.PI / 180) || 1e-9;
     poll.responders.forEach((r, i) => {
-      const dist = (typeof r.distance_m === 'number' && r.distance_m >= 0) ? r.distance_m : radius / 2;
-      const theta = _stableBearing(r.created_at || String(i));
-      const dLat = (dist * Math.cos(theta)) / 111000;
-      const dLng = (dist * Math.sin(theta)) / (111000 * cosLat);
+      let lat, lng;
+      if (typeof r.lat === 'number' && typeof r.lng === 'number') {
+        lat = r.lat; lng = r.lng;
+      } else {
+        const dist = (typeof r.distance_m === 'number' && r.distance_m >= 0) ? r.distance_m : radius / 2;
+        const theta = _stableBearing(r.created_at || String(i));
+        lat = center.lat + (dist * Math.cos(theta)) / 111000;
+        lng = center.lng + (dist * Math.sin(theta)) / (111000 * cosLat);
+      }
       const icon = L.divIcon({
         className: '',
         html: '<div class="responder-dot"></div>',
         iconSize: [14, 14], iconAnchor: [7, 7],
       });
-      const m = L.marker([center.lat + dLat, center.lng + dLng], { icon, interactive: false }).addTo(map);
+      const m = L.marker([lat, lng], { icon, interactive: false }).addTo(map);
       dotLayersRef.current.push(m);
     });
-  }, [JSON.stringify(poll)]);
+  }, [JSON.stringify(poll), center.lat, center.lng]);
 
   if (!leafletReady) {
     return (
