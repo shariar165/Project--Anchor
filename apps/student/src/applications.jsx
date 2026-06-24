@@ -127,7 +127,7 @@ function DownloadMenu({ path, stem, label = 'Download', accent = 'var(--navy)' }
           {FORMATS.map(([fmt, lbl]) => (
             <button key={fmt} onClick={() => pick(fmt)} disabled={!!busy} style={{
               flex: 1, padding: '9px 4px', borderRadius: 10, cursor: 'pointer',
-              border: '1px solid var(--mist)', background: 'rgba(255,255,255,0.85)',
+              border: '1px solid var(--mist)', background: 'var(--surface)',
               fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, color: accent,
             }}>
               {busy === fmt ? '…' : lbl}
@@ -231,11 +231,11 @@ function ApplicationsListScreen() {
 
       {/* Tab bar */}
       <div style={{ padding: '12px 20px 0' }}>
-        <div style={{ display: 'flex', gap: 6, background: 'rgba(255,255,255,0.5)', borderRadius: 12, padding: 4 }}>
+        <div style={{ display: 'flex', gap: 6, background: 'var(--surface)', borderRadius: 12, padding: 4 }}>
           {tabs.map(t => (
             <button key={t.k} onClick={() => setTab(t.k)} style={{
               flex: 1, padding: '7px 4px', borderRadius: 8, border: 'none', cursor: 'pointer',
-              background: tab === t.k ? 'var(--navy)' : 'transparent',
+              background: tab === t.k ? 'var(--brand)' : 'transparent',
               color: tab === t.k ? '#fff' : 'var(--muted)',
               fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: tab === t.k ? 600 : 400,
             }}>{t.label}</button>
@@ -277,7 +277,7 @@ function ApplicationsListScreen() {
           return (
             <button key={app.id} onClick={() => go('application', { id: app.id })}
               style={{
-                width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.7)',
+                width: '100%', textAlign: 'left', background: 'var(--surface)',
                 border: '1px solid var(--mist)', borderRadius: 14, padding: 14,
                 marginBottom: 10, cursor: 'pointer',
                 display: 'flex', alignItems: 'flex-start', gap: 12,
@@ -313,7 +313,7 @@ function ApplicationsListScreen() {
       {/* FAB */}
       <button onClick={() => go('new-application')} style={{
         position: 'fixed', bottom: 108, right: 24, width: 52, height: 52,
-        borderRadius: '50%', background: 'var(--navy)', color: '#fff',
+        borderRadius: '50%', background: 'var(--brand)', color: '#fff',
         border: 'none', cursor: 'pointer', boxShadow: '0 4px 20px rgba(11,29,53,0.35)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20,
       }}>
@@ -614,7 +614,7 @@ function NewApplicationScreen({ params = {} }) {
                 <div style={{
                   width: 22, height: 22, borderRadius: '50%', fontSize: 10, fontWeight: 700,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: done ? accent : active ? 'var(--navy)' : 'var(--mist)',
+                  background: done ? accent : active ? 'var(--brand)' : 'var(--mist)',
                   color: (done || active) ? '#fff' : 'var(--muted)',
                   fontFamily: 'var(--font-sans)',
                 }}>
@@ -699,7 +699,7 @@ function NewApplicationScreen({ params = {} }) {
                 style={{
                   width: '100%', boxSizing: 'border-box',
                   padding: '10px 12px', borderRadius: 10, fontSize: 13,
-                  border: '1.5px solid var(--mist-2)', background: 'rgba(255,255,255,0.8)',
+                  border: '1.5px solid var(--mist-2)', background: 'var(--surface)',
                   fontFamily: 'var(--font-sans)', color: 'var(--ink)', resize: 'vertical',
                   lineHeight: 1.5,
                 }}
@@ -719,7 +719,7 @@ function NewApplicationScreen({ params = {} }) {
                   style={{
                     width: '100%', boxSizing: 'border-box',
                     height: 44, padding: '0 12px', borderRadius: 10, fontSize: 13,
-                    border: '1.5px solid var(--mist-2)', background: 'rgba(255,255,255,0.8)',
+                    border: '1.5px solid var(--mist-2)', background: 'var(--surface)',
                     fontFamily: 'var(--font-sans)', color: 'var(--ink)',
                   }}
                 />
@@ -736,7 +736,7 @@ function NewApplicationScreen({ params = {} }) {
                   <button key={v} onClick={() => setLang(v)} style={{
                     padding: '7px 18px', borderRadius: 999, border: '1.5px solid',
                     borderColor: lang === v ? 'var(--navy)' : 'var(--mist-2)',
-                    background: lang === v ? 'var(--navy)' : 'transparent',
+                    background: lang === v ? 'var(--brand)' : 'transparent',
                     color: lang === v ? '#fff' : 'var(--muted)',
                     fontFamily: lang === v ? 'var(--font-sans)' : 'var(--font-bn)',
                     fontSize: 13, cursor: 'pointer',
@@ -792,13 +792,13 @@ function NewApplicationScreen({ params = {} }) {
                 style={{
                   width: '100%', boxSizing: 'border-box',
                   padding: '12px', borderRadius: 10, fontSize: 12.5, lineHeight: 1.7,
-                  border: '1.5px solid var(--mist-2)', background: 'rgba(255,255,255,0.9)',
+                  border: '1.5px solid var(--mist-2)', background: 'var(--surface)',
                   fontFamily: 'var(--font-sans)', color: 'var(--ink)', resize: 'vertical',
                 }}
               />
             ) : (
               <div style={{
-                background: '#fff', border: '1px solid var(--mist)', borderRadius: 12,
+                background: 'var(--surface-solid)', border: '1px solid var(--mist)', borderRadius: 12,
                 padding: '16px', fontSize: 12.5, lineHeight: 1.8, fontFamily: 'var(--font-sans)',
                 color: 'var(--ink)', whiteSpace: 'pre-wrap', minHeight: 200,
               }}>
@@ -829,7 +829,7 @@ function NewApplicationScreen({ params = {} }) {
 
             {attachments.map(a => (
               <div key={a.id} style={{
-                background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+                background: 'var(--surface)', border: '1px solid var(--mist)',
                 borderRadius: 12, padding: '12px 14px', marginBottom: 10,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: explainCache[a.id] ? 8 : 0 }}>
@@ -897,11 +897,11 @@ function NewApplicationScreen({ params = {} }) {
               <button onClick={() => setFirstApprover('mentor')} style={{
                 width: '100%', textAlign: 'left', padding: '14px 16px', marginBottom: 10,
                 borderRadius: 12, border: `2px solid ${firstApprover === 'mentor' ? 'var(--navy)' : 'var(--mist)'}`,
-                background: firstApprover === 'mentor' ? 'rgba(11,29,53,0.04)' : 'rgba(255,255,255,0.6)',
+                background: firstApprover === 'mentor' ? 'rgba(11,29,53,0.04)' : 'var(--surface)',
                 cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12,
               }}>
                 <div style={{
-                  width: 36, height: 36, borderRadius: '50%', background: 'var(--navy)', color: '#fff',
+                  width: 36, height: 36, borderRadius: '50%', background: 'var(--brand)', color: '#fff',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700,
                 }}>
                   {settings.mentor_name.split(' ').map(w => w[0]).slice(0,2).join('')}
@@ -922,7 +922,7 @@ function NewApplicationScreen({ params = {} }) {
             <button onClick={() => setFirstApprover('department_head')} style={{
               width: '100%', textAlign: 'left', padding: '14px 16px', marginBottom: 10,
               borderRadius: 12, border: `2px solid ${firstApprover === 'department_head' ? 'var(--navy)' : 'var(--mist)'}`,
-              background: firstApprover === 'department_head' ? 'rgba(11,29,53,0.04)' : 'rgba(255,255,255,0.6)',
+              background: firstApprover === 'department_head' ? 'rgba(11,29,53,0.04)' : 'var(--surface)',
               cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12,
             }}>
               <div style={{
@@ -1142,7 +1142,7 @@ function ApplicationDetailScreen({ params = {} }) {
           const activeIdx = (isApproved || isRejected) ? -1 : approvedCount;
           return (
             <div style={{
-              padding: '14px 16px', background: 'rgba(255,255,255,0.6)', borderRadius: 12,
+              padding: '14px 16px', background: 'var(--surface)', borderRadius: 12,
               border: '1px solid var(--mist)', marginBottom: 16,
               display: 'flex', alignItems: 'center', gap: 4,
             }}>
@@ -1253,7 +1253,7 @@ function ApplicationDetailScreen({ params = {} }) {
           <div style={{ marginBottom: 14 }}>
             <button onClick={() => setShowLetter(s => !s)} style={{
               width: '100%', textAlign: 'left', padding: '10px 14px',
-              background: 'rgba(255,255,255,0.6)', border: '1px solid var(--mist)',
+              background: 'var(--surface)', border: '1px solid var(--mist)',
               borderRadius: 10, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
               fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--navy)',
             }}>
@@ -1263,7 +1263,7 @@ function ApplicationDetailScreen({ params = {} }) {
             </button>
             {showLetter && (
               <div style={{
-                marginTop: 8, padding: '14px', background: '#fff', borderRadius: 10,
+                marginTop: 8, padding: '14px', background: 'var(--surface-solid)', borderRadius: 10,
                 border: '1px solid var(--mist)', fontSize: 12, lineHeight: 1.8,
                 fontFamily: 'var(--font-sans)', color: 'var(--ink)', whiteSpace: 'pre-wrap',
               }}>
@@ -1279,7 +1279,7 @@ function ApplicationDetailScreen({ params = {} }) {
             <div className="eyebrow" style={{ marginBottom: 8 }}>Attachments</div>
             {app.attachments.map(a => (
               <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
-                padding: '8px 12px', background: 'rgba(255,255,255,0.6)', borderRadius: 8,
+                padding: '8px 12px', background: 'var(--surface)', borderRadius: 8,
                 border: '1px solid var(--mist)' }}>
                 <IconPaperclip size={13} stroke="var(--sage)"/>
                 <span style={{ flex: 1, fontSize: 12, color: 'var(--ink)', fontFamily: 'var(--font-sans)' }}>
@@ -1397,7 +1397,7 @@ function CampusSettingsScreen() {
             <div style={{ marginBottom: 16 }}>
               <div className="eyebrow" style={{ marginBottom: 8 }}>Department</div>
               <div style={{
-                padding: '12px 14px', background: 'rgba(255,255,255,0.5)', borderRadius: 10,
+                padding: '12px 14px', background: 'var(--surface)', borderRadius: 10,
                 border: '1px solid var(--mist)',
               }}>
                 <div style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--navy)', fontFamily: 'var(--font-sans)' }}>
@@ -1413,13 +1413,13 @@ function CampusSettingsScreen() {
             <div style={{ marginBottom: 16 }}>
               <div className="eyebrow" style={{ marginBottom: 8 }}>My Mentor</div>
               <div style={{
-                padding: '12px 14px', background: 'rgba(255,255,255,0.6)', borderRadius: 10,
+                padding: '12px 14px', background: 'var(--surface)', borderRadius: 10,
                 border: '1px solid var(--mist)',
               }}>
                 {settings?.mentor_name ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div style={{
-                      width: 36, height: 36, borderRadius: '50%', background: 'var(--navy)', color: '#fff',
+                      width: 36, height: 36, borderRadius: '50%', background: 'var(--brand)', color: '#fff',
                       display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700,
                     }}>
                       {settings.mentor_name.split(' ').map(w => w[0]).slice(0,2).join('')}
@@ -1484,7 +1484,7 @@ function CampusSettingsScreen() {
                     style={{
                       width: '100%', boxSizing: 'border-box', height: 40,
                       padding: '0 12px', borderRadius: 10, fontSize: 13,
-                      border: '1.5px solid var(--mist-2)', background: '#fff',
+                      border: '1.5px solid var(--mist-2)', background: 'var(--surface-solid)',
                       fontFamily: 'var(--font-sans)', marginBottom: 12,
                     }}
                   />
@@ -1499,11 +1499,11 @@ function CampusSettingsScreen() {
                     <button key={m.user_id} onClick={() => handleSelectMentor(m)} disabled={saving}
                       style={{
                         width: '100%', textAlign: 'left', padding: '12px 14px', marginBottom: 8,
-                        background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+                        background: 'var(--surface)', border: '1px solid var(--mist)',
                         borderRadius: 10, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10,
                       }}>
                       <div style={{
-                        width: 34, height: 34, borderRadius: '50%', background: 'var(--navy)', color: '#fff',
+                        width: 34, height: 34, borderRadius: '50%', background: 'var(--brand)', color: '#fff',
                         display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700,
                       }}>
                         {m.full_name.split(' ').map(w => w[0]).slice(0,2).join('')}

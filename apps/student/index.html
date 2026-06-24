@@ -10,6 +10,25 @@
      can receive emergency alerts after "Add to Home Screen". -->
 <link rel="manifest" href="/manifest.webmanifest"/>
 <meta name="theme-color" content="#0B1D35"/>
+
+<!-- Theme pre-paint: set data-theme on <html> before CSS/React load so a
+     dark-preference device never flashes the light theme. Stored choice wins;
+     otherwise follow the OS setting. AppProvider keeps this in sync afterward. -->
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem('anchor_theme');
+      var theme = (saved === 'light' || saved === 'dark')
+        ? saved
+        : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+      if (theme === 'dark') {
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.setAttribute('content', '#0E1620');
+      }
+    } catch (e) { /* storage/matchMedia unavailable — default light */ }
+  })();
+</script>
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>

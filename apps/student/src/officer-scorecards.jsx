@@ -73,7 +73,7 @@ function OfficerScorecardScreen() {
 
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search thana or district…" style={{
           width: '100%', padding: '10px 14px', borderRadius: 12, boxSizing: 'border-box', marginBottom: 14,
-          border: '1px solid var(--mist)', background: 'rgba(255,255,255,0.85)', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)', outline: 'none',
+          border: '1px solid var(--mist)', background: 'var(--surface)', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)', outline: 'none',
         }}/>
 
         {loading && <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13 }}>Loading…</div>}
@@ -82,7 +82,7 @@ function OfficerScorecardScreen() {
 
         {!loading && !error && filtered.map(s => (
           <button key={s.id} onClick={() => go('police-station', { id: s.id })} style={{
-            width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+            width: '100%', textAlign: 'left', background: 'var(--surface)', border: '1px solid var(--mist)',
             borderRadius: 14, padding: 14, marginBottom: 10, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12,
           }}>
             <div style={{ width: 38, height: 38, borderRadius: 10, flexShrink: 0, background: 'rgba(196,69,54,0.12)', border: '1px solid rgba(196,69,54,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--ember)' }}>
@@ -136,14 +136,14 @@ function StationDetailScreen({ params = {} }) {
       <Header title={s.name} subtitle={`${s.district}${s.division ? ' · ' + s.division : ''}`} back/>
       <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px 20px' }}>
         {/* Overall */}
-        <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: '18px 16px', marginBottom: 14, textAlign: 'center' }}>
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, padding: '18px 16px', marginBottom: 14, textAlign: 'center' }}>
           <div className="serif" style={{ fontSize: 40, fontWeight: 600, color: 'var(--navy)', lineHeight: 1 }}>{s.avg_overall != null ? s.avg_overall.toFixed(1) : '—'}</div>
           <div style={{ margin: '8px 0 4px' }}><Stars value={s.avg_overall} size={18}/></div>
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>{s.total_count} approved rating{s.total_count === 1 ? '' : 's'}</div>
         </div>
 
         {/* Dimension bars */}
-        <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: '14px 16px', marginBottom: 14 }}>
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, padding: '14px 16px', marginBottom: 14 }}>
           <div className="eyebrow" style={{ marginBottom: 12 }}>Breakdown</div>
           <ScoreBar label="Responsiveness" value={s.avg_responsiveness}/>
           <ScoreBar label="Conduct & courtesy" value={s.avg_conduct}/>
@@ -152,7 +152,7 @@ function StationDetailScreen({ params = {} }) {
 
         {/* Histogram */}
         {s.total_count > 0 && (
-          <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: '14px 16px', marginBottom: 14 }}>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, padding: '14px 16px', marginBottom: 14 }}>
             <div className="eyebrow" style={{ marginBottom: 12 }}>Rating distribution</div>
             {[5, 4, 3, 2, 1].map(star => (
               <div key={star} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -172,7 +172,7 @@ function StationDetailScreen({ params = {} }) {
             <div className="eyebrow" style={{ marginBottom: 10 }}>Officers at this station</div>
             {s.officers.map(o => (
               <button key={o.id} onClick={() => go('rate-station', { stationId: s.id, stationName: s.name, officerId: o.id, officerName: o.name })} style={{
-                width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+                width: '100%', textAlign: 'left', background: 'var(--surface)', border: '1px solid var(--mist)',
                 borderRadius: 12, padding: 12, marginBottom: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10,
               }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -277,7 +277,7 @@ function RateStationScreen({ params = {} }) {
         {err && <div style={{ color: 'var(--red)', fontSize: 12.5, background: 'rgba(232,49,42,0.07)', borderRadius: 10, padding: '9px 13px', marginBottom: 12 }}>{err}</div>}
 
         {dims.map(([k, label, hint]) => (
-          <div key={k} style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: '14px 16px', marginBottom: 10 }}>
+          <div key={k} style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, padding: '14px 16px', marginBottom: 10 }}>
             <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--navy)' }}>{label}</div>
             <div style={{ fontSize: 11.5, color: 'var(--muted)', marginBottom: 10 }}>{hint}</div>
             <StarPicker value={scores[k]} onChange={v => setScore(k, v)}/>
@@ -288,7 +288,7 @@ function RateStationScreen({ params = {} }) {
           <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 6 }}>Comment (optional)</div>
           <textarea value={comment} onChange={e => setComment(e.target.value)} maxLength={2000} placeholder="Describe your experience. Avoid naming uninvolved people." style={{
             width: '100%', minHeight: 90, padding: '10px 12px', borderRadius: 10, boxSizing: 'border-box',
-            border: '1px solid var(--mist)', background: 'rgba(255,255,255,0.85)', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)', resize: 'vertical', outline: 'none',
+            border: '1px solid var(--mist)', background: 'var(--surface)', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)', resize: 'vertical', outline: 'none',
           }}/>
         </div>
 

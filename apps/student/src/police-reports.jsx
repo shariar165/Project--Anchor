@@ -75,7 +75,7 @@ function PrField({ label, hint, children }) {
 
 const PR_INPUT_STYLE = {
   width: '100%', padding: '10px 12px', borderRadius: 10, boxSizing: 'border-box',
-  border: '1px solid var(--mist)', background: 'rgba(255,255,255,0.85)',
+  border: '1px solid var(--mist)', background: 'var(--surface)',
   fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)', outline: 'none',
 };
 
@@ -129,7 +129,7 @@ function PoliceReportsListScreen() {
           const date = new Date(r.updated_at || r.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
           return (
             <button key={r.id} onClick={() => go('police-report', { id: r.id })} style={{
-              width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+              width: '100%', textAlign: 'left', background: 'var(--surface)', border: '1px solid var(--mist)',
               borderRadius: 14, padding: 14, marginBottom: 10, cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: 12,
             }}>
               <div style={{
@@ -299,7 +299,7 @@ function NewPoliceReportScreen({ params = {} }) {
           { k: 'fir', t: 'First Information Report (FIR)', d: 'Report a cognizable offence — assault, robbery, serious crime — that police must investigate.' },
         ].map(o => (
           <button key={o.k} onClick={() => { setReportType(o.k); setStep(2); }} style={{
-            width: '100%', textAlign: 'left', background: reportType === o.k ? 'rgba(196,69,54,0.06)' : 'rgba(255,255,255,0.7)',
+            width: '100%', textAlign: 'left', background: reportType === o.k ? 'rgba(196,69,54,0.06)' : 'var(--surface)',
             border: `1px solid ${reportType === o.k ? 'var(--ember)' : 'var(--mist)'}`, borderRadius: 14, padding: 16, marginBottom: 10, cursor: 'pointer',
           }}>
             <div className="serif" style={{ fontSize: 16, fontWeight: 500, color: 'var(--navy)', marginBottom: 5 }}>{o.t}</div>

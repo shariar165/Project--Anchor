@@ -246,7 +246,7 @@ function CaseCard({ c, onOpen }) {
   const displayId = c.displayId || c.id;
   return (
     <button onClick={onOpen} style={{
-      width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+      width: '100%', textAlign: 'left', background: 'var(--surface)', border: '1px solid var(--mist)',
       borderRadius: 16, padding: 16, cursor: 'pointer',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -300,7 +300,7 @@ function CaseDetailScreen({ params }) {
       <div style={{ padding: '0 20px 14px' }}>
         <div className="eyebrow" style={{ marginBottom: 10 }}>Routing hierarchy</div>
         <div style={{
-          padding: 14, borderRadius: 14, background: 'rgba(255,255,255,0.65)', border: '1px solid var(--mist)',
+          padding: 14, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--mist)',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             {c.routing.map((step, i) => {
@@ -355,7 +355,7 @@ function CaseDetailScreen({ params }) {
       {/* Original text */}
       <div style={{ padding: '4px 20px 14px' }}>
         <div className="eyebrow" style={{ marginBottom: 6 }}>Original complaint</div>
-        <div className="card" style={{ background: 'rgba(255,255,255,0.7)' }}>
+        <div className="card" style={{ background: 'var(--surface)' }}>
           {c.anon ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <IconEyeOff size={14} stroke="var(--muted)"/>
@@ -757,7 +757,7 @@ function MapScreen({ params } = {}) {
         {RADIUS_OPTIONS.map(({ label, value }) => (
           <button key={label} onClick={() => handleRadiusChange(value)} style={{
             padding: '6px 11px', borderRadius: 999, whiteSpace: 'nowrap', cursor: 'pointer',
-            background: radiusKm === value ? 'var(--navy)' : 'rgba(255,255,255,0.7)',
+            background: radiusKm === value ? 'var(--brand)' : 'var(--surface)',
             color:      radiusKm === value ? '#F7F3EE'    : 'var(--ink-2)',
             border: '1px solid ' + (radiusKm === value ? 'var(--navy)' : 'var(--mist)'),
             fontSize: 11.5, fontWeight: 500,
@@ -765,7 +765,7 @@ function MapScreen({ params } = {}) {
         ))}
         <button onClick={handleRefresh} disabled={zonesLoading} style={{
           padding: '6px 10px', borderRadius: 999, whiteSpace: 'nowrap', cursor: 'pointer',
-          background: 'rgba(255,255,255,0.7)', color: 'var(--ink-2)',
+          background: 'var(--surface)', color: 'var(--ink-2)',
           border: '1px solid var(--mist)', fontSize: 11.5, fontWeight: 500,
           marginLeft: 'auto', flexShrink: 0, opacity: zonesLoading ? 0.5 : 1,
         }} title="Refresh zones">{zonesLoading ? '…' : '⟳'}</button>
@@ -786,7 +786,7 @@ function MapScreen({ params } = {}) {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {LEGEND_ENTRIES.map(([type, label, color]) => (
             <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 8,
-              background: 'rgba(255,255,255,0.8)', border: '1.5px solid ' + color + '60' }}>
+              background: 'var(--surface)', border: '1.5px solid ' + color + '60' }}>
               <span style={{ width: 10, height: 10, borderRadius: type === 'campus' ? 3 : 999, background: color, display: 'block', flexShrink: 0 }}/>
               <span style={{ fontSize: 11, color: 'var(--ink-2)', fontWeight: 500 }}>{label}</span>
             </div>
@@ -809,7 +809,7 @@ function MapScreen({ params } = {}) {
           const color = ZONE_COLORS[z.zone_type] || '#E8312A';
           const displayName = z.name || z.label || ZONE_TYPE_LABELS[z.zone_type] || z.zone_type;
           return (
-            <div key={z.id} className="card" style={{ marginBottom: 8, background: 'rgba(255,255,255,0.8)', padding: '10px 12px' }}>
+            <div key={z.id} className="card" style={{ marginBottom: 8, background: 'var(--surface)', padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ width: 10, height: 10, borderRadius: z.zone_type === 'campus' ? 3 : 999, background: color, flexShrink: 0 }}/>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -1095,7 +1095,7 @@ function FeedScreen() {
             {[['national', 'National'], ['campus', 'Campus · DIU']].map(([s, l]) => (
               <button key={s} onClick={() => setScope(s)} style={{
                 fontSize: 10, padding: '3px 11px', borderRadius: 999, fontWeight: 600, cursor: 'pointer',
-                background: scope === s ? 'var(--navy)' : 'transparent',
+                background: scope === s ? 'var(--brand)' : 'transparent',
                 color: scope === s ? 'white' : 'var(--muted)',
                 border: `1px solid ${scope === s ? 'var(--navy)' : 'var(--mist)'}`,
               }}>{l}</button>
@@ -1355,7 +1355,7 @@ function LawyersScreen() {
       <div style={{ padding: '14px 20px 6px' }}>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
-          background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist-2)', borderRadius: 999,
+          background: 'var(--surface)', border: '1px solid var(--mist-2)', borderRadius: 999,
         }}>
           <IconSearch size={15} stroke="var(--muted)"/>
           <input placeholder="Search by name, specialty, location…" style={{
@@ -1368,7 +1368,7 @@ function LawyersScreen() {
           {['All', 'Criminal', 'Civil', 'Family', 'Constitutional', 'Cyber', 'DV Act'].map((f, i) => (
             <span key={f} style={{
               padding: '6px 11px', borderRadius: 999, whiteSpace: 'nowrap',
-              background: i === 0 ? 'var(--navy)' : 'rgba(255,255,255,0.7)',
+              background: i === 0 ? 'var(--brand)' : 'var(--surface)',
               color: i === 0 ? '#F7F3EE' : 'var(--ink-2)',
               border: '1px solid ' + (i === 0 ? 'var(--navy)' : 'var(--mist)'),
               fontSize: 11.5, fontWeight: 500, cursor: 'pointer',
@@ -1395,7 +1395,7 @@ function LawyersScreen() {
         )}
         {lawyers.map((l) => (
           <div key={l.id} style={{
-            padding: 14, background: 'rgba(255,255,255,0.7)',
+            padding: 14, background: 'var(--surface)',
             border: '1px solid var(--mist)', borderRadius: 14, marginBottom: 10,
           }}>
             <div style={{ display: 'flex', gap: 12 }}>
@@ -1440,7 +1440,7 @@ function LawyersScreen() {
             <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--mist)', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8 }}>
               {l.user_id ? (
                 <button onClick={() => startChat(l)} disabled={starting === l.id} style={{
-                  padding: '8px 12px', borderRadius: 10, background: 'var(--navy)', color: '#F7F3EE',
+                  padding: '8px 12px', borderRadius: 10, background: 'var(--brand)', color: '#F7F3EE',
                   border: 'none', fontSize: 12, fontWeight: 500,
                   cursor: starting === l.id ? 'default' : 'pointer', opacity: starting === l.id ? 0.7 : 1,
                   display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -1572,7 +1572,8 @@ function NoticesScreen() {
 //  PROFILE SCREEN
 // ═══════════════════════════════════════════════════════════════
 function ProfileScreen() {
-  const { go, logout, auth, geofenceConsent, setGeofenceConsent, login, lang, tr } = useApp();
+  const { go, logout, auth, geofenceConsent, setGeofenceConsent, login, lang, tr, theme, toggleTheme } = useApp();
+  const darkOn = theme === 'dark';
   const user = auth && auth.user;
   const displayName = user ? user.name : '';
   const isStudent = user && user.role === 'student';
@@ -1769,7 +1770,7 @@ function ProfileScreen() {
 
   const fieldStyle = {
     width: '100%', padding: '10px 13px', borderRadius: 10, border: '1px solid var(--mist-2)',
-    background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--navy)',
+    background: 'var(--surface-solid)', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--navy)',
     outline: 'none', boxSizing: 'border-box',
   };
   const lockedFieldStyle = {
@@ -1782,7 +1783,7 @@ function ProfileScreen() {
       <Header back/>
       <div style={{ padding: '16px 20px 8px' }}>
         <div style={{
-          padding: 18, borderRadius: 18, background: 'linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.55))',
+          padding: 18, borderRadius: 18, background: 'linear-gradient(180deg, var(--surface), var(--surface-2))',
           border: '1px solid var(--mist)',
         }}>
           {!editMode ? (
@@ -1949,6 +1950,37 @@ function ProfileScreen() {
         ]}/>
         {/* Language — upgraded to a 3-option control (Bangla / Both / English) */}
         <LanguageSetting/>
+        {/* Appearance — light/dark theme toggle */}
+        <div style={{ marginBottom: 16 }}>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>{tr('set_group_appearance')}</div>
+          <div style={{ background:'var(--surface)', border:'1px solid var(--mist)',
+                        borderRadius:14, padding:'12px 14px',
+                        display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:12, minWidth:0 }}>
+              <div style={{ width:30, height:30, borderRadius:8, flexShrink:0,
+                            background:'var(--cream-2)', border:'1px solid var(--mist)',
+                            color:'var(--navy)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                {darkOn ? <IconMoon size={15}/> : <IconSun size={15}/>}
+              </div>
+              <div style={{ minWidth:0 }}>
+                <div style={{ fontSize:14, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-sans)' }}>
+                  {tr('set_dark_mode')}
+                </div>
+                <div style={{ fontSize:12, color:'var(--muted)', fontFamily:'var(--font-sans)', marginTop:2 }}>
+                  {darkOn ? tr('set_dark_mode_on') : tr('set_dark_mode_off')}
+                </div>
+              </div>
+            </div>
+            <button onClick={toggleTheme} role="switch" aria-checked={darkOn} aria-label={tr('set_dark_mode')}
+              style={{ width:44, height:26, borderRadius:999, border:'none', cursor:'pointer', flexShrink:0,
+                       background: darkOn ? 'var(--sage)' : 'var(--mist)', position:'relative',
+                       transition:'background 0.2s' }}>
+              <span style={{ position:'absolute', top:3, left: darkOn ? 21 : 3,
+                             width:20, height:20, borderRadius:999, background:'#fff',
+                             boxShadow:'0 1px 3px rgba(0,0,0,0.18)', transition:'left 0.2s' }}/>
+            </button>
+          </div>
+        </div>
         <SettingsGroup title={tr('set_group_prefs')} items={[
           { label: tr('set_notifications'),  value: prefsCount + ' of 5 on',  Icon: IconBell, onTap: () => setSheet('notif') },
           { label: tr('set_anonymity'),      value: tr('set_anonymity_val'),  Icon: IconEyeOff },
@@ -1965,7 +1997,7 @@ function ProfileScreen() {
         {/* Location consent */}
         <div style={{ marginBottom: 16 }}>
           <div className="eyebrow" style={{ marginBottom: 8 }}>{tr('set_group_location')}</div>
-          <div style={{ background:'rgba(255,255,255,0.7)', border:'1px solid var(--mist)',
+          <div style={{ background:'var(--surface)', border:'1px solid var(--mist)',
                         borderRadius:14, padding:'12px 14px',
                         display:'flex', alignItems:'center', justifyContent:'space-between' }}>
             <div>
@@ -1990,7 +2022,7 @@ function ProfileScreen() {
         {/* Push notifications consent */}
         <div style={{ marginBottom: 16 }}>
           <div className="eyebrow" style={{ marginBottom: 8 }}>{tr('set_group_notifications')}</div>
-          <div style={{ background:'rgba(255,255,255,0.7)', border:'1px solid var(--mist)',
+          <div style={{ background:'var(--surface)', border:'1px solid var(--mist)',
                         borderRadius:14, padding:'12px 14px',
                         display:'flex', alignItems:'center', justifyContent:'space-between' }}>
             <div>
@@ -2080,7 +2112,7 @@ function LanguageSetting() {
   return (
     <div style={{ marginBottom: 16 }}>
       <div className="eyebrow" style={{ marginBottom: 8 }}>{tr('lang_title')}</div>
-      <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: 14 }}>
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, padding: 14 }}>
         <div className={isBangla(tr('lang_question')) ? 'serif bn' : 'serif'}
              style={{ fontSize: 15, fontWeight: 500, color: 'var(--navy)' }}>
           {tr('lang_question')}
@@ -2098,7 +2130,7 @@ function LanguageSetting() {
               <button key={opt.v} role="radio" aria-checked={active} onClick={() => setLang(opt.v)}
                 style={{
                   padding: '9px 6px', borderRadius: 9, border: 'none', cursor: 'pointer',
-                  background: active ? 'var(--navy)' : 'transparent',
+                  background: active ? 'var(--brand)' : 'transparent',
                   color: active ? '#fff' : 'var(--navy)',
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
                   transition: 'background 0.18s, color 0.18s',
@@ -2120,7 +2152,7 @@ function SettingsGroup({ title, items }) {
     <div style={{ marginBottom: 16 }}>
       <div className="eyebrow" style={{ marginBottom: 8 }}>{title}</div>
       <div style={{
-        background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+        background: 'var(--surface)', border: '1px solid var(--mist)',
         borderRadius: 14, overflow: 'hidden',
       }}>
         {items.map((it, i) => {
@@ -2240,7 +2272,7 @@ function NotificationsScreen() {
           {today.length > 0 && (
             <div style={{ marginBottom: 14 }}>
               <div className="eyebrow" style={{ marginBottom: 8 }}>Today</div>
-              <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, overflow: 'hidden' }}>
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, overflow: 'hidden' }}>
                 {today.map((n, i) => renderRow(n, i, today))}
               </div>
             </div>
@@ -2248,7 +2280,7 @@ function NotificationsScreen() {
           {earlier.length > 0 && (
             <div style={{ marginBottom: 14 }}>
               <div className="eyebrow" style={{ marginBottom: 8 }}>Earlier</div>
-              <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, overflow: 'hidden' }}>
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, overflow: 'hidden' }}>
                 {earlier.map((n, i) => renderRow(n, i, earlier))}
               </div>
             </div>
@@ -2338,7 +2370,7 @@ function TrustedContactsSheet({ onClose }) {
 
   const fieldStyle = {
     width: '100%', padding: '10px 13px', borderRadius: 10, border: '1px solid var(--mist-2)',
-    background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--navy)', outline: 'none', boxSizing: 'border-box',
+    background: 'var(--surface-solid)', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--navy)', outline: 'none', boxSizing: 'border-box',
   };
   const persist = (list) => { saveTrustedContacts(list); setContacts(list); };
 
@@ -2366,7 +2398,7 @@ function TrustedContactsSheet({ onClose }) {
         <div style={{ marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {contacts.map(c => (
             <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 12px', borderRadius: 12,
-                                     background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)' }}>
+                                     background: 'var(--surface)', border: '1px solid var(--mist)' }}>
               <div style={{ width: 34, height: 34, borderRadius: 999, flexShrink: 0, background: 'var(--cream-2)',
                             border: '1px solid var(--mist)', color: 'var(--sage)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <IconPhone size={15}/>
@@ -2563,7 +2595,7 @@ function RoutinesScreen() {
 
                 /* Slot rows card */
                 React.createElement('div', {
-                  style: { background: 'rgba(255,255,255,0.72)', border: '1px solid var(--mist)',
+                  style: { background: 'var(--surface)', border: '1px solid var(--mist)',
                     borderRadius: 12, overflow: 'hidden' }
                 },
                   dslots.map(function(slot, i) {
@@ -2628,7 +2660,7 @@ function StarPicker({ value, onChange, label, optional }) {
         {[1, 2, 3, 4, 5].map(n => (
           <button key={n} onClick={() => onChange(value === n ? 0 : n)} style={{
             width: 34, height: 34, borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 18,
-            background: n <= value ? 'rgba(184,137,58,0.12)' : 'rgba(255,255,255,0.7)',
+            background: n <= value ? 'rgba(184,137,58,0.12)' : 'var(--surface)',
             color: n <= value ? 'var(--gold)' : 'var(--mist-2)',
             outline: n <= value ? '1px solid rgba(184,137,58,0.4)' : '1px solid var(--mist)',
             transition: 'all 0.15s',
@@ -2748,7 +2780,7 @@ function DeptRatingScreen() {
         {DEPTS.map(d => (
           <button key={d} onClick={() => setSelectedDept(d)} style={{
             padding: '7px 13px', borderRadius: 999, whiteSpace: 'nowrap', fontSize: 12.5, fontWeight: 600,
-            background: d === selectedDept ? 'var(--navy)' : 'rgba(255,255,255,0.7)',
+            background: d === selectedDept ? 'var(--brand)' : 'var(--surface)',
             color: d === selectedDept ? '#F7F3EE' : 'var(--ink-2)',
             border: '1px solid ' + (d === selectedDept ? 'var(--navy)' : 'var(--mist)'),
             cursor: 'pointer', fontFamily: 'var(--font-sans)',
@@ -2759,7 +2791,7 @@ function DeptRatingScreen() {
       <div style={{ padding: '14px 20px 32px', display: 'flex', flexDirection: 'column', gap: 14 }}>
 
         {/* Summary card */}
-        <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: 16 }}>
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, padding: 16 }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--sage)', fontFamily: 'var(--font-sans)', textTransform: 'uppercase', marginBottom: 10 }}>
             {selectedDept} · Community Ratings
           </div>
@@ -2799,7 +2831,7 @@ function DeptRatingScreen() {
 
         {/* Rating form */}
         {!isLoggedIn ? (
-          <div style={{ padding: '18px 16px', background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, textAlign: 'center' }}>
+          <div style={{ padding: '18px 16px', background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, textAlign: 'center' }}>
             <div style={{ fontSize: 13, color: 'var(--graphite)', fontFamily: 'var(--font-sans)' }}>
               Sign in to submit a rating
             </div>
@@ -2813,7 +2845,7 @@ function DeptRatingScreen() {
             </div>
           </div>
         ) : (
-          <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 14, padding: 16 }}>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 14, padding: 16 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--graphite)', fontFamily: 'var(--font-sans)', textTransform: 'uppercase', marginBottom: 14 }}>
               Submit Your Rating
             </div>

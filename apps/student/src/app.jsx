@@ -184,6 +184,29 @@ function AppProvider({ children }) {
   };
   // Translate helper bound to the active language. type: 'ui' (default) | 'content'.
   const tr = (key, type) => (window.tStr ? window.tStr(key, lang, type) : key);
+
+  // Theme — 'light' | 'dark'. First-run default follows the device
+  // (prefers-color-scheme); once the user makes an explicit choice it is stored
+  // under 'anchor_theme' and wins from then on. Storage reads are guarded the
+  // same way as anchor_lang (private mode / disabled storage can throw).
+  const systemPrefersDark = () => {
+    try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; }
+    catch { return false; }
+  };
+  const [theme, setThemeRaw] = useState(() => {
+    try {
+      const saved = localStorage.getItem('anchor_theme');
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch { /* storage unavailable */ }
+    return systemPrefersDark() ? 'dark' : 'light';
+  });
+  const setTheme = (next) => {
+    const val = next === 'dark' ? 'dark' : 'light';
+    try { localStorage.setItem('anchor_theme', val); } catch { /* storage unavailable */ }
+    setThemeRaw(val);
+  };
+  const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark');
+
   const [history, setHistory] = useState([]);
   const [auth, setAuth] = useState(
     stored || { isAuthenticated: false, user: null, authStep: null, pendingIdentifier: null }
@@ -268,6 +291,35 @@ function AppProvider({ children }) {
   useEffect(() => {
     try { document.documentElement.setAttribute('data-lang', lang); } catch (_) { /* SSR/no-DOM */ }
   }, [lang]);
+
+  // Reflect the active theme on <html> (styles.css [data-theme="dark"]) and keep
+  // the mobile status-bar tint (<meta name="theme-color">) in sync.
+  useEffect(() => {
+    try {
+      document.documentElement.setAttribute('data-theme', theme);
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', theme === 'dark' ? '#0E1620' : '#0B1D35');
+    } catch (_) { /* SSR/no-DOM */ }
+  }, [theme]);
+
+  // Follow the device theme as it changes — but only while the user has not made
+  // an explicit choice (no stored 'anchor_theme'). An explicit pick always wins.
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    let mq;
+    try { mq = window.matchMedia('(prefers-color-scheme: dark)'); } catch { return; }
+    const onChange = (e) => {
+      let saved = null;
+      try { saved = localStorage.getItem('anchor_theme'); } catch { /* ignore */ }
+      if (saved !== 'light' && saved !== 'dark') setThemeRaw(e.matches ? 'dark' : 'light');
+    };
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);  // older Safari
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+      else if (mq.removeListener) mq.removeListener(onChange);
+    };
+  }, []);
 
   // Soft logout when a fetch helper detects an unrecoverable 401 (refresh failed
   // or refresh token gone). Avoids the full-page reload that flashes the login screen.
@@ -361,7 +413,8 @@ function AppProvider({ children }) {
   }, [auth.isAuthenticated, geofenceConsent]);
 
   const value = { mode, setMode, route, go, back, replace, lang, setLang, tr, auth, login, logout,
-                  setAuthPending, updateUser, geofenceConsent, setGeofenceConsent };
+                  setAuthPending, updateUser, geofenceConsent, setGeofenceConsent,
+                  theme, setTheme, toggleTheme };
   return (
     <AppCtx.Provider value={value}>
       {children}
@@ -428,7 +481,7 @@ function Header({ title, subtitle, back: showBack = false, transparent = false }
     <div style={{
       position: 'sticky', top: 0, zIndex: 10,
       padding: '18px 20px 12px',
-      background: transparent ? 'transparent' : 'rgba(247,243,238,0.85)',
+      background: transparent ? 'transparent' : 'var(--bar-bg)',
       backdropFilter: 'blur(14px)',
       WebkitBackdropFilter: 'blur(14px)',
       borderBottom: transparent ? 'none' : '1px solid var(--mist)',
@@ -470,7 +523,7 @@ function Header({ title, subtitle, back: showBack = false, transparent = false }
 
         <button onClick={() => go('notifications')} aria-label="Notifications" style={{
           position: 'relative', width: 38, height: 38, borderRadius: 999,
-          background: 'rgba(255,255,255,0.6)', border: '1px solid var(--mist)',
+          background: 'var(--surface)', border: '1px solid var(--mist)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           cursor: 'pointer', color: 'var(--navy)',
         }}>

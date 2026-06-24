@@ -442,7 +442,7 @@ function LoginScreen() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 8 }}>
           <div style={{
             width: 44, height: 44, borderRadius: 13,
-            background: 'var(--navy)', color: '#F7F3EE',
+            background: 'var(--brand)', color: '#F7F3EE',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -471,7 +471,7 @@ function LoginScreen() {
               style={{
                 flex: 1, padding: '9px 0', borderRadius: 10, border: 'none', cursor: 'pointer',
                 fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
-                background: tab === t ? '#fff' : 'transparent',
+                background: tab === t ? 'var(--surface-solid)' : 'transparent',
                 color: tab === t ? 'var(--navy)' : 'var(--muted)',
                 boxShadow: tab === t ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
                 transition: 'all 0.15s',
@@ -689,7 +689,7 @@ function Checkbox({ label, checked, set, err, onClear }) {
           style={{
             width: 20, height: 20, borderRadius: 6, flexShrink: 0, marginTop: 1,
             border: '1.5px solid ' + (checked ? 'var(--navy)' : (err ? 'var(--red)' : 'var(--mist-2)')),
-            background: checked ? 'var(--navy)' : 'transparent',
+            background: checked ? 'var(--brand)' : 'transparent',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             transition: 'all 0.15s',
           }}>
@@ -1437,7 +1437,7 @@ function MFASetupScreen() {
     <div style={{
       width: 26, height: 26, borderRadius: 999, flexShrink: 0,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: n < step ? 'var(--sage)' : (n === step ? 'var(--navy)' : 'var(--mist)'),
+      background: n < step ? 'var(--sage)' : (n === step ? 'var(--brand)' : 'var(--mist)'),
       color: n <= step ? '#fff' : 'var(--muted)',
       fontSize: 12, fontWeight: 600, fontFamily: 'var(--font-sans)',
       transition: 'all 0.2s',
@@ -1483,7 +1483,7 @@ function MFASetupScreen() {
               <span style={{ color: 'var(--red)' }}>{enrollError}</span>
               <button onClick={startEnroll} style={{
                 marginTop: 10, border: '1px solid var(--mist-2)', borderRadius: 8, padding: '5px 12px',
-                background: '#fff', cursor: 'pointer', fontSize: 12, color: 'var(--navy)',
+                background: 'var(--surface-solid)', cursor: 'pointer', fontSize: 12, color: 'var(--navy)',
               }}>Try again</button>
             </div>
           ) : (
@@ -1503,7 +1503,7 @@ function MFASetupScreen() {
                 disabled={!secret}
                 style={{
                   border: '1px solid var(--mist-2)', borderRadius: 8, padding: '5px 10px',
-                  background: '#fff', cursor: secret ? 'pointer' : 'not-allowed', fontSize: 12,
+                  background: 'var(--surface-solid)', cursor: secret ? 'pointer' : 'not-allowed', fontSize: 12,
                   fontFamily: 'var(--font-sans)', color: 'var(--navy)', flexShrink: 0, opacity: secret ? 1 : 0.5,
                 }}>
                 {copied ? '✓ Copied' : 'Copy'}
@@ -1738,7 +1738,7 @@ function TrackingLookupScreen() {
 
         {result && (
           <div style={{
-            background: 'rgba(255,255,255,0.85)', border: '1px solid var(--mist)',
+            background: 'var(--surface)', border: '1px solid var(--mist)',
             borderRadius: 16, padding: 18, animation: 'pageIn 240ms both',
           }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>

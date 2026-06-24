@@ -108,6 +108,10 @@
     set_delete_val:      'Permanent',
     set_nearby_alerts:   'Nearby alerts',
     set_safety_notif:    'Safety alert notifications',
+    set_group_appearance: 'Appearance',
+    set_dark_mode:        'Dark mode',
+    set_dark_mode_on:     'On — easier on the eyes at night',
+    set_dark_mode_off:    'Off — following a light theme',
 
     // ── Language picker card ──────────────────────────────────
     lang_title:          'Language',
@@ -213,6 +217,10 @@
     set_delete_val:      'স্থায়ী',
     set_nearby_alerts:   'কাছাকাছি সতর্কতা',
     set_safety_notif:    'নিরাপত্তা সতর্কতা বিজ্ঞপ্তি',
+    set_group_appearance: 'অ্যাপিয়ারেন্স',
+    set_dark_mode:        'ডার্ক মোড',
+    set_dark_mode_on:     'চালু — রাতে চোখের জন্য আরামদায়ক',
+    set_dark_mode_off:    'বন্ধ — হালকা থিম চলছে',
 
     // ── Language picker card ──────────────────────────────────
     lang_title:          'ভাষা',

@@ -173,7 +173,7 @@ function FInput({ value, onChange, placeholder }) {
       style={{
         width: '100%', padding: '10px 12px', borderRadius: 10, boxSizing: 'border-box',
         border: `1px solid ${focused ? 'var(--sage)' : 'var(--mist)'}`,
-        background: 'rgba(255,255,255,0.85)',
+        background: 'var(--surface)',
         boxShadow: focused ? '0 0 0 3px rgba(74,107,92,0.15)' : 'none',
         fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)', outline: 'none',
         transition: 'border-color 0.15s, box-shadow 0.15s',
@@ -194,7 +194,7 @@ function FTextarea({ value, onChange, placeholder, minHeight = 110 }) {
       style={{
         width: '100%', minHeight, padding: '10px 12px', borderRadius: 10, boxSizing: 'border-box',
         border: `1px solid ${focused ? 'var(--sage)' : 'var(--mist)'}`,
-        background: 'rgba(255,255,255,0.85)',
+        background: 'var(--surface)',
         boxShadow: focused ? '0 0 0 3px rgba(74,107,92,0.15)' : 'none',
         fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)', resize: 'vertical', outline: 'none',
         transition: 'border-color 0.15s, box-shadow 0.15s',
@@ -297,7 +297,7 @@ function StepBar({ step, labels }) {
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: '0 0 auto' }}>
               <div style={{
                 width: 28, height: 28, borderRadius: '50%',
-                background: done ? 'var(--sage)' : active ? 'var(--navy)' : 'var(--mist)',
+                background: done ? 'var(--sage)' : active ? 'var(--brand)' : 'var(--mist)',
                 color: done || active ? '#fff' : 'var(--muted)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: done ? 13 : 11, fontWeight: 700, fontFamily: 'var(--font-sans)',
@@ -358,11 +358,11 @@ function FilingsListScreen({ params = {} }) {
 
       {/* Tab bar — translucent pill style */}
       <div style={{ padding: '10px 20px 0' }}>
-        <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.5)', borderRadius: 12, padding: 4 }}>
+        <div style={{ display: 'flex', gap: 4, background: 'var(--surface)', borderRadius: 12, padding: 4 }}>
           {tabs.map(t => (
             <button key={t} onClick={() => setTab(t)} style={{
               flex: 1, padding: '8px 4px', borderRadius: 8, border: 'none', cursor: 'pointer',
-              background: tab === t ? 'var(--navy)' : 'transparent',
+              background: tab === t ? 'var(--brand)' : 'transparent',
               color: tab === t ? '#fff' : 'var(--muted)',
               fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: tab === t ? 600 : 400,
               transition: 'background 0.15s',
@@ -403,7 +403,7 @@ function FilingsListScreen({ params = {} }) {
           const date = new Date(f.updated_at || f.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
           return (
             <button key={f.id} onClick={() => go('filing', { id: f.id })} style={{
-              width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.7)',
+              width: '100%', textAlign: 'left', background: 'var(--surface)',
               border: '1px solid var(--mist)', borderRadius: 14, padding: 14, marginBottom: 10,
               cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: 12,
             }}>
@@ -438,7 +438,7 @@ function FilingsListScreen({ params = {} }) {
       {/* FAB */}
       <button onClick={() => go('new-filing', { category: tab })} style={{
         position: 'fixed', bottom: 108, right: 24, width: 52, height: 52,
-        borderRadius: '50%', background: 'var(--navy)', color: '#fff',
+        borderRadius: '50%', background: 'var(--brand)', color: '#fff',
         border: 'none', cursor: 'pointer', boxShadow: '0 4px 20px rgba(11,29,53,0.3)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20,
       }}>
@@ -575,7 +575,7 @@ function NewFilingScreen({ params = {} }) {
         <div className="eyebrow" style={{ marginBottom: 14 }}>What type of issue are you filing?</div>
         {Object.entries(CATEGORY_META).map(([key, meta]) => (
           <button key={key} onClick={() => { setCategory(key); setStep(2); }} style={{
-            width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.7)',
+            width: '100%', textAlign: 'left', background: 'var(--surface)',
             border: '1px solid var(--mist)', borderRadius: 14, padding: 16,
             marginBottom: 10, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14,
           }}>
@@ -659,7 +659,7 @@ function NewFilingScreen({ params = {} }) {
               if (t.key === 'academic_rank3') { setShowRank3Info(true); return; }
               setTemplate(t); setStep(3);
             }} style={{
-              width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.7)',
+              width: '100%', textAlign: 'left', background: 'var(--surface)',
               border: '1px solid var(--mist)', borderRadius: 14, padding: 14, marginBottom: 10, cursor: 'pointer',
             }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
@@ -794,7 +794,7 @@ function NewFilingScreen({ params = {} }) {
 
           {/* Document preview */}
           <div style={{
-            background: 'rgba(255,255,255,0.85)', border: '1px solid var(--mist)',
+            background: 'var(--surface)', border: '1px solid var(--mist)',
             borderLeft: '3px solid var(--navy)', borderRadius: 12, padding: '16px 18px', marginBottom: 16,
           }}>
             <div style={{
@@ -924,7 +924,7 @@ function NewFilingScreen({ params = {} }) {
           </div>
         )}
 
-        <div style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)', borderRadius: 12, padding: '14px 16px', marginBottom: 14 }}>
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--mist)', borderRadius: 12, padding: '14px 16px', marginBottom: 14 }}>
           <div style={{ fontSize: 10.5, color: 'var(--muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Filing type</div>
           <div className="serif" style={{ fontSize: 15, fontWeight: 500, color: 'var(--navy)' }}>{template?.name}</div>
           <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4 }}>
@@ -1063,7 +1063,7 @@ function FilingDetailScreen({ params = {} }) {
 
         {/* Progress stepper */}
         <div style={{
-          background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+          background: 'var(--surface)', border: '1px solid var(--mist)',
           borderRadius: 14, padding: '14px 16px', marginBottom: 14,
         }}>
           <div className="eyebrow" style={{ marginBottom: 14 }}>Progress</div>
@@ -1076,7 +1076,7 @@ function FilingDetailScreen({ params = {} }) {
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: '0 0 auto' }}>
                     <div style={{
                       width: 22, height: 22, borderRadius: '50%',
-                      background: done ? 'var(--sage)' : active ? 'var(--navy)' : 'var(--mist)',
+                      background: done ? 'var(--sage)' : active ? 'var(--brand)' : 'var(--mist)',
                       color: done || active ? '#fff' : 'var(--muted)',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       fontSize: 9, fontWeight: 700,
@@ -1143,7 +1143,7 @@ function FilingDetailScreen({ params = {} }) {
         {/* Final outcome */}
         {filing.final_outcome_note && (
           <div style={{
-            background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+            background: 'var(--surface)', border: '1px solid var(--mist)',
             borderLeft: `3px solid ${filing.state === 'resolved' ? 'var(--sage)' : 'var(--muted)'}`,
             borderRadius: 12, padding: '14px 16px', marginBottom: 14,
           }}>
@@ -1164,7 +1164,7 @@ function FilingDetailScreen({ params = {} }) {
         {/* Your statement */}
         {filing.body && (
           <div style={{
-            background: 'rgba(255,255,255,0.7)', border: '1px solid var(--mist)',
+            background: 'var(--surface)', border: '1px solid var(--mist)',
             borderRadius: 14, padding: '14px 16px', marginBottom: 14,
           }}>
             <div className="eyebrow" style={{ marginBottom: 10 }}>Your statement</div>
@@ -1336,7 +1336,7 @@ function ClassroomReportScreen({ params = {} }) {
               <button key={it.key} onClick={() => setIssueType(issueType === it.key ? null : it.key)} style={{
                 padding: '11px 4px', borderRadius: 12, textAlign: 'center', cursor: 'pointer',
                 border: issueType === it.key ? '2px solid var(--sage)' : '1px solid var(--mist)',
-                background: issueType === it.key ? 'rgba(74,107,92,0.10)' : 'rgba(255,255,255,0.7)',
+                background: issueType === it.key ? 'rgba(74,107,92,0.10)' : 'var(--surface)',
                 fontFamily: 'var(--font-sans)', transition: 'all 0.15s',
               }}>
                 <div style={{ fontSize: 20, marginBottom: 4 }}>{it.icon}</div>

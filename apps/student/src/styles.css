@@ -21,6 +21,57 @@
   --font-sans:  'Inter Tight', 'Inter', system-ui, -apple-system, sans-serif;
   --font-bn:    'Hind Siliguri', 'Noto Serif Bengali', system-ui, sans-serif;
   --font-mono:  'JetBrains Mono', ui-monospace, Menlo, monospace;
+
+  /* Semantic surface tokens — light values chosen for pixel parity with the
+     previous hardcoded translucent-white surfaces. Dark theme overrides these
+     below so inline styles that point at them flip automatically. */
+  --surface:        rgba(255,255,255,0.7);   /* card / panel base */
+  --surface-2:      rgba(255,255,255,0.55);  /* tiles, subtler panels */
+  --surface-solid:  #ffffff;                 /* opaque white surfaces */
+  --surface-paper:  #FCF9F2;                 /* doc-paper / letter sheet */
+  --brand:          var(--navy);             /* primary-button / user-bubble bg */
+  --brand-ink:      #F7F3EE;                 /* text/icon on --brand */
+  --shadow-strong:  rgba(11,29,53,0.25);     /* desktop column drop shadow */
+  --bar-bg:         rgba(247,243,238,0.85);  /* sticky headers / blurred bars */
+}
+
+/* ─────────────────────────────────────────────
+   Dark theme — a WARM "cream paper at night" identity, not a cool slate.
+   Espresso base, parchment ink, the sage/ember/gold accents carried over so it
+   reads as the nighttime version of the same editorial paper.
+
+   --navy becomes bright parchment so every heading/label/icon that uses it stays
+   crisp; the many places that use --navy as a *background* are routed to --brand
+   (whose LIGHT value is var(--navy), so that routing is a no-op in light mode and
+   only diverges here, where --brand is a deep warm ink for light text).
+───────────────────────────────────────────── */
+[data-theme="dark"] {
+  --navy:   #ECE3D1;   /* headings · labels · icons — bright parchment ink */
+  --navy-2: #F4EEDF;
+  --red:    #F0675A;
+  --cream:  #15110B;   /* the "paper" — warm espresso base */
+  --cream-2:#201A11;   /* slightly raised warm panel (chips, tab tracks) */
+  --ink:    #E9E0CE;   /* body text — warm cream */
+  --ink-2:  #C7BBA2;
+  --muted:  #978A72;   /* warm taupe */
+  --gold:   #D8AE5E;   /* trust / verification accent, brightened */
+  --mist:   #332B1C;   /* hairlines — warm, low contrast */
+  --mist-2: #483D29;
+  --sage:   #84A88F;   /* campus accent, lifted for dark */
+  --sage-2: #AAC9B5;
+  --ember:  #E08763;   /* national accent — warm terracotta */
+  --ember-2:#EC9D7D;
+
+  --surface:        rgba(247,239,224,0.05);   /* warm frosted card */
+  --surface-2:      rgba(247,239,224,0.035);  /* subtler tile */
+  --surface-solid:  #221C12;                  /* warm raised card */
+  --surface-paper:  #1E180F;                  /* doc-paper at night (aged sheet) */
+  --brand:          #342817;                  /* deep warm ink — primary bg */
+  --brand-ink:      #F4EDDC;                  /* text/icon on --brand */
+  --shadow-strong:  rgba(0,0,0,0.6);
+  --bar-bg:         rgba(18,14,9,0.86);        /* warm dark glass for blurred bars */
+
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -917,3 +968,72 @@ body {
   line-height: 1.4;
 }
 .cp-suggestion-chip:hover { background: #fff; border-color: currentColor; }
+
+/* ═════════════════════════════════════════════════════════════════
+   DARK THEME OVERRIDES
+   Token redefinition (top of file) handles everything that already uses
+   var(--cream/--navy/--ink/--mist/…). This block fixes the rules that bake in
+   literal light colors (white surfaces, cream bars) and the few places where
+   --navy is used as a *background* (it becomes light text in dark, so those
+   surfaces switch to --brand which stays deep).
+   ═════════════════════════════════════════════════════════════════ */
+
+/* — Surfaces: frosted white panels → dark frosted/solid — */
+[data-theme="dark"] .pill            { background: var(--surface); }
+[data-theme="dark"] .pill-submitted  { background: var(--surface); color: var(--ink-2); }
+[data-theme="dark"] .card            { background: var(--surface); }
+[data-theme="dark"] .tile            { background: var(--surface-2); }
+[data-theme="dark"] .tile:hover      { background: rgba(247,239,224,0.08); }
+[data-theme="dark"] .c2c-track       { background: var(--surface-2); }
+[data-theme="dark"] .bubble-ai       { background: var(--surface-solid); }
+[data-theme="dark"] .parallel-col    { background: var(--surface); }
+[data-theme="dark"] .compose-step    { background: var(--surface); }
+[data-theme="dark"] .doc-paper       { background: var(--surface-paper); box-shadow: 0 1px 0 rgba(0,0,0,0.2), 0 12px 30px rgba(0,0,0,0.35); }
+[data-theme="dark"] .news-photo-caption { background: var(--surface-solid); }
+[data-theme="dark"] .qr-placeholder  { background: var(--surface); }
+[data-theme="dark"] .cp-bubble-ai,
+[data-theme="dark"] .cp-typing       { background: var(--surface-solid); box-shadow: 0 1px 6px rgba(0,0,0,0.4); }
+[data-theme="dark"] .cp-suggestion-chip       { background: var(--surface); }
+[data-theme="dark"] .cp-suggestion-chip:hover { background: var(--surface-solid); }
+
+/* — Inputs — */
+[data-theme="dark"] .auth-input,
+[data-theme="dark"] .otp-box,
+[data-theme="dark"] .cp-input-wrap   { background: var(--surface-solid); }
+[data-theme="dark"] .auth-input:focus,
+[data-theme="dark"] .otp-box:focus   { background: #2A2114; }
+[data-theme="dark"] .cp-textarea     { color: var(--ink); }
+
+/* — Brand backgrounds (were var(--navy), which is now light text) — */
+[data-theme="dark"] .btn-primary        { background: var(--brand); color: var(--brand-ink); }
+[data-theme="dark"] .btn-primary:hover  { background: #423320; }
+[data-theme="dark"] .bubble-user,
+[data-theme="dark"] .cp-bubble-user     { background: var(--brand); color: var(--brand-ink); }
+[data-theme="dark"] .logo-mark          { background: var(--brand); color: var(--brand-ink); }
+[data-theme="dark"] .tabbar button.on   { background: var(--brand); color: var(--brand-ink); }
+[data-theme="dark"] .step-badge         { color: #1A1409; }
+[data-theme="dark"] .btn-ghost:hover    { background: rgba(247,239,224,0.06); }
+
+/* — Translucent bars: cream → dark glass — */
+[data-theme="dark"] .botnav     { background: var(--bar-bg); }
+[data-theme="dark"] .cp-header  { background: var(--bar-bg); }
+[data-theme="dark"] .botnav .alert-ring { background: rgba(232,49,42,0.16); border-color: rgba(232,49,42,0.4); }
+
+/* — News strap: keep a strong red bar with light text — */
+[data-theme="dark"] .news-strap { background: #6E261D; }
+
+/* — Paper grain: multiply is invisible on dark; use a faint screen highlight — */
+[data-theme="dark"] .grain::before { mix-blend-mode: screen; opacity: 0.04; }
+
+/* — Mode tints — warm espresso gradients — */
+[data-theme="dark"] .tint-campus  { background: linear-gradient(180deg, #15110B 0%, #18130C 100%); }
+[data-theme="dark"] .tint-country { background: linear-gradient(180deg, #15110B 0%, #1B130D 100%); }
+
+/* — Leaflet map: darken raster tiles (with a touch of warmth) + dark popups so
+     MapScreen reads as part of the warm night theme, not a glare — */
+[data-theme="dark"] .leaflet-tile {
+  filter: brightness(0.68) invert(1) contrast(0.9) hue-rotate(180deg) saturate(0.6) sepia(0.18);
+}
+[data-theme="dark"] .leaflet-container { background: #15110B; }
+[data-theme="dark"] .leaflet-popup-content-wrapper,
+[data-theme="dark"] .leaflet-popup-tip { background: var(--surface-solid); color: var(--ink); }
