@@ -603,6 +603,55 @@ async def test_fcm_test_push_reports_and_disables_dead(
     assert by_token["tok-good"].disabled_at is None
 
 
+@pytest.mark.asyncio
+async def test_fcm_test_push_targets_only_requested_device(
+    client: AsyncClient, registered_user, db_session, mock_redis, monkeypatch
+):
+    """With ?device_id=, the test must send to ONLY that device's token — not every
+    device on the account. This is the cross-device misfire fix: tapping 'test' on the
+    phone must not buzz the PC."""
+    h = _auth(registered_user["tokens"])
+    await client.post("/v1/users/me/fcm-token", json={
+        "fcm_token": "tok-pc", "device_id": "web-pc", "platform": "web"}, headers=h)
+    await client.post("/v1/users/me/fcm-token", json={
+        "fcm_token": "tok-phone", "device_id": "web-phone", "platform": "web"}, headers=h)
+
+    sent_tokens = []
+
+    async def _fake_send_batch(tokens, title, body, data=None):
+        sent_tokens.extend(tokens)
+        return {t: {"message_id": "m", "ok": True, "error": None} for t in tokens}
+    monkeypatch.setattr("app.services.fcm.send_batch", _fake_send_batch)
+
+    resp = await client.post(
+        "/v1/users/me/fcm-token/test?device_id=web-phone", headers=h)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["tokens"] == 1
+    assert body["delivered"] == 1
+    assert sent_tokens == ["tok-phone"]
+    assert [r["device_id"] for r in body["results"]] == ["web-phone"]
+
+
+@pytest.mark.asyncio
+async def test_fcm_test_push_unknown_device_reports_zero(
+    client: AsyncClient, registered_user, db_session, mock_redis
+):
+    """A device_id with no active token reports tokens=0 with an actionable message —
+    instead of silently delivering to a different device."""
+    h = _auth(registered_user["tokens"])
+    await client.post("/v1/users/me/fcm-token", json={
+        "fcm_token": "tok-pc", "device_id": "web-pc", "platform": "web"}, headers=h)
+
+    resp = await client.post(
+        "/v1/users/me/fcm-token/test?device_id=web-ghost", headers=h)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["tokens"] == 0
+    assert body["delivered"] == 0
+    assert "isn't registered" in body["message"]
+
+
 def test_fcm_classify_and_permanent_errors():
     """Send-error classification maps the permanently-invalid token cases."""
     from app.services.fcm import _classify, PERMANENT_ERRORS

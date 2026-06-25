@@ -1890,8 +1890,36 @@ function ProfileScreen() {
     setTestBusy(true);
     setTestMsg(null);
     try {
+      // Make sure THIS device's token is freshly registered before testing —
+      // self-heals a stale/never-registered token and binds the foreground
+      // onMessage handler. Without this, the test could only ever reach devices
+      // already in the DB (e.g. the PC), never the phone pressing the button.
+      if (window.syncPushToken) {
+        const sync = await window.syncPushToken({ interactive: true });
+        if (sync !== 'granted') {
+          const text =
+            sync === 'blocked' || sync === 'denied'
+              ? 'Blocked — allow notifications in your browser settings, then try again.'
+            : sync === 'ios-needs-install'
+              ? 'On iPhone: Share → Add to Home Screen, then open Anchor from the icon.'
+            : sync === 'ios-chrome'
+              ? 'On iPhone, open Anchor in Safari, then Add to Home Screen.'
+            : sync === 'insecure-context'
+              ? 'Needs a secure (https) connection.'
+            : sync === 'unsupported'
+              ? 'Notifications aren’t supported on this browser.'
+              : 'Couldn’t enable notifications on this device — please try again.';
+          setTestMsg({ ok: false, text });
+          setTestBusy(false);
+          return;
+        }
+      }
       const t = localStorage.getItem('anchor_access_token');
-      const res = await fetch((window.ANCHOR_API_URL || 'http://localhost:8000') + '/v1/users/me/fcm-token/test', {
+      const deviceId = localStorage.getItem('anchor_device_id');
+      const url = (window.ANCHOR_API_URL || 'http://localhost:8000')
+        + '/v1/users/me/fcm-token/test'
+        + (deviceId ? '?device_id=' + encodeURIComponent(deviceId) : '');
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + t },
       });
