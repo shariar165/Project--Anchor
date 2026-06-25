@@ -413,6 +413,17 @@ body {
   100% { opacity: 1; transform: scale(1); }
 }
 
+/* Heading arrow on the responder's map — points from the responder toward the
+   victim. transform:rotate(<bearing>deg) is set inline; this keeps it centred and
+   legible over dark/light tiles. transition smooths the turn as the bearing updates. */
+.dir-arrow {
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  transform-origin: 50% 50%;
+  transition: transform 0.3s ease-out;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.45));
+}
+
 /* Anonymous mask */
 .anon { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
 

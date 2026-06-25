@@ -453,6 +453,40 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// Initial great-circle bearing (degrees, 0–360 clockwise from north) FROM point 1
+// TO point 2 — i.e. the compass heading a responder must face to reach the victim.
+function bearingDeg(lat1, lng1, lat2, lng2) {
+  const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
+  const dl = (lng2 - lng1) * Math.PI / 180;
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+const _CARDINAL_8       = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const _CARDINAL_8_LONG  = ['North', 'Northeast', 'East', 'Southeast', 'South', 'Southwest', 'West', 'Northwest'];
+
+// 0–360 bearing → one of 8 compass points. `long` gives the spelled-out form for UI copy.
+function cardinal(deg, long) {
+  const i = Math.round(((deg % 360) + 360) % 360 / 45) % 8;
+  return (long ? _CARDINAL_8_LONG : _CARDINAL_8)[i];
+}
+
+// Human-friendly walking ETA from a straight-line distance in metres. ~1.4 m/s ≈ 5 km/h.
+// The on-map line is a straight line, so this is a lower-bound "as the crow flies" estimate.
+function walkEtaTxt(distanceM) {
+  if (!isFinite(distanceM)) return null;
+  if (distanceM < 80) return '<1 min walk';
+  const mins = Math.round(distanceM / 1.4 / 60);
+  return '~' + Math.max(1, mins) + ' min walk';
+}
+
+// Distance phrasing shared by the map popups and the responder sheet.
+function distanceTxt(distanceM) {
+  if (!isFinite(distanceM)) return null;
+  return distanceM < 1000 ? Math.round(distanceM) + 'm' : (distanceM / 1000).toFixed(1) + 'km';
+}
+
 
 const RADIUS_OPTIONS = [
   { label: '5 km',  value: 5 },
@@ -475,6 +509,9 @@ function MapScreen({ params } = {}) {
   const zoneLayersRef   = React.useRef([]);
   const userMarkerRef   = React.useRef(null);
   const alertMarkerRef  = React.useRef(null);
+  const dirLineRef      = React.useRef(null);   // direction line responder → victim
+  const dirArrowRef     = React.useRef(null);   // rotated heading arrow near the responder
+  const responderWatchRef = React.useRef(null); // navigator.geolocation.watchPosition id
   const userLocRef      = React.useRef({ lat: 23.7450, lng: 90.3718 });
 
   // When opened from an alert push (deep link), focus the emergency location and
@@ -496,6 +533,10 @@ function MapScreen({ params } = {}) {
   const focusLng = (alertInfo && isFinite(alertInfo.lng)) ? alertInfo.lng : (isFinite(pushLng) ? pushLng : NaN);
   const hasFocus = isFinite(focusLat) && isFinite(focusLng);
   const didCenterRef = React.useRef(false);
+  const didFrameBothRef = React.useRef(false);  // fitBounds(me, victim) done once
+  // Treat the alert as active until the poll tells us otherwise, so the direction
+  // line shows immediately on a cold deep-link before the first /v1/alerts/{id} load.
+  const alertActive = !alertInfo || alertInfo.state === 'active';
 
   const [radiusKm,    setRadiusKm]    = React.useState(10);
   const [userLoc,     setUserLoc]     = React.useState({ lat: 23.7450, lng: 90.3718 });
@@ -541,6 +582,7 @@ function MapScreen({ params } = {}) {
 
     if (navigator.geolocation) {
       setLocStatus('locating');
+      // Fast first fix to centre the map and load zones…
       navigator.geolocation.getCurrentPosition(
         pos => {
           const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -557,11 +599,36 @@ function MapScreen({ params } = {}) {
         },
         { timeout: 8000, enableHighAccuracy: true }
       );
+      // …then, ONLY when we arrived here to navigate to an alert, keep the
+      // responder's position LIVE so the direction line, distance, bearing and ETA
+      // recalculate as they move toward the victim. We skip the continuous watch for
+      // ordinary zone browsing to avoid draining the battery. On a transient watch
+      // error we keep the last known fix rather than reverting to default.
+      if (eventId) try {
+        responderWatchRef.current = navigator.geolocation.watchPosition(
+          pos => {
+            const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            userLocRef.current = loc;
+            setUserLoc(loc);
+            setLocStatus('found');
+          },
+          err => {
+            // Only downgrade to "denied" on a hard permission denial; ignore
+            // timeouts/position-unavailable so a momentary glitch doesn't wipe the fix.
+            if (err && err.code === 1) setLocStatus('denied');
+          },
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
+        );
+      } catch (_) { /* geolocation may throw if blocked by permissions policy */ }
     } else {
       fetchZones(23.7450, 90.3718, null);
     }
 
     return () => {
+      if (responderWatchRef.current !== null) {
+        try { navigator.geolocation.clearWatch(responderWatchRef.current); } catch (_) {}
+        responderWatchRef.current = null;
+      }
       if (leafletMapRef.current) { leafletMapRef.current.remove(); leafletMapRef.current = null; }
     };
   }, []);
@@ -586,6 +653,72 @@ function MapScreen({ params } = {}) {
       didCenterRef.current = true;
     }
   }, [focusLat, focusLng]);
+
+  // Direction to the victim, Google-Maps style but drawn entirely in Leaflet: a
+  // dashed line from the responder's LIVE position to the victim, plus a heading
+  // arrow rotated to the bearing. Recomputes as either party moves; cleared when
+  // we have no responder fix, no victim coords, or the alert is no longer active.
+  React.useEffect(() => {
+    const map = leafletMapRef.current;
+    if (!map) return;
+
+    const clearDir = () => {
+      if (dirLineRef.current)  { try { map.removeLayer(dirLineRef.current); }  catch (_) {} dirLineRef.current = null; }
+      if (dirArrowRef.current) { try { map.removeLayer(dirArrowRef.current); } catch (_) {} dirArrowRef.current = null; }
+    };
+
+    const haveFix = locStatus === 'found';
+    const me = userLocRef.current;
+    if (!eventId || !hasFocus || !alertActive || !haveFix || !me) { clearDir(); return; }
+
+    const from = [me.lat, me.lng];
+    const to   = [focusLat, focusLng];
+    const brng = bearingDeg(me.lat, me.lng, focusLat, focusLng);
+
+    // Line responder → victim
+    if (dirLineRef.current) {
+      dirLineRef.current.setLatLngs([from, to]);
+    } else {
+      dirLineRef.current = L.polyline([from, to], {
+        color: '#E8312A', weight: 3, opacity: 0.85, dashArray: '6 8', interactive: false,
+      }).addTo(map);
+    }
+
+    // Heading arrow anchored at the responder, rotated toward the victim.
+    const arrowIcon = L.divIcon({
+      className: '',
+      html: '<div class="dir-arrow" style="transform:rotate(' + brng + 'deg)">'
+        + '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#E8312A" '
+        + 'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">'
+        + '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></div>',
+      iconSize: [22, 22], iconAnchor: [11, 11],
+    });
+    if (dirArrowRef.current) {
+      dirArrowRef.current.setLatLng(from);
+      dirArrowRef.current.setIcon(arrowIcon);
+    } else {
+      dirArrowRef.current = L.marker(from, { icon: arrowIcon, interactive: false, zIndexOffset: 1000 }).addTo(map);
+    }
+
+    // Frame both endpoints once, so the responder sees themselves, the victim, and
+    // the line between — then leave the view alone so we don't fight their panning.
+    if (!didFrameBothRef.current) {
+      try {
+        map.fitBounds(L.latLngBounds([from, to]), { padding: [60, 60], maxZoom: 17 });
+        didFrameBothRef.current = true;
+      } catch (_) {}
+    }
+
+    return () => { /* layers persist across renders; cleaned on unmount below */ };
+  }, [userLoc.lat, userLoc.lng, focusLat, focusLng, hasFocus, alertActive, locStatus, eventId]);
+
+  // Remove the direction overlay on unmount (the Map screen is kept alive across nav).
+  React.useEffect(() => () => {
+    const map = leafletMapRef.current;
+    if (!map) return;
+    if (dirLineRef.current)  { try { map.removeLayer(dirLineRef.current); }  catch (_) {} dirLineRef.current = null; }
+    if (dirArrowRef.current) { try { map.removeLayer(dirArrowRef.current); } catch (_) {} dirArrowRef.current = null; }
+  }, []);
 
   // Responder flow — poll the authoritative alert location + state every 5s so the
   // map FOLLOWS the moving victim and we detect when they mark themselves safe.
@@ -632,6 +765,23 @@ function MapScreen({ params } = {}) {
       return Math.round(haversineDistance(me.lat, me.lng, a.lat, a.lng));
     }
     return null;
+  }
+
+  // Full navigation read shared by the map overlay and the responder sheet:
+  // distance + compass bearing + walking ETA, or null when we lack a fix/coords.
+  function responderNav() {
+    const a = alertInfo || (hasFocus ? { lat: focusLat, lng: focusLng } : null);
+    const me = userLocRef.current;
+    if (!(a && isFinite(a.lat) && isFinite(a.lng) && me && locStatus === 'found')) return null;
+    const d = Math.round(haversineDistance(me.lat, me.lng, a.lat, a.lng));
+    const brng = bearingDeg(me.lat, me.lng, a.lat, a.lng);
+    return {
+      distanceM:  d,
+      distanceTxt: distanceTxt(d) + ' away',
+      bearingTxt: cardinal(brng, true),     // "Northeast"
+      bearingShort: cardinal(brng, false),  // "NE"
+      etaTxt:     walkEtaTxt(d),
+    };
   }
 
   async function handleRespondYes() {
@@ -862,11 +1012,8 @@ function MapScreen({ params } = {}) {
         <AlertRespondSheet
           status={respondStatus}
           error={respondError}
-          distanceTxt={(() => {
-            const d = responderDistanceM();
-            if (d == null) return null;
-            return d < 1000 ? Math.round(d) + 'm away' : (d / 1000).toFixed(1) + 'km away';
-          })()}
+          nav={responderNav()}
+          locDenied={locStatus === 'denied'}
           onYes={handleRespondYes}
           onNo={handleRespondNo}
           onClose={() => setRespondStatus('idle')}
@@ -879,7 +1026,7 @@ function MapScreen({ params } = {}) {
 // Bottom-sheet a nearby user sees after tapping an emergency push. Lets them confirm
 // "I'm coming to help" (→ POST /respond responding) so the alerting user's live map
 // shows a real responder instead of "0 responding".
-function AlertRespondSheet({ status, error, distanceTxt, onYes, onNo, onClose }) {
+function AlertRespondSheet({ status, error, nav, locDenied, onYes, onNo, onClose }) {
   const sending = status === 'sending';
   const sheet = (children) => (
     <div style={{ position:'fixed', inset:0, zIndex:9998, background:'rgba(11,29,53,0.55)',
@@ -931,11 +1078,45 @@ function AlertRespondSheet({ status, error, distanceTxt, onYes, onNo, onClose })
         </div>
         <div style={{ fontSize:21, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)',
                       textAlign:'center', marginBottom:8 }}>You're on the way</div>
-        <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.6, textAlign:'center',
-                    fontFamily:'var(--font-sans)', marginBottom:20 }}>
-          They've been told that help is coming. The map shows where they are — head over safely.
-          If the situation looks dangerous, call the authorities.
-        </p>
+
+        {/* Live direction card — distance · compass direction · ETA. Updates as the
+            responder and the victim move. Points to the on-map line for the route. */}
+        {nav ? (
+          <div style={{ marginBottom:16, padding:'14px 16px', borderRadius:14,
+                        background:'rgba(232,49,42,0.06)', border:'1px solid rgba(232,49,42,0.22)' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+              <div style={{ width:40, height:40, borderRadius:999, flexShrink:0,
+                            background:'rgba(232,49,42,0.12)', display:'flex',
+                            alignItems:'center', justifyContent:'center' }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#E8312A"
+                     strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:17, fontWeight:600, color:'var(--navy)', fontFamily:'var(--font-sans)' }}>
+                  {nav.distanceTxt}
+                </div>
+                <div style={{ fontSize:12.5, color:'var(--ember)', fontWeight:600, marginTop:1,
+                              fontFamily:'var(--font-sans)' }}>
+                  Head {nav.bearingTxt}{nav.etaTxt ? ' · ' + nav.etaTxt : ''}
+                </div>
+              </div>
+            </div>
+            <div style={{ fontSize:12, color:'var(--muted)', lineHeight:1.5, marginTop:10,
+                          fontFamily:'var(--font-sans)' }}>
+              Follow the red line on the map to reach them. Head over safely — if the situation
+              looks dangerous, call the authorities.
+            </div>
+          </div>
+        ) : (
+          <p style={{ fontSize:13.5, color:'var(--muted)', lineHeight:1.6, textAlign:'center',
+                      fontFamily:'var(--font-sans)', marginBottom:16 }}>
+            They've been told that help is coming. The map shows where they are — head over safely.
+            {locDenied ? ' Turn on location to see the direction to them.' : ''}
+            {' '}If the situation looks dangerous, call the authorities.
+          </p>
+        )}
+
         <a href="tel:999" style={{ display:'block', textAlign:'center', textDecoration:'none',
             marginBottom:10, padding:'13px 0', borderRadius:12, background:'var(--ember)', color:'#fff',
             fontSize:15, fontWeight:600, fontFamily:'var(--font-sans)' }}>
@@ -1008,9 +1189,11 @@ function AlertRespondSheet({ status, error, distanceTxt, onYes, onNo, onClose })
           <div style={{ fontSize:19, fontWeight:500, color:'var(--navy)', fontFamily:'var(--font-serif)', lineHeight:1.15 }}>
             Someone nearby needs help
           </div>
-          {distanceTxt && (
+          {nav && (
             <div style={{ fontSize:12.5, color:'var(--ember)', fontWeight:600, marginTop:2,
-                          fontFamily:'var(--font-sans)' }}>{distanceTxt}</div>
+                          fontFamily:'var(--font-sans)' }}>
+              {nav.distanceTxt} · {nav.bearingTxt}{nav.etaTxt ? ' · ' + nav.etaTxt : ''}
+            </div>
           )}
         </div>
       </div>
