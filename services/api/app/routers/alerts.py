@@ -721,32 +721,42 @@ async def deregister_fcm_token(
 @limiter.limit("6/minute")
 async def test_fcm_push(
     request: Request,
+    device_id: str | None = Query(default=None, max_length=200),
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(get_current_user),
 ):
     """
-    Send a test push to all of the current user's registered devices so a user can
-    verify, per device, that push notifications actually arrive. Returns per-token
-    results and self-heals by disabling permanently-invalid tokens (same policy as
-    the alert fan-out — see fcm.PERMANENT_ERRORS).
+    Send a test push so a user can verify push notifications actually arrive.
+
+    When `device_id` is provided, the test targets ONLY that device's token — this is
+    what the client passes so "Send test notification" truthfully hits the device that
+    pressed it (not every device on the account). With no `device_id`, it falls back to
+    all of the user's registered devices (back-compat). Returns per-token results and
+    self-heals by disabling permanently-invalid tokens (same policy as the alert
+    fan-out — see fcm.PERMANENT_ERRORS).
     """
     from app.services import fcm as fcm_svc
 
-    result = await db.execute(
-        select(UserFCMToken).where(
-            and_(
-                UserFCMToken.user_id == token.user_id,
-                UserFCMToken.disabled_at.is_(None),
-            )
-        )
-    )
+    conditions = [
+        UserFCMToken.user_id == token.user_id,
+        UserFCMToken.disabled_at.is_(None),
+    ]
+    if device_id is not None:
+        conditions.append(UserFCMToken.device_id == device_id)
+
+    result = await db.execute(select(UserFCMToken).where(and_(*conditions)))
     rows = result.scalars().all()
     if not rows:
+        msg = (
+            "This device isn't registered for notifications yet. Turn notifications on, then try again."
+            if device_id is not None
+            else "No registered devices on this account. Enable notifications first."
+        )
         return {
             "tokens": 0,
             "delivered": 0,
             "results": [],
-            "message": "No registered devices on this account. Enable notifications first.",
+            "message": msg,
         }
 
     tokens = [r.fcm_token for r in rows]
