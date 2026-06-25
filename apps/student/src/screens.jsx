@@ -808,14 +808,25 @@ async function alertApiGet(path, token) {
 
 function AlertScreen() {
   const { back, go, auth } = useApp();
-  const [phase, setPhase] = _useS('during');
+  // The active-alert state is persisted (anchor_alert_active) so an in-progress
+  // emergency survives a hard reload / PWA reopen — the screen re-shows the live
+  // map and the live-GPS effect resumes. Kept as one object with per-field setters
+  // so the rest of the screen's call sites are unchanged. Cleared on mark-safe and
+  // on logout. In-session navigation is already preserved by the keep-alive host.
+  const _persist = window.usePersistentState || ((k, init) => _useS(init));
+  const [alertState, setAlertState] = _persist('anchor_alert_active',
+    { phase: 'during', activated: false, alertEventId: null, safeMarked: false });
+  const { phase, activated, alertEventId, safeMarked } = alertState;
+  const _field = (k) => (v) => setAlertState(s => ({ ...s, [k]: (typeof v === 'function' ? v(s[k]) : v) }));
+  const setPhase = _field('phase');
+  const setActivated = _field('activated');
+  const setAlertEventId = _field('alertEventId');
+  const setSafeMarked = _field('safeMarked');
+  const resetAlert = () => setAlertState({ phase: 'during', activated: false, alertEventId: null, safeMarked: false });
   const [holding, setHolding] = _useS(false);
   const [progress, setProgress] = _useS(0);
   const [showConfirm, setShowConfirm] = _useS(false);
-  const [activated, setActivated] = _useS(false);
-  const [alertEventId, setAlertEventId] = _useS(null);
   const [responderCount, setResponderCount] = _useS(0);
-  const [safeMarked, setSafeMarked] = _useS(false);
   const [sending, setSending] = _useS(false);
   const [gpsResult, setGpsResult] = _useS(null);
   const [gpsRetrying, setGpsRetrying] = _useS(false);
@@ -963,7 +974,9 @@ function AlertScreen() {
         await alertApiPost(`/v1/alerts/${alertEventId}/safe`, {}, token);
       } catch (e) { console.error(e); }
     }
-    setSafeMarked(true);
+    // Clear the persisted active-alert so the live-GPS watch stops and reopening
+    // Alert (kept alive) starts fresh, ready to trigger again.
+    resetAlert();
     back();
   };
 

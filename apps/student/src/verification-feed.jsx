@@ -325,11 +325,24 @@ function PublishScreen() {
   const canPublishCampus = mode === 'campus';
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
 
-  const [step, setStep] = React.useState(0);
-  const [form, setForm] = React.useState({
-    category: '', scope: mode === 'campus' ? 'campus' : 'national',
-    title: '', body: '', tags: [], geo_lat: '', geo_lng: '', geo_address: '', attachmentIds: [],
+  // The compose form is autosaved (anchor_draft_feed) so a half-written post survives
+  // a hard reload — and keep-alive already preserves it across in-session navigation.
+  // step + form are stored together; per-field setters keep the call sites unchanged.
+  // Cleared on successful publish and on logout.
+  const _defaultDraft = () => ({
+    step: 0,
+    form: {
+      category: '', scope: mode === 'campus' ? 'campus' : 'national',
+      title: '', body: '', tags: [], geo_lat: '', geo_lng: '', geo_address: '', attachmentIds: [],
+    },
   });
+  const _persistDraft = window.usePersistentState || ((k, init) => React.useState(init));
+  const [draft, setDraft] = _persistDraft('anchor_draft_feed', _defaultDraft);
+  const step = draft.step;
+  const setStep = (v) => setDraft(d => ({ ...d, step: (typeof v === 'function' ? v(d.step) : v) }));
+  const form = draft.form;
+  const setForm = (v) => setDraft(d => ({ ...d, form: (typeof v === 'function' ? v(d.form) : v) }));
+  const clearDraft = () => setDraft(_defaultDraft());
   const [tagInput, setTagInput] = React.useState('');
   const [uploading, setUploading] = React.useState(false);
   const [publishing, setPublishing] = React.useState(false);
@@ -401,6 +414,8 @@ function PublishScreen() {
       }
 
       const data = await res.json();
+      // Published — drop the saved draft so the (kept-alive) form resets to blank.
+      clearDraft();
       // replace() instead of go() so the device Back button skips the publish
       // form (which would otherwise remount at step 0) and returns to the feed.
       replace('feed-post', { id: data.post_id });
