@@ -94,6 +94,10 @@ function ChatThreadScreen({ params }) {
   const keyRef = React.useRef(null);
   const seenRef = React.useRef(new Set());
   const scrollRef = React.useRef(null);
+  // This screen is kept mounted (keep-alive) when the user navigates away. Pause the
+  // live SSE stream while hidden so we don't hold many concurrent connections, then
+  // reconnect + catch up on re-entry. seenRef dedupes so the history reload is safe.
+  const visible = window.useScreenVisible ? window.useScreenVisible() : true;
 
   const appendDecrypted = React.useCallback(async (raw) => {
     if (!raw || !raw.id || seenRef.current.has(raw.id)) return;
@@ -110,6 +114,7 @@ function ChatThreadScreen({ params }) {
 
   // Set up the shared key, load history, open the live stream.
   React.useEffect(() => {
+    if (!visible) return;   // paused while this screen is hidden
     let alive = true;
     let es = null;
     (async () => {
@@ -144,7 +149,7 @@ function ChatThreadScreen({ params }) {
       } catch (e) { /* surface nothing fatal */ }
     })();
     return () => { alive = false; if (es) es.close(); };
-  }, [conv.id]);
+  }, [conv.id, visible]);
 
   React.useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;

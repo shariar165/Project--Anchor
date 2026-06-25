@@ -1,7 +1,7 @@
 // Anchor AI — App shell: header, C2C toggle, bottom nav, route container
 // Depends on: icons.jsx, screens.jsx (declared globally)
 
-const { useState, useEffect, useRef, useMemo, createContext, useContext } = React;
+const { useState, useEffect, useLayoutEffect, useRef, useMemo, createContext, useContext } = React;
 
 // ─────────────────────────────────────────────────────────────
 // Shared app state
@@ -14,6 +14,58 @@ const AUTH_ROUTES = new Set([
   'verify-email', 'verify-otp', 'forgot-password',
   'mfa-verify', 'mfa-setup', 'tracking-lookup',
 ]);
+
+// ─────────────────────────────────────────────────────────────
+// State preservation — keep-alive cache + persistence helpers
+// ─────────────────────────────────────────────────────────────
+// The bottom-nav tab roots are never evicted from the keep-alive cache, so
+// switching tabs always returns to exactly where you left each one.
+const TAB_ROOTS = new Set(['home', 'cases', 'alert', 'chat', 'profile']);
+// Beyond the tab roots, keep at most this many recently-visited screens mounted
+// (LRU). Bounds memory and the number of concurrent background effects.
+const MAX_CACHED = 12;
+
+// A stable identity for a screen instance. Detail screens carry an id/conv so two
+// different items get distinct, independently-preserved instances; returning to the
+// same route+item restores the same one. Tab roots collapse to just their name.
+function slotKeyFor(route) {
+  const p = (route && route.params) || {};
+  const disc = (p.id != null ? p.id
+    : p.stationId != null ? p.stationId
+    : (p.conv && p.conv.id != null) ? p.conv.id
+    : p.focusAlert != null ? p.focusAlert
+    : '');
+  return (route ? route.name : 'home') + '::' + disc;
+}
+
+// Whether the screen a component is rendered inside is the currently-visible one.
+// Real-time screens (e.g. chat SSE) read this to pause work while hidden.
+const ScreenVisibilityCtx = createContext(true);
+const useScreenVisible = () => useContext(ScreenVisibilityCtx);
+
+// useState backed by localStorage — survives a hard reload, not just a remount.
+// Same guarded try/catch pattern as the theme/lang state. Supports functional
+// updates; passing `undefined` removes the key.
+function usePersistentState(key, initial) {
+  const [val, setVal] = useState(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw !== null) return JSON.parse(raw);
+    } catch (_) { /* storage unavailable or bad JSON */ }
+    return typeof initial === 'function' ? initial() : initial;
+  });
+  const set = (next) => {
+    setVal(prev => {
+      const resolved = typeof next === 'function' ? next(prev) : next;
+      try {
+        if (resolved === undefined) localStorage.removeItem(key);
+        else localStorage.setItem(key, JSON.stringify(resolved));
+      } catch (_) { /* storage unavailable */ }
+      return resolved;
+    });
+  };
+  return [val, set];
+}
 
 // Human-readable guidance for each push-capability reason returned by
 // window.syncPushToken / getPushCapability. Shared by the consent modal and the
@@ -166,11 +218,30 @@ function AppProvider({ children }) {
   };
   const stored = getStoredAuth();
 
+  // Restore the last route + back-stack across a reload / PWA reopen. Only when the
+  // stored session is authenticated, the snapshot is fresh, and it points at an app
+  // (non-auth) route — otherwise fall back to today's defaults. Functions can't be
+  // serialized, so any callbacks in params are simply dropped on restore (the screen
+  // remounts and re-derives them); in-session keep-alive preserves the live object.
+  const NAV_FRESH_MS = 2 * 60 * 60 * 1000; // 2h
+  const getStoredNav = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('anchor_nav_state'));
+      if (!parsed || !parsed.route || typeof parsed.ts !== 'number') return null;
+      if (Date.now() - parsed.ts > NAV_FRESH_MS) return null;
+      if (AUTH_ROUTES.has(parsed.route.name)) return null;
+      return parsed;
+    } catch { return null; }
+  };
+  const storedNav = (stored && stored.isAuthenticated) ? getStoredNav() : null;
+
   // Campus is student-only. Default-deny: anyone who is NOT a confirmed student
   // (general 'user', admin, moderator, or an unexpected/stale role) gets national.
   // Keeps the pre-login screen on campus branding (stored is null before auth).
   const [mode, setMode] = useState(
-    (stored?.isAuthenticated && stored?.user?.role !== 'student') ? 'country' : 'campus'
+    (storedNav && (storedNav.mode === 'campus' || storedNav.mode === 'country'))
+      ? storedNav.mode
+      : (stored?.isAuthenticated && stored?.user?.role !== 'student') ? 'country' : 'campus'
   );
   // 'EN' | 'BN' | 'BI' (bilingual/mixed). Any unknown/stale stored value → 'EN'.
   const normLang = (v) => (v === 'BN' || v === 'BI') ? v : 'EN';
@@ -207,14 +278,18 @@ function AppProvider({ children }) {
   };
   const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark');
 
-  const [history, setHistory] = useState([]);
+  const [history, setHistory] = useState(
+    (storedNav && Array.isArray(storedNav.history)) ? storedNav.history : []
+  );
   const [auth, setAuth] = useState(
     stored || { isAuthenticated: false, user: null, authStep: null, pendingIdentifier: null }
   );
-  const [route, setRoute] = useState({
-    name: stored?.isAuthenticated ? 'home' : 'login',
-    params: {},
-  });
+  const [route, setRoute] = useState(
+    storedNav ? storedNav.route : {
+      name: stored?.isAuthenticated ? 'home' : 'login',
+      params: {},
+    }
+  );
   const [geofenceConsent, setGeofenceConsent] = useState(
     localStorage.getItem('anchor_geofence_consent') === 'true'
   );
@@ -269,6 +344,15 @@ function AppProvider({ children }) {
     localStorage.removeItem('anchor_refresh_token');
     localStorage.removeItem('anchor_geofence_consent');
     localStorage.removeItem('anchor_geofence_consent_answered');
+    // Clear preserved navigation + screen state so the next user starts clean and
+    // no stale active-alert / form drafts leak across accounts on this device.
+    try {
+      localStorage.removeItem('anchor_nav_state');
+      localStorage.removeItem('anchor_alert_active');
+      Object.keys(localStorage)
+        .filter(k => k.indexOf('anchor_draft_') === 0)
+        .forEach(k => localStorage.removeItem(k));
+    } catch (_) { /* storage unavailable */ }
     setGeofenceConsent(false);
     setHistory([]);
     setRoute({ name: 'login', params: {} });
@@ -328,6 +412,17 @@ function AppProvider({ children }) {
     window.addEventListener('anchor:session-expired', onExpired);
     return () => window.removeEventListener('anchor:session-expired', onExpired);
   }, []);
+
+  // Persist the current route + back-stack (+ mode) so a reload / PWA reopen lands
+  // exactly where the user left off. Only snapshot authenticated app routes; auth
+  // routes (login/register) are never restored. Read back on boot by getStoredNav().
+  useEffect(() => {
+    if (!auth.isAuthenticated || AUTH_ROUTES.has(route.name)) return;
+    try {
+      localStorage.setItem('anchor_nav_state',
+        JSON.stringify({ route, history, mode, ts: Date.now() }));
+    } catch (_) { /* storage unavailable */ }
+  }, [route, history, mode, auth.isAuthenticated]);
 
   // Refresh / heal this device's FCM push token on every authenticated load,
   // including a restored session (the login call sites only fire on a fresh
@@ -729,7 +824,11 @@ function AlertReadinessCTA() {
   );
 }
 
-function RouteView() {
+// Keep-alive screen host. Every visited app route is mounted once and kept in the
+// DOM; inactive screens are hidden with display:none instead of unmounting, so their
+// React state (active alert, open tab, scroll, half-filled form) survives navigation.
+// Auth routes are never cached — they always render fresh.
+function RouteHost() {
   const { route, mode, auth } = useApp();
   const isAuthRoute = AUTH_ROUTES.has(route.name);
 
@@ -788,20 +887,88 @@ function RouteView() {
     'tracking-lookup': TrackingLookupScreen,
   };
 
-  // Guard: unauthenticated users hitting an app route see LoginScreen
-  const Comp = (!auth.isAuthenticated && !isAuthRoute)
-    ? LoginScreen
-    : (Map[route.name] || HomeScreen);
+  const tintClass = `screen ${mode === 'campus' ? 'tint-campus' : 'tint-country'}`;
+  const activeKey = slotKeyFor(route);
 
-  const showReadinessCTA = auth.isAuthenticated && (route.name === 'home' || route.name === 'alert');
+  // Cache of mounted screens and each one's last scroll position. Membership is
+  // computed during render (deterministic, idempotent) so the active slot's DOM
+  // exists in the same commit and scroll restore can target it.
+  const slotsRef = useRef([]);
+  const scrollRef = useRef({});       // slotKey -> last window.scrollY
+  const activeKeyRef = useRef(activeKey);
+  activeKeyRef.current = activeKey;    // keep the scroll listener pointed at the live key
+
+  // Drop the whole cache on logout so the next user never sees a stale screen.
+  useEffect(() => {
+    if (!auth.isAuthenticated) {
+      slotsRef.current = [];
+      scrollRef.current = {};
+    }
+  }, [auth.isAuthenticated]);
+
+  // Continuously remember the active screen's scroll position (the app scrolls the
+  // window, not a per-screen box) so returning to a kept-alive screen restores its
+  // place. Recording as the user scrolls avoids reading a value already clamped by
+  // the outgoing screen being hidden.
+  useEffect(() => {
+    const onScroll = () => {
+      const k = activeKeyRef.current;
+      if (k) scrollRef.current[k] = window.scrollY || window.pageYOffset || 0;
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Restore the incoming screen's scroll on every route switch, before paint.
+  useLayoutEffect(() => {
+    if (isAuthRoute || !auth.isAuthenticated) return;
+    window.scrollTo(0, scrollRef.current[activeKey] || 0);
+  }, [activeKey, isAuthRoute, auth.isAuthenticated]);
+
+  // Auth screens (and any pre-auth state) render fresh and uncached.
+  if (isAuthRoute || !auth.isAuthenticated) {
+    const Comp = (!auth.isAuthenticated && !isAuthRoute) ? LoginScreen : (Map[route.name] || HomeScreen);
+    return (
+      <div className={tintClass}>
+        <Comp params={route.params}/>
+      </div>
+    );
+  }
+
+  // Update the keep-alive membership: move/insert the active slot, keep every tab
+  // root, and LRU-cap the rest. Tab roots and detail screens never collide because
+  // slotKeyFor() discriminates by item id.
+  {
+    const cur = slotsRef.current;
+    const others = cur.filter(s => s.key !== activeKey);
+    const all = [{ key: activeKey, route }, ...others];
+    const roots = all.filter(s => TAB_ROOTS.has(s.route.name));
+    const nonRoots = all.filter(s => !TAB_ROOTS.has(s.route.name)).slice(0, MAX_CACHED);
+    slotsRef.current = [...roots, ...nonRoots];
+    const liveKeys = new Set(slotsRef.current.map(s => s.key));
+    Object.keys(scrollRef.current).forEach(k => { if (!liveKeys.has(k)) delete scrollRef.current[k]; });
+  }
 
   return (
-    <div key={route.name + mode} className={`screen ${mode === 'campus' ? 'tint-campus' : 'tint-country'}`}>
-      {showReadinessCTA && <AlertReadinessCTA/>}
-      <Comp params={route.params}/>
-      {!isAuthRoute && <div style={{ height: 96 }}/>}
-      {!isAuthRoute && <BottomNav/>}
-    </div>
+    <>
+      {slotsRef.current.map(s => {
+        const active = s.key === activeKey;
+        const Comp = Map[s.route.name] || HomeScreen;
+        const onCTA = s.route.name === 'home' || s.route.name === 'alert';
+        return (
+          <div key={s.key} className={tintClass}
+               style={{ display: active ? 'block' : 'none' }}
+               aria-hidden={active ? undefined : true}>
+            <ScreenVisibilityCtx.Provider value={active}>
+              {onCTA && <AlertReadinessCTA/>}
+              <Comp params={s.route.params}/>
+              <div style={{ height: 96 }}/>
+            </ScreenVisibilityCtx.Provider>
+          </div>
+        );
+      })}
+      <BottomNav/>
+    </>
   );
 }
 
@@ -818,10 +985,11 @@ function App() {
       <div className="app-shell grain">
         {stage === 'splash1' && <Splash1 onAdvance={() => setStage('splash2')}/>}
         {stage === 'splash2' && <Splash2 onAdvance={() => setStage('app')}/>}
-        {stage === 'app'     && <RouteView/>}
+        {stage === 'app'     && <RouteHost/>}
       </div>
     </AppProvider>
   );
 }
 
-Object.assign(window, { App, AppProvider, AppCtx, useApp, Header, C2CToggle, BottomNav });
+Object.assign(window, { App, AppProvider, AppCtx, useApp, Header, C2CToggle, BottomNav,
+                        usePersistentState, useScreenVisible });

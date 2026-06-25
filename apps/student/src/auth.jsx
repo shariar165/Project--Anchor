@@ -1809,7 +1809,7 @@ function TrackingLookupScreen() {
   );
 }
 
-// Export all screens to global scope for RouteView in app.jsx
+// Export all screens to global scope for RouteHost in app.jsx
 Object.assign(window, {
   LoginScreen,
   RegisterChoiceScreen,
