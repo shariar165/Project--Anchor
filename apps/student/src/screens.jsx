@@ -1609,13 +1609,12 @@ function AlertDuring({ holding, progress, activated, eventId, gpsResult, token, 
 // ─── Before phase ─────────────────────────────────────────────────────────────
 function AlertBefore({ token }) {
   const [threatText, setThreatText] = _useS('');
-  const [contacts, setContacts] = _useS([
-    { name: 'Bappa (Brother)', phone: '+8801712000001', relationship: 'brother' },
-    { name: 'Mrs. Akter (Mother)', phone: '+8801819000002', relationship: 'mother' },
-  ]);
+  const [contacts, setContacts] = _useS([]);
   const [form, setForm] = _useS({ name: '', phone: '', relationship: '' });
   const [saving, setSaving] = _useS(false);
   const [saved, setSaved] = _useS(false);
+  const [loading, setLoading] = _useS(true);
+  const [error, setError] = _useS(null);
   const [zones, setZones] = _useS([]);
 
   React.useEffect(() => {
@@ -1624,6 +1623,25 @@ function AlertBefore({ token }) {
       .then(d => setZones(Array.isArray(d) ? d.filter(z => z.status === 'active') : []))
       .catch(() => {});
   }, []);
+
+  // Load any previously-saved Phase 1 record (threat note + emergency contacts).
+  _useE(() => {
+    let cancelled = false;
+    if (!token) { setLoading(false); return; }
+    alertApiGet('/v1/alerts/phase1', token)
+      .then(d => {
+        if (cancelled || !d) return;
+        setThreatText(d.threat_description || '');
+        setContacts(Array.isArray(d.emergency_contacts) ? d.emergency_contacts : []);
+      })
+      .catch(e => {
+        if (cancelled) return;
+        console.error('[Phase1] Load failed:', e);
+        setError('Could not load your saved safety record. You can still add and save details below.');
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [token]);
 
   const handleAddContact = () => {
     if (!form.name || !form.phone) return;
@@ -1634,7 +1652,12 @@ function AlertBefore({ token }) {
   const handleRemoveContact = (i) => setContacts(prev => prev.filter((_, idx) => idx !== i));
 
   const handleSave = async () => {
+    if (!token) {
+      setError('You need to be signed in to save your safety record.');
+      return;
+    }
     setSaving(true);
+    setError(null);
     try {
       await alertApiPost('/v1/alerts/phase1', {
         threat_description: threatText || null,
@@ -1644,6 +1667,7 @@ function AlertBefore({ token }) {
       setTimeout(() => setSaved(false), 3000);
     } catch (e) {
       console.error('[Phase1] Save failed:', e);
+      setError('Could not save your safety record. Check your connection and try again.');
     } finally {
       setSaving(false);
     }
@@ -1651,6 +1675,16 @@ function AlertBefore({ token }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {error && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 10, fontSize: 12.5,
+          background: 'rgba(232,49,42,0.08)', border: '1px solid rgba(232,49,42,0.3)',
+          color: '#8A1B16',
+        }}>
+          {error}
+        </div>
+      )}
+
       {/* Risk zone list — live from backend */}
       <div className="card" style={{ background: 'var(--surface)' }}>
         <div className="eyebrow" style={{ marginBottom: 8 }}>Around you</div>
@@ -1700,7 +1734,14 @@ function AlertBefore({ token }) {
 
       {/* Emergency contacts */}
       <div>
-        <div className="eyebrow" style={{ marginBottom: 8 }}>Emergency contacts · {contacts.length}</div>
+        <div className="eyebrow" style={{ marginBottom: 8 }}>
+          Emergency contacts · {loading ? '…' : contacts.length}
+        </div>
+        {loading && contacts.length === 0 && (
+          <div style={{ fontSize: 12, color: 'var(--muted)', padding: '4px 0 8px' }}>
+            Loading your saved contacts…
+          </div>
+        )}
         {contacts.map((c, i) => (
           <div key={i} style={{
             display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
@@ -1773,36 +1814,87 @@ function AlertBefore({ token }) {
 // ─── After phase ──────────────────────────────────────────────────────────────
 function AlertAfter({ eventId, token, go }) {
   const [mediaType, setMediaType] = _useS('photo');
-  const [blobRef, setBlobRef] = _useS('');
+  const [selectedFile, setSelectedFile] = _useS(null);   // { name, size, captureTs }
   const [uploading, setUploading] = _useS(false);
   const [uploaded, setUploaded] = _useS(false);
+  const [error, setError] = _useS(null);
   const [history, setHistory] = _useS([]);
+  const [evidence, setEvidence] = _useS([]);
+  const fileInputRef = _useR(null);
   const mediaTypes = ['photo', 'video', 'audio', 'document'];
 
-  React.useEffect(() => {
+  // Evidence attaches to the active alert, or (after marking safe / reopening)
+  // the user's most recent past alert.
+  const effectiveEventId = eventId || (history[0] && history[0].event_id) || null;
+
+  _useE(() => {
     if (!token) return;
     alertApiGet('/v1/alerts/me', token)
       .then(d => setHistory(Array.isArray(d) ? d : []))
       .catch(() => {});
   }, [token]);
 
+  // Load evidence already recorded for the targeted alert.
+  _useE(() => {
+    let cancelled = false;
+    if (!token || !effectiveEventId) { setEvidence([]); return; }
+    alertApiGet(`/v1/alerts/${effectiveEventId}/evidence`, token)
+      .then(d => { if (!cancelled) setEvidence(Array.isArray(d) ? d : []); })
+      .catch(() => { if (!cancelled) setEvidence([]); });
+    return () => { cancelled = true; };
+  }, [token, effectiveEventId]);
+
+  const detectMediaType = (mime) => {
+    if (!mime) return 'document';
+    if (mime.startsWith('image/')) return 'photo';
+    if (mime.startsWith('video/')) return 'video';
+    if (mime.startsWith('audio/')) return 'audio';
+    return 'document';
+  };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setError(null);
+    setUploaded(false);
+    setSelectedFile({
+      file,
+      name: file.name,
+      size: file.size,
+      captureTs: new Date(file.lastModified || Date.now()).toISOString(),
+    });
+    setMediaType(detectMediaType(file.type));
+  };
+
   const handleUpload = async () => {
-    if (!eventId || !blobRef) return;
+    if (!selectedFile) return;
+    if (!effectiveEventId) {
+      setError('No alert to attach this evidence to. Trigger an alert first.');
+      return;
+    }
     setUploading(true);
+    setError(null);
     try {
-      const enc = new TextEncoder();
-      const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(blobRef));
+      // Hash the actual file bytes (not a placeholder) so the seal is verifiable.
+      const buf = await selectedFile.file.arrayBuffer();
+      const hashBuf = await crypto.subtle.digest('SHA-256', buf);
       const hash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-      await alertApiPost(`/v1/alerts/${eventId}/evidence`, {
-        encrypted_blob_ref: blobRef,
+      await alertApiPost(`/v1/alerts/${effectiveEventId}/evidence`, {
+        encrypted_blob_ref: selectedFile.name.slice(0, 500),
         sha256_hash: hash,
-        capture_timestamp: new Date().toISOString(),
+        capture_timestamp: selectedFile.captureTs,
         media_type: mediaType,
       }, token);
       setUploaded(true);
-      setBlobRef('');
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      // Refresh the recorded-evidence list from the backend.
+      alertApiGet(`/v1/alerts/${effectiveEventId}/evidence`, token)
+        .then(d => setEvidence(Array.isArray(d) ? d : []))
+        .catch(() => {});
     } catch (e) {
       console.error('[Evidence] Upload failed:', e);
+      setError('Could not submit evidence. Check your connection and try again.');
     } finally {
       setUploading(false);
     }
@@ -1810,6 +1902,16 @@ function AlertAfter({ eventId, token, go }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {error && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 10, fontSize: 12.5,
+          background: 'rgba(232,49,42,0.08)', border: '1px solid rgba(232,49,42,0.3)',
+          color: '#8A1B16',
+        }}>
+          {error}
+        </div>
+      )}
+
       {/* Evidence upload */}
       <div className="card" style={{ background: 'var(--surface)', borderColor: 'rgba(74,107,92,0.3)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1820,7 +1922,7 @@ function AlertAfter({ eventId, token, go }) {
           Upload evidence — timestamped & sealed
         </div>
 
-        {/* Media type selector */}
+        {/* Media type selector (auto-detected from the file, manual override) */}
         <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
           {mediaTypes.map(t => (
             <button key={t} onClick={() => setMediaType(t)} style={{
@@ -1836,41 +1938,89 @@ function AlertAfter({ eventId, token, go }) {
           ))}
         </div>
 
-        {/* Encrypted blob ref input */}
+        {/* File picker — hashes the actual file bytes client-side */}
         <input
-          type="text"
-          placeholder="Paste encrypted file reference or path…"
-          value={blobRef}
-          onChange={e => setBlobRef(e.target.value)}
-          style={{
-            marginTop: 12, width: '100%', padding: '10px 12px', borderRadius: 10,
-            border: '1px solid var(--mist)', background: 'var(--cream)',
-            fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--navy)',
-            boxSizing: 'border-box', outline: 'none',
-          }}
+          ref={fileInputRef}
+          type="file"
+          onChange={handleFileSelect}
+          style={{ display: 'none' }}
         />
-
-        <div style={{
-          marginTop: 10, padding: '12px 14px', border: '1px dashed var(--mist-2)',
-          borderRadius: 12, background: 'var(--cream)', textAlign: 'center',
-        }}>
+        <div
+          onClick={() => fileInputRef.current && fileInputRef.current.click()}
+          style={{
+            marginTop: 12, padding: '16px 14px', border: '1px dashed var(--mist-2)',
+            borderRadius: 12, background: 'var(--cream)', textAlign: 'center', cursor: 'pointer',
+          }}>
           <IconUpload size={24} stroke="var(--muted)"/>
-          <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--ink-2)' }}>
-            Encrypt file client-side, then paste the reference above
-          </div>
-          <div style={{ marginTop: 2, fontSize: 11, color: 'var(--muted)' }}>
-            SHA-256 hashed · server stores reference only · 7-year retention
-          </div>
+          {selectedFile ? (
+            <>
+              <div style={{ marginTop: 6, fontSize: 13, color: 'var(--navy)', fontWeight: 500, wordBreak: 'break-all' }}>
+                {selectedFile.name}
+              </div>
+              <div style={{ marginTop: 2, fontSize: 11, color: 'var(--muted)' }}>
+                {(selectedFile.size / 1024).toFixed(1)} KB · tap to choose a different file
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--ink-2)' }}>
+                Tap to choose a photo, video, audio or document
+              </div>
+              <div style={{ marginTop: 2, fontSize: 11, color: 'var(--muted)' }}>
+                SHA-256 hashed locally · server stores reference only · 7-year retention
+              </div>
+            </>
+          )}
         </div>
 
-        <button onClick={handleUpload} disabled={!blobRef || !eventId || uploading}
+        <button onClick={handleUpload} disabled={!selectedFile || !effectiveEventId || uploading}
           className="btn btn-primary" style={{
             width: '100%', marginTop: 12, padding: '12px 0',
-            opacity: !blobRef || !eventId ? 0.4 : 1,
+            opacity: !selectedFile || !effectiveEventId ? 0.4 : 1,
           }}>
           {uploading ? 'Uploading…' : uploaded ? '✓ Evidence recorded' : 'Submit evidence'}
         </button>
+        {!effectiveEventId && (
+          <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--muted)', textAlign: 'center' }}>
+            Evidence can be attached once you have an alert on record.
+          </div>
+        )}
       </div>
+
+      {/* Recorded evidence for this alert — live from backend */}
+      {effectiveEventId && (
+        <div>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>Recorded evidence · {evidence.length}</div>
+          {evidence.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 0' }}>
+              No evidence recorded for this alert yet.
+            </div>
+          ) : evidence.map((ev, i) => (
+            <div key={ev.id || i} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+              background: 'var(--surface)', border: '1px solid var(--mist)',
+              borderRadius: 12, marginBottom: 6,
+            }}>
+              <div style={{
+                width: 30, height: 30, borderRadius: 8, flexShrink: 0,
+                background: 'var(--cream-2)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'var(--navy)',
+              }}><IconFile size={14}/></div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: 'var(--navy)', fontWeight: 500, textTransform: 'capitalize' }}>
+                  {ev.media_type}
+                </div>
+                <div className="mono" style={{ fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {ev.sha256_hash ? ev.sha256_hash.slice(0, 16) + '…' : '—'}
+                </div>
+              </div>
+              <div className="mono" style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>
+                {ev.uploaded_at ? new Date(ev.uploaded_at).toLocaleDateString('en-BD') : '—'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Link to formal case */}
       <button onClick={() => go && go('compose')} className="btn btn-ghost" style={{ width: '100%' }}>

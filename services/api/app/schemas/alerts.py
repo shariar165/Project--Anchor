@@ -21,6 +21,12 @@ class Phase1SaveResponse(BaseModel):
     updated_at: datetime
 
 
+class Phase1GetResponse(BaseModel):
+    threat_description: str | None = None
+    emergency_contacts: list[EmergencyContact] = Field(default_factory=list)
+    updated_at: datetime | None = None
+
+
 class AlertTriggerRequest(BaseModel):
     lat: float | None = None
     lng: float | None = None
@@ -71,6 +77,15 @@ class EvidenceUploadResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
     sha256_hash: str
+    uploaded_at: datetime
+
+
+class EvidenceItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    media_type: str
+    sha256_hash: str
+    capture_timestamp: datetime
     uploaded_at: datetime
 
 
