@@ -103,6 +103,53 @@ async def test_phase1_upsert_idempotent(client: AsyncClient, registered_user, db
     assert len(records) == 1
 
 
+@pytest.mark.asyncio
+async def test_phase1_get_empty(client: AsyncClient, registered_user, db_session, mock_redis):
+    """GET before any save returns empty defaults (200, not 404)."""
+    resp = await client.get("/v1/alerts/phase1", headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["threat_description"] is None
+    assert data["emergency_contacts"] == []
+    assert data["updated_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_phase1_get_roundtrip(client: AsyncClient, registered_user, db_session, mock_redis):
+    """Saved threat note + contacts come back decrypted on GET."""
+    contacts = [
+        {"name": "Bappa", "phone": "+8801712000001", "relationship": "brother"},
+        {"name": "Mrs Akter", "phone": "+8801819000002", "relationship": "mother"},
+    ]
+    save = await client.post("/v1/alerts/phase1", json={
+        "threat_description": "Someone is following me.",
+        "emergency_contacts": contacts,
+    }, headers=_auth(registered_user["tokens"]))
+    assert save.status_code == 200
+
+    resp = await client.get("/v1/alerts/phase1", headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["threat_description"] == "Someone is following me."
+    assert data["emergency_contacts"] == contacts
+    assert data["updated_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_phase1_get_is_per_user(client: AsyncClient, registered_user, second_user, db_session, mock_redis):
+    """One user's saved record is never returned to another user."""
+    await client.post("/v1/alerts/phase1", json={
+        "threat_description": "Private note.",
+        "emergency_contacts": [{"name": "X", "phone": "+8801711111111", "relationship": "friend"}],
+    }, headers=_auth(registered_user["tokens"]))
+
+    resp = await client.get("/v1/alerts/phase1", headers=_auth(second_user["tokens"]))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["threat_description"] is None
+    assert data["emergency_contacts"] == []
+
+
 # ─── Trigger alert tests ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -368,6 +415,41 @@ async def test_evidence_upload_wrong_user(client: AsyncClient, registered_user, 
         "media_type": "video",
     }, headers=_auth(second_user["tokens"]))
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_evidence_list_owner(client: AsyncClient, registered_user, db_session, mock_redis, alert_event_id):
+    """Owner can list the evidence they recorded for their alert (newest first)."""
+    for i, mt in enumerate(("photo", "video")):
+        up = await client.post(f"/v1/alerts/{alert_event_id}/evidence", json={
+            "encrypted_blob_ref": f"file-{i}.enc",
+            "sha256_hash": str(i) * 64,
+            "capture_timestamp": "2026-06-01T12:00:00Z",
+            "media_type": mt,
+        }, headers=_auth(registered_user["tokens"]))
+        assert up.status_code == 200
+
+    resp = await client.get(f"/v1/alerts/{alert_event_id}/evidence",
+                            headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 200, resp.text
+    items = resp.json()
+    assert len(items) == 2
+    assert {it["media_type"] for it in items} == {"photo", "video"}
+    assert all("sha256_hash" in it and "uploaded_at" in it for it in items)
+
+
+@pytest.mark.asyncio
+async def test_evidence_list_non_owner_forbidden(client: AsyncClient, registered_user, second_user, db_session, mock_redis, alert_event_id):
+    resp = await client.get(f"/v1/alerts/{alert_event_id}/evidence",
+                            headers=_auth(second_user["tokens"]))
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_evidence_list_unknown_event(client: AsyncClient, registered_user, db_session, mock_redis):
+    resp = await client.get(f"/v1/alerts/{uuid.uuid4()}/evidence",
+                            headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 404
 
 
 # ─── Panic (unauthenticated) tests ───────────────────────────────────────────

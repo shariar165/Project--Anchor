@@ -213,6 +213,17 @@ async def apply_ban(
 
 # ─── Phase 1 record (upsert) ─────────────────────────────────────────────────
 
+async def get_phase1_record(
+    db: AsyncSession, user_id: uuid.UUID
+) -> "AlertPhase1Record | None":
+    from app.models.alert import AlertPhase1Record
+
+    result = await db.execute(
+        select(AlertPhase1Record).where(AlertPhase1Record.user_id == user_id)
+    )
+    return result.scalars().first()
+
+
 async def upsert_phase1_record(
     db: AsyncSession,
     user_id: uuid.UUID,

@@ -28,10 +28,10 @@ from app.redis import get_redis
 from app.schemas.alerts import (
     AlertLiveLocationRequest,
     AlertRespondersResponse, AlertStatusResponse, AlertTriggerRequest, AlertTriggerResponse,
-    EvidenceUploadRequest, EvidenceUploadResponse,
+    EvidenceItem, EvidenceUploadRequest, EvidenceUploadResponse,
     FCMTokenRegisterRequest, LocationUpdateRequest,
     NearbyAlertItem, PanicClaimRequest, PanicTriggerRequest,
-    Phase1SaveRequest, Phase1SaveResponse, ResponderItem, RespondRequest,
+    Phase1GetResponse, Phase1SaveRequest, Phase1SaveResponse, ResponderItem, RespondRequest,
 )
 from app.services import alert_svc
 from app.services.audit import log_event as audit_log
@@ -102,6 +102,38 @@ async def save_phase1(
     await audit_log(db, "alert_phase1_saved", token.user_id, get_ip(request))
     await db.commit()
     return record
+
+
+@router.get("/v1/alerts/phase1", response_model=Phase1GetResponse)
+@limiter.limit("30/minute")
+async def get_phase1(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(get_current_user),
+):
+    """Return the current user's saved Phase 1 threat record + emergency contacts (decrypted)."""
+    record = await alert_svc.get_phase1_record(db, token.user_id)
+    if record is None:
+        return Phase1GetResponse()
+
+    threat_description = None
+    emergency_contacts: list = []
+    try:
+        if record.encrypted_payload:
+            payload = json.loads(alert_svc.decrypt_payload(record.encrypted_payload))
+            threat_description = payload.get("threat_description")
+        if record.emergency_contacts:
+            emergency_contacts = json.loads(alert_svc.decrypt_payload(record.emergency_contacts))
+    except Exception:
+        # Corrupt/unreadable ciphertext — return what we can rather than 500.
+        threat_description = None
+        emergency_contacts = []
+
+    return Phase1GetResponse(
+        threat_description=threat_description,
+        emergency_contacts=emergency_contacts,
+        updated_at=record.updated_at,
+    )
 
 
 # ─── Nearby alerts (must be before /{event_id}) ──────────────────────────────
@@ -650,6 +682,32 @@ async def upload_evidence(
     db.add(evidence)
     await db.commit()
     return evidence
+
+
+@router.get("/v1/alerts/{event_id}/evidence", response_model=list[EvidenceItem])
+@limiter.limit("60/minute")
+async def list_evidence(
+    event_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(get_current_user),
+):
+    """List evidence the current user has recorded for one of their own alerts (newest first)."""
+    result = await db.execute(select(AlertEvent).where(AlertEvent.event_id == event_id))
+    event = result.scalars().first()
+    if not event:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    actor_hash = alert_svc.compute_anonymous_hash(token.user_id)
+    if event.anonymous_actor_hash != actor_hash:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Not authorized for this alert")
+
+    rows = await db.execute(
+        select(AlertEvidence)
+        .where(AlertEvidence.event_id == event.id)
+        .order_by(AlertEvidence.uploaded_at.desc())
+    )
+    return rows.scalars().all()
 
 
 # ─── User device + location management ───────────────────────────────────────
