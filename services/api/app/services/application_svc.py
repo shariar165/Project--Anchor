@@ -384,7 +384,34 @@ async def record_review(
     # then explicitly load relationships so Pydantic serialization never triggers lazy loads.
     await db.refresh(app)
     await db.refresh(app, ["template", "attachments", "reviews"])
+    await _notify_applicant(db, app, data.decision)
     return review
+
+
+async def _notify_applicant(db: AsyncSession, app: Application, decision: str) -> None:
+    """Best-effort in-app notification to the student when their application moves."""
+    from app.services import notification_svc
+
+    name = app.template.name if app.template else "your application"
+    if app.state == ApplicationState.approved:
+        title, body = "Application approved", f"{name} has been approved."
+    elif decision == "approved":
+        stage = (app.current_approver_level or "the next reviewer").replace("_", " ")
+        title, body = "Application advanced", f"{name} was approved and forwarded to {stage}."
+    elif decision == "rejected":
+        title, body = "Application rejected", f"{name} was not approved."
+    elif decision == "changes_requested":
+        title, body = "Changes requested", f"A reviewer requested changes on {name}."
+    else:
+        return
+    try:
+        await notification_svc.create(
+            db, user_id=app.student_id, type="case", mode="campus",
+            tenant_id=app.tenant_id, title=title, body=body,
+            route="cases", params={"application_id": str(app.id)},
+        )
+    except Exception as exc:
+        logger.warning("[application] notification failed for %s: %s", app.id, exc)
 
 
 # ── Attachments ───────────────────────────────────────────────────────────────

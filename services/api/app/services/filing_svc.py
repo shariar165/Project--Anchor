@@ -290,6 +290,26 @@ async def admin_review_filing(
     await db.commit()
     await db.refresh(filing)
     await db.refresh(filing, ["template", "attachments", "reviews", "subject_responses"])
+
+    # Best-effort in-app notification to the complainant (skip truly anonymous filings).
+    if new_state and filing.complainant_user_id is not None:
+        from app.services import notification_svc
+        ref = filing.filing_number or str(filing.id)[:8].upper()
+        _verb = {
+            FilingState.under_review: "is now under review",
+            FilingState.resolved: "has been resolved",
+            FilingState.dismissed: "was dismissed",
+            FilingState.routed: "was escalated",
+        }.get(new_state, "was updated")
+        try:
+            await notification_svc.create(
+                db, user_id=filing.complainant_user_id, type="case", mode="campus",
+                tenant_id=filing.tenant_id,
+                title=f"Update on {ref}", body=f"Your complaint {ref} {_verb}.",
+                route="cases", params={"filing_id": str(filing.id)},
+            )
+        except Exception as exc:
+            logger.warning("[filing] notification failed for %s: %s", filing.id, exc)
     return filing
 
 

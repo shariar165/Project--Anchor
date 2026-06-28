@@ -33,6 +33,73 @@ function NavGroup({ title, children, collapsed }) {
   );
 }
 
+// Notification bell — live-ops aggregate from GET /v1/admin/notifications.
+// Read-only, derived counts (active alerts, pending reviews, etc.); polls every 60s.
+function NotificationBell({ mode='uni', onGo }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  const [unread, setUnread] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const ref = useRef(null);
+  const accent = mode==='uni' ? 'var(--sage)' : 'var(--ember)';
+
+  const load = useCallback(() => {
+    setError(null);
+    AnchorAPI.apiGet('/v1/admin/notifications')
+      .then(d => { setItems(d.items || []); setUnread(d.unread_count || 0); })
+      .catch(e => setError((e && e.message) || 'Failed to load'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); const id = setInterval(load, 60000); return () => clearInterval(id); }, [load]);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const handleItem = (it) => { setOpen(false); if (it.route && onGo) onGo(it.route); };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => { setOpen(o => !o); load(); }} title="Notifications"
+        className="relative w-9 h-9 rounded-sm hover:bg-[var(--mist)]/40 flex items-center justify-center">
+        <Icon name="bell" size={16} />
+        {unread > 0 && (
+          <span className="absolute top-0.5 right-0.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold text-white flex items-center justify-center"
+            style={{ background:'var(--red)' }}>{unread > 9 ? '9+' : unread}</span>
+        )}
+      </button>
+      {open && (
+        <div className="absolute top-full mt-1 right-0 w-[320px] bg-[var(--paper)] hair border rounded-sm shadow-lg fade-in z-30">
+          <div className="px-3 py-2 hair-b flex items-center justify-between">
+            <span className="smallcaps text-[var(--muted)]">Notifications</span>
+            {unread > 0 && <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm text-white" style={{ background: accent }}>{unread}</span>}
+          </div>
+          <div className="max-h-[340px] overflow-y-auto">
+            {loading && items.length === 0 ? (
+              <div className="px-3 py-6 text-center text-[12px] text-[var(--muted)]">Loading…</div>
+            ) : error ? (
+              <div className="px-3 py-6 text-center text-[12px]" style={{ color:'var(--red)' }}>{error}</div>
+            ) : items.length === 0 ? (
+              <div className="px-3 py-8 text-center text-[12px] text-[var(--muted)]">You're all caught up.</div>
+            ) : items.map((it, i) => (
+              <button key={i} onClick={() => handleItem(it)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 hair-b text-left hover:bg-[var(--mist)]/40">
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: it.type==='alert' ? 'var(--red)' : accent }} />
+                <span className="flex-1 text-[13px] text-[var(--ink)]">{it.title}</span>
+                <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-sm bg-[var(--mist)]/70 text-[var(--graphite)]">{it.count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Top-level shell. Provides sidebar + topbar + main content slot.
 function AdminShell({ mode='uni', route, onGo, role, setRole, dark, setDark, children, breadcrumbs=[], pageWidth='max-w-[1180px]', auth, onLogout }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -202,10 +269,7 @@ function AdminShell({ mode='uni', route, onGo, role, setRole, dark, setDark, chi
             </button>
 
             {/* Notifications */}
-            <button className="relative w-9 h-9 rounded-sm hover:bg-[var(--mist)]/40 flex items-center justify-center">
-              <Icon name="bell" size={16} />
-              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full" style={{ background:'var(--red)' }} />
-            </button>
+            <NotificationBell mode={mode} onGo={onGo} />
 
             {/* Dark mode toggle */}
             <button onClick={()=>setDark(d=>!d)} title={dark?'Switch to light mode':'Switch to dark mode'}

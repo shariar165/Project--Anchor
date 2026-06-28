@@ -39,6 +39,10 @@ from app.models.filing import (
     FilingCategory, FilingAnonymityMode, FilingState, ClassroomIssueType,
 )
 from app.models.notice import Notice, NoticeScope, NoticeStatus
+from app.models.notification import (
+    Notification, NotificationPreference,
+    NOTIFICATION_TYPES, NOTIFICATION_MODES, TYPE_PREF_MAP,
+)
 from app.models.lawyer import Lawyer
 from app.models.legal_right import LegalRight
 from app.models.routine import AcademicRoutine, RoutineStatus
@@ -91,6 +95,9 @@ __all__ = [
     "FilingCategory", "FilingAnonymityMode", "FilingState", "ClassroomIssueType",
     # Notices
     "Notice", "NoticeScope", "NoticeStatus",
+    # In-app notifications
+    "Notification", "NotificationPreference",
+    "NOTIFICATION_TYPES", "NOTIFICATION_MODES", "TYPE_PREF_MAP",
     # Lawyers
     "Lawyer",
     # Legal rights (Know your rights)

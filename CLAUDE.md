@@ -36,6 +36,11 @@ docs/
   design-exports/   # Earlier design exploration files (design_*.jsx / design_*.css)
   specs/            # Spec documents and known-issue write-ups
 
+skills/             # Domain "skill" packs that ground RAG/backend prompts
+  src/              # Editable skill sources (one dir per *.skill)
+  *.skill           # Packed skill bundles consumed by skill_loader.py
+  pack-skills.ps1   # Re-pack src/ → *.skill after editing a skill source
+
 scripts/
   dev.sh            # One-command local startup (db+redis, rag:8001, api:8000)
 
@@ -72,8 +77,9 @@ The service worker (`firebase-messaging-sw.js`) requires the app to be served ov
 
 ### File Load Order (critical)
 
-`apps/student/index.html` imports scripts top-to-bottom from `src/` — order matters because each file uses globals defined by earlier files:
+`apps/student/index.html` imports scripts top-to-bottom from `src/` — order matters because each file uses globals defined by earlier files. `src/strings.jsx` loads first as a plain `<script>` (not Babel) to expose translation strings before any component compiles; the rest load as `<script type="text/babel">`:
 
+0. `src/strings.jsx` — i18n string tables (plain script, loads before everything)
 1. `src/ios-frame.jsx` — IOSDevice frame component
 2. `src/icons.jsx` — SVG icon components
 3. `src/splash.jsx` — Splash1, Splash2 intro screens
@@ -86,7 +92,9 @@ The service worker (`firebase-messaging-sw.js`) requires the app to be served ov
 10. `src/verification-feed.jsx` — Verification feed screens; uses `apiFetch` from `applications.jsx`
 11. `src/e2ee.jsx` — `window.E2EE` helper: WebCrypto ECDH(P-256)→AES-GCM; `ensureKeyPair/deriveKey/encrypt/decrypt`. Needs `apiFetch`
 12. `src/messaging.jsx` — `ConversationsScreen`, `ChatThreadScreen` (E2EE user↔lawyer chat), `ApplyLawyerScreen`. Uses `E2EE` + `apiFetch`
-13. `src/app.jsx` — App shell, AppCtx, Header, BottomNav, RouteView, GeofenceConsentModal (mounts last)
+13. `src/police-reports.jsx` — National-mode FIR/GD police report screens
+14. `src/officer-scorecards.jsx` — Officer accountability scorecard screens
+15. `src/app.jsx` — App shell, AppCtx, Header, BottomNav, RouteView, GeofenceConsentModal (mounts last)
 
 Firebase SDK CDN scripts load between Leaflet and the component scripts — they must be before `src/auth.jsx`.
 
@@ -313,6 +321,8 @@ cd services/api
 | `/v1/feed/admin/...` | `routers/feed_admin.py` | admin | Feed moderation dashboard |
 | `/v1/filings/...` | `routers/filings.py` | required | Complaints, reports, grievances |
 | `/v1/notices` | `routers/notices.py` | optional | Campus notices (draft/publish) |
+| `/v1/notifications/...` | `routers/notifications.py` | required | In-app notification feed: list (`?mode=`), unread-count, mark read / read-all, get/put preferences |
+| `/v1/admin/notifications` | `routers/admin_notifications.py` | admin | Live-ops aggregate bell (derived counts) + admin channel preferences |
 | `/v1/zones` | `routers/zones.py` | none | Active safety zones with bbox filter |
 | `/v1/admin/geofence` | `routers/geofence.py` | admin | Campus boundary polygon (GET/POST) |
 | `/v1/admin/zones` | `routers/admin_alerts.py` | admin | Red zone CRUD |
@@ -331,6 +341,17 @@ cd services/api
 | `/v1/admin/applications/...` | `routers/admin_applications.py` | admin | Application review queue + stats (stage-based approval chain) |
 | `/v1/admin/audit...` | `routers/admin_audit.py` | super_admin | Audit log read, hash-chain verify, export |
 | `/v1/admin/deanonymization/...` | `routers/deanonymization.py` | admin/super_admin | De-anonymization requests; two-person approval + time-limited identity reveal |
+| `/v1/police-reports/...` | `routers/police_reports.py` | required | National-mode FIR/GD police report drafting + submission |
+| `/v1/officer-scorecards/...` | `routers/officer_scorecards.py` | varies | Public officer accountability scorecards + ratings |
+| `/v1/admin/officer-scorecards/...` | `routers/admin_officer_scorecards.py` | admin | Officer scorecard moderation/management |
+| `/v1/admin/analytics/...` | `routers/admin_analytics.py` | admin | University-admin analytics dashboards |
+| `/v1/super-admin/tenants/...` | `routers/admin_tenants.py` | super_admin | Tenant (university) provisioning + management |
+| `/v1/super-admin/config/...` | `routers/super_config.py` | super_admin | Platform-wide configuration |
+| `/v1/super-admin/corpus/...` | `routers/super_corpus.py` | super_admin | RAG legal corpus management (ingest/list) |
+| `/v1/super-admin/ai-health/...` | `routers/super_ai_health.py` | super_admin | RAG/AI pipeline health + diagnostics |
+| `/v1/super-admin/analytics/...` | `routers/super_analytics.py` | super_admin | Platform-wide analytics |
+| `/v1/super-admin/incidents/...` | `routers/super_incidents.py` | super_admin | Cross-tenant incident oversight |
+| `/v1/super-admin/keys/...` | `routers/super_keys.py` | super_admin | Signing/API key management |
 | `/health` | `main.py` | none | DB + Redis liveness probe |
 
 ---
@@ -372,6 +393,8 @@ Stage 7  (inline)               — anonymised audit log
 ```
 
 LLM: **Ollama** (local) with `qwen3:8b` / `qwen3:1.7b` (fast). Falls back to a deterministic stub when Ollama is offline. Vector store: **ChromaDB** at `services/rag/data/chromadb`. Namespaces: `national` and `diu`.
+
+**Skill grounding** — `skill_loader.py` loads the packed `*.skill` bundles from the repo-root `skills/` directory and injects their `grounding.md` content into pipeline prompts (e.g. FIR/GD drafting, feed moderation). After editing a skill source under `skills/src/`, re-run `skills/pack-skills.ps1` to regenerate the `*.skill` bundles the loader reads.
 
 To ingest new legal documents into ChromaDB: use `services/rag/app/pipeline/ingestion.py` → `ingest_document()`. Chunks get contextual prefixes from the LLM before embedding (Anthropic-style contextual retrieval). Warm-up at startup auto-loads `sample_corpus.py` into the `national` namespace if empty; set `DISABLE_AI_WARMUP=true` in `services/rag/.env` to skip this on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer causes OOM otherwise).
 

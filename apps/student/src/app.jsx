@@ -294,6 +294,7 @@ function AppProvider({ children }) {
     localStorage.getItem('anchor_geofence_consent') === 'true'
   );
   const [showGeofencePrompt, setShowGeofencePrompt] = useState(false);
+  const [notifUnread, setNotifUnread] = useState(0);
   const watchIdRef = useRef(null);
   const lastLocationPostRef = useRef(0);
 
@@ -507,9 +508,34 @@ function AppProvider({ children }) {
     };
   }, [auth.isAuthenticated, geofenceConsent]);
 
+  // Live unread notification count for the header bell. Polls the backend while
+  // authenticated and re-fetches on demand when a screen marks notifications read
+  // (the NotificationsScreen dispatches 'anchor:notif-changed'). Falls back to 0
+  // silently when offline so the badge never blocks rendering.
+  useEffect(() => {
+    if (!auth.isAuthenticated) { setNotifUnread(0); return; }
+    let cancelled = false;
+    const m = mode === 'country' ? 'country' : 'campus';
+    const fetchCount = () => {
+      if (typeof apiFetch !== 'function') return;
+      apiFetch('/v1/notifications/unread-count?mode=' + m)
+        .then((d) => { if (!cancelled && d && typeof d.unread_count === 'number') setNotifUnread(d.unread_count); })
+        .catch(() => { /* offline — keep last known count */ });
+    };
+    fetchCount();
+    const id = setInterval(fetchCount, 60_000);
+    const onChanged = () => fetchCount();
+    window.addEventListener('anchor:notif-changed', onChanged);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      window.removeEventListener('anchor:notif-changed', onChanged);
+    };
+  }, [auth.isAuthenticated, mode]);
+
   const value = { mode, setMode, route, go, back, replace, lang, setLang, tr, auth, login, logout,
                   setAuthPending, updateUser, geofenceConsent, setGeofenceConsent,
-                  theme, setTheme, toggleTheme };
+                  theme, setTheme, toggleTheme, notifUnread };
   return (
     <AppCtx.Provider value={value}>
       {children}
@@ -564,9 +590,9 @@ function AppProvider({ children }) {
 // Header — logo, mode word, bell, avatar
 // ─────────────────────────────────────────────────────────────
 function Header({ title, subtitle, back: showBack = false, transparent = false }) {
-  const { back, go, mode, auth, tr } = useApp();
+  const { back, go, mode, auth, tr, notifUnread } = useApp();
   const accent = mode === 'campus' ? 'var(--sage)' : 'var(--ember)';
-  const unread = (typeof unreadCount === 'function') ? unreadCount(mode) : 0;
+  const unread = notifUnread || 0;
   const user = auth && auth.user;
   const initials = user && user.name
     ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
