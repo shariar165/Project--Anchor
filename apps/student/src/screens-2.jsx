@@ -9,6 +9,8 @@ const _API = window.ANCHOR_API_URL || 'http://localhost:8000';
 
 var NOTIF_PREF_DEFAULTS = { alerts: true, cases: true, notices: true, feed: true, marketing: false };
 
+// Preferences are persisted server-side (/v1/notifications/preferences); localStorage
+// holds the last-known copy for instant render and offline fallback.
 function loadNotifPrefs() {
   try {
     var raw = JSON.parse(localStorage.getItem('anchor_notif_prefs'));
@@ -23,6 +25,29 @@ function notifPrefsOnCount() {
   var p = loadNotifPrefs();
   return Object.keys(NOTIF_PREF_DEFAULTS).filter(function (k) { return !!p[k]; }).length;
 }
+// Fetch prefs from the server (source of truth); caches and falls back to cache on failure.
+async function fetchNotifPrefs() {
+  try {
+    var data = await apiFetch('/v1/notifications/preferences');
+    if (data && typeof data === 'object') {
+      var merged = Object.assign({}, NOTIF_PREF_DEFAULTS, data);
+      saveNotifPrefs(merged);
+      return merged;
+    }
+  } catch (e) { /* offline — use cache */ }
+  return loadNotifPrefs();
+}
+// Persist the full prefs object to the server. Returns true on success.
+async function saveNotifPrefsRemote(prefs) {
+  try {
+    await apiFetch('/v1/notifications/preferences', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(prefs),
+    });
+    return true;
+  } catch (e) { return false; }
+}
 
 function loadTrustedContacts() {
   try {
@@ -35,50 +60,58 @@ function saveTrustedContacts(list) {
   try { localStorage.setItem('anchor_trusted_contacts', JSON.stringify(list)); } catch (e) { /* ignore */ }
 }
 
-// ── Notification feed ─────────────────────────────────────────────────────────
+// ── Notification feed (backed by /v1/notifications; localStorage = offline cache) ──
 function _notifKey(mode) { return mode === 'country' ? 'anchor_notif_country' : 'anchor_notif_campus'; }
 
-function _notifSeed(mode) {
-  var now = Date.now(), H = 3600 * 1000, D = 24 * H;
-  if (mode === 'country') {
-    return [
-      { id: 'n1', type: 'lawyer', title: 'Adv. Rahman replied', body: 'Your consultation request on the tenancy dispute has a response.', ts: new Date(now - 2 * H).toISOString(), read: false, route: 'lawyers' },
-      { id: 'n2', type: 'zone', title: 'Caution zone updated near you', body: 'A new red zone was added around Mirpur-10. Tap to view the safety map.', ts: new Date(now - 6 * H).toISOString(), read: false, route: 'map' },
-      { id: 'n3', type: 'case', title: 'GD draft ready', body: 'Your General Diary draft has been prepared and is ready to review.', ts: new Date(now - 2 * D).toISOString(), read: true, route: 'cases' },
-      { id: 'n4', type: 'notice', title: 'New legal-rights explainer', body: 'Know your rights during a police stop — a new guide is available.', ts: new Date(now - 3 * D).toISOString(), read: true, route: 'rights' },
-    ];
-  }
-  return [
-    { id: 'n1', type: 'alert', title: 'Safety alert near KT building', body: 'A nearby user triggered an emergency alert ~120m away. Stay aware.', ts: new Date(now - 1 * H).toISOString(), read: false, route: 'alert' },
-    { id: 'n2', type: 'case', title: 'Case ANCHOR-2291 routed', body: "Your complaint was forwarded to the Proctor's office for review.", ts: new Date(now - 5 * H).toISOString(), read: false, route: 'cases' },
-    { id: 'n3', type: 'notice', title: 'New campus notice', body: 'Mid-term routine published. Check the academic notices section.', ts: new Date(now - 26 * H).toISOString(), read: true, route: 'notices' },
-    { id: 'n4', type: 'rating', title: 'Department rating posted', body: 'Your feedback on the SWE department was recorded. Thank you.', ts: new Date(now - 3 * D).toISOString(), read: true, route: 'dept-rating' },
-  ];
+// Map a server notification row to the UI row shape used by NotificationsScreen.
+function mapServerNotif(n) {
+  return {
+    id: n.id,
+    type: n.type,
+    title: n.title,
+    body: n.body || '',
+    ts: n.created_at,
+    read: !!n.read_at,
+    route: n.route || null,
+    params: n.params || {},
+  };
 }
 
-function loadNotifications(mode) {
-  var m = mode === 'country' ? 'country' : 'campus';
-  var key = _notifKey(m);
-  var list = null;
-  try { list = JSON.parse(localStorage.getItem(key)); } catch (e) { list = null; }
-  if (!Array.isArray(list)) {
-    list = _notifSeed(m);
-    saveNotifications(list, m);
-  }
-  return list;
+// Synchronous read of the last-cached list for a mode (instant render / offline).
+function loadCachedNotifications(mode) {
+  var key = _notifKey(mode === 'country' ? 'country' : 'campus');
+  try { var list = JSON.parse(localStorage.getItem(key)); if (Array.isArray(list)) return list; } catch (e) { /* ignore */ }
+  return [];
 }
 function saveNotifications(list, mode) {
   try { localStorage.setItem(_notifKey(mode === 'country' ? 'country' : 'campus'), JSON.stringify(list)); } catch (e) { /* ignore */ }
 }
-function unreadCount(mode) {
-  try {
-    return loadNotifications(mode).filter(function (n) { return !n.read; }).length;
-  } catch (e) { return 0; }
+
+// Fetch fresh notifications from the backend; caches and returns { items, unread }.
+async function fetchNotifications(mode) {
+  var m = mode === 'country' ? 'country' : 'campus';
+  var data = await apiFetch('/v1/notifications?mode=' + m);
+  var items = (data && Array.isArray(data.items)) ? data.items.map(mapServerNotif) : [];
+  saveNotifications(items, m);
+  var unread = (data && typeof data.unread_count === 'number')
+    ? data.unread_count
+    : items.filter(function (n) { return !n.read; }).length;
+  return { items: items, unread: unread };
 }
-function markAllNotificationsRead(mode) {
-  var list = loadNotifications(mode).map(function (n) { return Object.assign({}, n, { read: true }); });
-  saveNotifications(list, mode);
-  return list;
+
+async function markNotificationReadRemote(id) {
+  try { await apiFetch('/v1/notifications/' + id + '/read', { method: 'POST' }); return true; }
+  catch (e) { return false; }
+}
+async function markAllNotificationsReadRemote(mode) {
+  var m = mode === 'country' ? 'country' : 'campus';
+  try { await apiFetch('/v1/notifications/read-all?mode=' + m, { method: 'POST' }); return true; }
+  catch (e) { return false; }
+}
+
+// Tell the header badge (in app.jsx) that unread state may have changed.
+function notifyNotifChanged() {
+  try { window.dispatchEvent(new CustomEvent('anchor:notif-changed')); } catch (e) { /* ignore */ }
 }
 function notifRelTime(ts) {
   var d = new Date(ts).getTime();
@@ -2471,15 +2504,46 @@ var NOTIF_TYPE_META = {
 
 function NotificationsScreen() {
   const { mode, go } = useApp();
-  const [items, setItems] = React.useState(function () { return loadNotifications(mode); });
+  // Seed from cache for an instant paint, then refresh from the backend.
+  const [items, setItems] = React.useState(function () { return loadCachedNotifications(mode); });
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
 
-  React.useEffect(function () { setItems(loadNotifications(mode)); }, [mode]);
+  const refresh = React.useCallback(function () {
+    let cancelled = false;
+    setError(null);
+    fetchNotifications(mode)
+      .then(function (res) { if (!cancelled) { setItems(res.items); notifyNotifChanged(); } })
+      .catch(function (e) {
+        if (cancelled) return;
+        // Keep showing the cached list; surface a non-blocking error.
+        setItems(loadCachedNotifications(mode));
+        setError((e && e.message) || 'Could not refresh notifications');
+      })
+      .finally(function () { if (!cancelled) setLoading(false); });
+    return function () { cancelled = true; };
+  }, [mode]);
 
-  const handleMarkAll = () => setItems(markAllNotificationsRead(mode));
-  const handleTap = (n) => {
-    const updated = items.map(x => x.id === n.id ? Object.assign({}, x, { read: true }) : x);
-    saveNotifications(updated, mode);
+  React.useEffect(function () {
+    setItems(loadCachedNotifications(mode));
+    setLoading(true);
+    const cleanup = refresh();
+    return cleanup;
+  }, [mode, refresh]);
+
+  const handleMarkAll = () => {
+    const updated = items.map(x => Object.assign({}, x, { read: true }));
     setItems(updated);
+    saveNotifications(updated, mode);
+    markAllNotificationsReadRemote(mode).then(notifyNotifChanged);
+  };
+  const handleTap = (n) => {
+    if (!n.read) {
+      const updated = items.map(x => x.id === n.id ? Object.assign({}, x, { read: true }) : x);
+      setItems(updated);
+      saveNotifications(updated, mode);
+      markNotificationReadRemote(n.id).then(notifyNotifChanged);
+    }
     if (n.route) go(n.route, n.params || {});
   };
 
@@ -2528,7 +2592,20 @@ function NotificationsScreen() {
         )}
       </div>
 
-      {items.length === 0 ? (
+      {error && (
+        <div style={{ margin: '0 20px 10px', padding: '9px 12px', borderRadius: 10,
+          background: 'rgba(232,49,42,0.07)', border: '1px solid rgba(232,49,42,0.2)',
+          color: 'var(--red)', fontSize: 12, fontFamily: 'var(--font-sans)' }}>
+          {error}{items.length > 0 ? ' · showing your last saved notifications' : ''}
+        </div>
+      )}
+
+      {loading && items.length === 0 ? (
+        <div style={{ padding: '48px 28px', textAlign: 'center', color: 'var(--muted)',
+          fontSize: 13, fontFamily: 'var(--font-sans)' }}>
+          Loading notifications…
+        </div>
+      ) : items.length === 0 ? (
         <div style={{ padding: '48px 28px', textAlign: 'center' }}>
           <div style={{
             width: 54, height: 54, borderRadius: 999, margin: '0 auto 14px',
@@ -2609,10 +2686,20 @@ function ToggleRow({ label, sub, on, onToggle, accent }) {
 
 function NotifPrefsSheet({ onClose }) {
   const [prefs, setPrefs] = React.useState(function () { return loadNotifPrefs(); });
+  const [synced, setSynced] = React.useState(false);
+
+  // Load the authoritative server prefs on open (cache shows instantly meanwhile).
+  React.useEffect(function () {
+    let cancelled = false;
+    fetchNotifPrefs().then(function (p) { if (!cancelled) { setPrefs(p); setSynced(true); } });
+    return function () { cancelled = true; };
+  }, []);
+
   const toggle = (k) => {
     const next = Object.assign({}, prefs, { [k]: !prefs[k] });
-    saveNotifPrefs(next);
     setPrefs(next);
+    saveNotifPrefs(next);          // optimistic local cache
+    saveNotifPrefsRemote(next);    // persist server-side (enforced on generation)
   };
   const rows = [
     { k: 'alerts',    label: 'Emergency alerts', sub: 'Nearby alerts and SOS fan-out', accent: 'var(--red)' },
@@ -3187,5 +3274,5 @@ Object.assign(window, {
   LawyersScreen, NoticesScreen, ProfileScreen,
   RoutinesScreen, DeptRatingScreen,
   NotificationsScreen, NotifPrefsSheet, TrustedContactsSheet, BottomSheet,
-  unreadCount, loadNotifications, loadNotifPrefs, loadTrustedContacts,
+  fetchNotifications, loadCachedNotifications, loadNotifPrefs, loadTrustedContacts,
 });

@@ -23,6 +23,8 @@ from app.routers import feed as feed_router
 from app.routers import feed_admin as feed_admin_router
 from app.routers import filings as filings_router
 from app.routers import notices as notices_router
+from app.routers import notifications as notifications_router
+from app.routers import admin_notifications as admin_notifications_router
 from app.routers import zones as zones_router
 from app.routers import lawyers as lawyers_router
 from app.routers import legal_rights as legal_rights_router
@@ -111,6 +113,8 @@ def create_app() -> FastAPI:
     app.include_router(feed_admin_router.router)
     app.include_router(filings_router.router)
     app.include_router(notices_router.router)
+    app.include_router(notifications_router.router)
+    app.include_router(admin_notifications_router.router)
     app.include_router(zones_router.router)
     app.include_router(lawyers_router.router)
     app.include_router(legal_rights_router.router)

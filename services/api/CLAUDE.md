@@ -68,6 +68,8 @@ Always use the **venv** — all dependencies are isolated there:
 | `/v1/feed/admin/...` | `routers/feed_admin.py` | admin | Feed moderation dashboard |
 | `/v1/filings/...` | `routers/filings.py` | required | Complaints, reports, grievances |
 | `/v1/notices` | `routers/notices.py` | optional | Campus notices (draft/publish) |
+| `/v1/notifications/...` | `routers/notifications.py` | required | In-app notification feed: list (`?mode=`), unread-count, mark read / read-all, get/put prefs |
+| `/v1/admin/notifications` | `routers/admin_notifications.py` | admin | Live-ops aggregate bell (derived) + admin channel prefs |
 | `/v1/zones` | `routers/zones.py` | none | Active safety zones with bbox filter |
 | `/v1/lawyers` | `routers/lawyers.py` | none | Verified lawyer directory |
 | `/v1/lawyers/apply` · `/v1/lawyers/me` | `routers/lawyers.py` | required | Self-service lawyer application (one per user) + own status |
@@ -93,6 +95,7 @@ Always use the **venv** — all dependencies are isolated there:
 - `services/fcm.py` — lazy Firebase Admin SDK init; degrades gracefully when `FCM_SERVICE_ACCOUNT_JSON_PATH` is unset; `send_to_token()` / `send_batch()` (max 500 tokens/call)
 - `services/geofence.py` — tenant campus boundary polygon storage/retrieval
 - `services/notice_svc.py`, `routine_svc.py`, `dept_rating_svc.py` — campus-specific content services
+- `services/notification_svc.py` — in-app notification feed (create/list/mark-read) + preference enforcement. **`create()`/`create_bulk()` are the single enforcement point** — they no-op when the recipient disabled that category (`TYPE_PREF_MAP`). Notifications are generated best-effort (never block the primary action) from four event hooks: notice publish (`notice_svc.publish_notice`), nearby-alert fan-out (`alert_svc.notify_nearby_users`), application/filing status change (`application_svc.record_review`, `filing_svc.admin_review_filing`), and lawyer chat reply (`routers/messaging.py` `send_message`). The admin bell (`routers/admin_notifications.py`) is a **derived read-only aggregate** — no table.
 - `services/feed_svc.py` — feed post CRUD, trust-weighted signal scoring, archival logic, post-state machine
 - `services/feed_prescreen.py` — AI pre-screening gate: regex block patterns first, then keyword-hint check per category; rejects or flags before publish
 - `services/feed_sse.py` — Redis pub/sub bridge for real-time signal-count pushes; `GET /v1/feed/{id}/signals/stream` is an SSE endpoint; keepalive comment sent every 30 s

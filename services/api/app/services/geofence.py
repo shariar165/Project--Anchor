@@ -28,7 +28,7 @@ async def get_nearby_users(
     """
     Return nearby consenting users within radius_m of (lat, lng).
 
-    Each result: {user_id_hash, fcm_tokens: list[str], distance_m: int}
+    Each result: {user_id, user_id_hash, fcm_tokens: list[str], distance_m: int}
 
     Uses a SQL bounding-box pre-filter then Python-side Haversine for precision.
     Expands to fallback_radii if fewer than min_users found at the primary radius.
@@ -85,6 +85,7 @@ async def get_nearby_users(
 
         nearby = [
             {
+                "user_id": uid,
                 "user_id_hash": user_hash,
                 "fcm_tokens": tokens_by_user.get(str(uid), []),
                 "distance_m": dist_m,

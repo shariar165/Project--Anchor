@@ -126,13 +126,19 @@ function Pill({ children, on, onClick }) {
   );
 }
 
-function SaveBar({ accent='sage' }) {
+function SaveBar({ accent='sage', onSave, onDiscard, saving=false, status=null }) {
+  const note = status === 'saved' ? 'Saved.'
+    : status === 'error' ? 'Could not save — try again.'
+    : 'Changes are saved on blur and audit-logged.';
+  const noteColor = status === 'error' ? 'var(--red)' : status === 'saved' ? 'var(--sage)' : 'var(--muted)';
   return (
     <div className="mt-4 pt-4 hair-t border-t flex items-center justify-between">
-      <span className="text-[12px] text-[var(--muted)]">Changes are saved on blur and audit-logged.</span>
+      <span className="text-[12px]" style={{ color: noteColor }}>{note}</span>
       <div className="flex items-center gap-2">
-        <GhostButton size="sm">Discard</GhostButton>
-        <PrimaryButton mode={accent} size="sm" icon="check">Save changes</PrimaryButton>
+        <GhostButton size="sm" onClick={onDiscard}>Discard</GhostButton>
+        <PrimaryButton mode={accent} size="sm" icon="check" onClick={onSave} disabled={saving}>
+          {saving ? 'Saving…' : 'Save changes'}
+        </PrimaryButton>
       </div>
     </div>
   );
@@ -191,44 +197,73 @@ function AppearanceSection({ dark, setDark, mode, accent }) {
 }
 
 // ---- Notifications ----
+const NOTIF_PREF_DEFAULTS = (mode) => ({
+  pushNewCase: true, pushEscalation: true, pushAlert: mode==='sup',
+  emailDaily: true, emailWeekly: false,
+  smsCritical: true, smsRoutine: false,
+  quietHours: '22:00 → 07:00',
+});
 function NotificationsSection({ mode }) {
-  const [prefs, setPrefs] = useState({
-    pushNewCase: true, pushEscalation: true, pushAlert: mode==='sup',
-    emailDaily: true, emailWeekly: false,
-    smsCritical: true, smsRoutine: false,
-    quietHours: '22:00 → 07:00',
-  });
+  const [prefs, setPrefs] = useState(() => NOTIF_PREF_DEFAULTS(mode));
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+
+  // Load persisted channel prefs (merged over defaults) from the backend on mount.
+  useEffect(() => {
+    let cancelled = false;
+    AnchorAPI.apiGet('/v1/admin/notifications/preferences')
+      .then(d => {
+        const ch = (d && d.channels) || {};
+        if (!cancelled && ch && typeof ch === 'object' && Object.keys(ch).length) {
+          setPrefs(p => ({ ...p, ...ch }));
+        }
+      })
+      .catch(() => { /* offline — keep defaults */ });
+    return () => { cancelled = true; };
+  }, [mode]);
+
+  const update = (patch) => { setStatus(null); setPrefs(p => ({ ...p, ...patch })); };
+
+  const handleSave = () => {
+    setSaving(true); setStatus(null);
+    AnchorAPI.apiPatch('/v1/admin/notifications/preferences', { channels: prefs })
+      .then(() => setStatus('saved'))
+      .catch(() => setStatus('error'))
+      .finally(() => setSaving(false));
+  };
+  const handleDiscard = () => { setPrefs(NOTIF_PREF_DEFAULTS(mode)); setStatus(null); };
+
   return (
     <Card>
       <SectionLabel>Notifications</SectionLabel>
       <SettingRow title="Push · new case assigned" hint="In-app and desktop push when a complaint is routed to you.">
-        <Toggle on={prefs.pushNewCase} onChange={v=>setPrefs(p=>({...p, pushNewCase:v}))} />
+        <Toggle on={prefs.pushNewCase} onChange={v=>update({ pushNewCase:v })} />
       </SettingRow>
       <SettingRow title="Push · escalation reminders" hint="72-hour reminder before a case auto-escalates.">
-        <Toggle on={prefs.pushEscalation} onChange={v=>setPrefs(p=>({...p, pushEscalation:v}))} />
+        <Toggle on={prefs.pushEscalation} onChange={v=>update({ pushEscalation:v })} />
       </SettingRow>
       {mode==='sup' && (
         <SettingRow title="Push · campus alert" hint="Always-on for on-duty platform operators. Cannot be disabled while on shift.">
-          <Toggle on={prefs.pushAlert} onChange={v=>setPrefs(p=>({...p, pushAlert:v}))} />
+          <Toggle on={prefs.pushAlert} onChange={v=>update({ pushAlert:v })} />
         </SettingRow>
       )}
       <SettingRow title="Email · daily digest" hint="08:00 each morning, summary of yesterday\u2019s activity in your queue.">
-        <Toggle on={prefs.emailDaily} onChange={v=>setPrefs(p=>({...p, emailDaily:v}))} />
+        <Toggle on={prefs.emailDaily} onChange={v=>update({ emailDaily:v })} />
       </SettingRow>
       <SettingRow title="Email · weekly performance" hint="Sundays, performance + pattern-detection summary.">
-        <Toggle on={prefs.emailWeekly} onChange={v=>setPrefs(p=>({...p, emailWeekly:v}))} />
+        <Toggle on={prefs.emailWeekly} onChange={v=>update({ emailWeekly:v })} />
       </SettingRow>
       <SettingRow title="SMS · critical only" hint="Rank-3 misconduct, active alerts, de-anonymization decisions.">
-        <Toggle on={prefs.smsCritical} onChange={v=>setPrefs(p=>({...p, smsCritical:v}))} />
+        <Toggle on={prefs.smsCritical} onChange={v=>update({ smsCritical:v })} />
       </SettingRow>
       <SettingRow title="SMS · routine" hint="All status changes by SMS. Not recommended.">
-        <Toggle on={prefs.smsRoutine} onChange={v=>setPrefs(p=>({...p, smsRoutine:v}))} />
+        <Toggle on={prefs.smsRoutine} onChange={v=>update({ smsRoutine:v })} />
       </SettingRow>
       <SettingRow title="Quiet hours" hint="Non-critical notifications are silenced during this window.">
-        <input value={prefs.quietHours} onChange={e=>setPrefs(p=>({...p, quietHours:e.target.value}))}
+        <input value={prefs.quietHours} onChange={e=>update({ quietHours:e.target.value })}
           className="px-2 py-1.5 hair border rounded-sm bg-white font-mono text-[12px] w-[150px]" />
       </SettingRow>
-      <SaveBar accent={mode==='sup'?'ember':'sage'} />
+      <SaveBar accent={mode==='sup'?'ember':'sage'} onSave={handleSave} onDiscard={handleDiscard} saving={saving} status={status} />
     </Card>
   );
 }

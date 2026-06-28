@@ -13,7 +13,7 @@ from app.services.token import decode_token, is_blacklisted
 from app.schemas.messaging import (
     ConversationStartRequest, ConversationResponse, MessageCreate, MessageResponse,
 )
-from app.services import messaging_svc, messaging_sse
+from app.services import messaging_svc, messaging_sse, notification_svc
 
 router = APIRouter(prefix="/v1/conversations", tags=["messaging"])
 
@@ -100,6 +100,21 @@ async def send_message(
     await messaging_sse.publish_message(
         redis, conv.id, payload.model_dump(mode="json")
     )
+
+    # Notify the other participant (message content is E2EE — keep the body generic).
+    recipient_id = conv.lawyer_user_id if token.user_id == conv.user_id else conv.user_id
+    sender_is_lawyer = token.user_id == conv.lawyer_user_id
+    try:
+        await notification_svc.create(
+            db, user_id=recipient_id, type="lawyer", mode="country",
+            title="New message from your lawyer" if sender_is_lawyer else "New message from a client",
+            body="You have a new secure message. Tap to read.",
+            route="conversations", params={"conversation_id": str(conv.id)},
+            commit=False,
+        )
+    except Exception:
+        pass
+
     return payload
 
 

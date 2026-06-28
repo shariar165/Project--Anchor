@@ -433,6 +433,7 @@ async def notify_nearby_users(event_id: uuid.UUID, zone_id: uuid.UUID) -> None:
     from app.models.alert import AlertEvent, Zone, AlertNotification, RecipientType, NotifChannel, NotifStatus
     from app.services import fcm as fcm_svc
     from app.services.geofence import get_nearby_users
+    from app.services import notification_svc
 
     try:
         async with AsyncSessionLocal() as db:
@@ -450,6 +451,22 @@ async def notify_nearby_users(event_id: uuid.UUID, zone_id: uuid.UUID) -> None:
             nearby = await get_nearby_users(
                 db, event.lat, event.lng, radius_m, event.anonymous_actor_hash
             )
+
+            # In-app notification fan-out (independent of FCM push reachability) — every
+            # consenting nearby user gets a bell entry. mode=None → visible in both modes.
+            try:
+                ts_label = format_bd_time(event.created_at)
+                await notification_svc.create_bulk(
+                    db,
+                    [u["user_id"] for u in nearby if u.get("user_id")],
+                    type="alert", mode=None, tenant_id=event.tenant_id,
+                    title="Someone nearby needs help",
+                    body=f"An emergency alert was triggered near you at {ts_label}. Tap to see how you can help.",
+                    route="alert", params={"event_id": str(event.event_id)},
+                    commit=False,
+                )
+            except Exception as exc:
+                logger.warning("[ALERT] in-app notification fan-out failed for %s: %s", event_id, exc)
 
             settings = get_settings()
             redis = get_redis()
