@@ -1296,7 +1296,7 @@ function SuperAIHealth() {
       <_SysState loading={loading} error={error} onRetry={reload}>
         {data && (() => {
           const c = data.components || {};
-          const comps = [['Pipeline', c.pipeline], ['Embedder', c.embedder], ['Vector store (Chroma)', c.chromadb], ['LLM (Ollama)', c.ollama]];
+          const comps = [['Pipeline', c.pipeline], ['Embedder', c.embedder], ['Vector store (Chroma)', c.chromadb], ['LLM (Gemini)', c.gemini], ['LLM (Ollama)', c.ollama]];
           const host = data.host || {};
           const usage = data.usage || {};
           return (
@@ -3512,7 +3512,7 @@ function SuperLegalCorpus() {
         ) : health ? (
           <Card className="flex items-center gap-4 flex-wrap" >
             <span className="smallcaps text-[var(--muted)]">RAG engine</span>
-            {['embedder', 'chromadb', 'ollama'].map(k => (
+            {['embedder', 'chromadb', 'gemini', 'ollama'].map(k => (
               <span key={k} className="inline-flex items-center gap-1.5 text-[12.5px]">
                 <span className="text-[var(--muted)] capitalize">{k}:</span>
                 <Tag tone={_healthTone(health[k])}>{health[k] || 'unknown'}</Tag>

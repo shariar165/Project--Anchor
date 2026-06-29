@@ -123,7 +123,7 @@ function UniNotices({ onGo }) {
                 <span className="text-[11px] text-[var(--muted)]">
                   {aiGenerated === false
                     ? 'AI offline — template draft (edit before publishing)'
-                    : 'Powered by Qwen3 (Ollama) · grounded in DIU notice conventions'}
+                    : 'Powered by Gemini (Ollama fallback) · grounded in DIU notice conventions'}
                 </span>
               </div>
             </div>

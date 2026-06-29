@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     notice_ai_model: str = "qwen3:1.7b"
 
+    # Gemini (Google Generative Language API) — PRIMARY generator for the API's own
+    # AI features (notice drafting, routine/timetable NL edits) when GEMINI_API_KEY is
+    # set. Ollama stays as the fallback; both degrade to templated output if unreachable.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com"
+
     # RAG service (the /ai/chat proxy target). rag_internal_secret must match
     # RAG_INTERNAL_SECRET set on the services/rag side, or RAG returns 403.
     rag_service_url: str = "http://localhost:8001"

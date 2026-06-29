@@ -695,13 +695,17 @@ async def nl_to_entry_edit(text: str, entries_context: list[dict]) -> EntryEdit 
             "Return ONLY the JSON object, no explanation."
         )
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{ollama_url}/api/generate",
-                json={"model": "qwen3:1.7b", "prompt": prompt, "stream": False},
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "")
+        # Prefer Gemini when configured; fall back to local Ollama.
+        from app.services import gemini_client
+        raw = await gemini_client.generate(prompt, temperature=0.1, timeout=15.0)
+        if raw is None:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{ollama_url}/api/generate",
+                    json={"model": "qwen3:1.7b", "prompt": prompt, "stream": False},
+                )
+                resp.raise_for_status()
+                raw = resp.json().get("response", "")
 
         # Extract JSON from response
         import re

@@ -1,7 +1,10 @@
 ﻿"""
 Async LLM client for Anchor AI.
-Primary: Ollama inference (URL from OLLAMA_BASE_URL env var, defaults to localhost:11434).
-Fallback: Deterministic stub when Ollama is unreachable (CI / dev without GPU).
+Provider order:
+  1. Gemini (Google Generative Language API) — used when GEMINI_API_KEY is set.
+  2. Ollama inference (URL from OLLAMA_BASE_URL env var, defaults to localhost:11434).
+  3. Deterministic stub when neither is reachable (CI / dev without GPU or API key).
+Ollama is intentionally NOT removed — it stays as the fallback generator.
 """
 import json
 import logging
@@ -16,6 +19,69 @@ MAIN_MODEL = "qwen3:1.7b"
 
 def _ollama_base() -> str:
     return get_settings().ollama_base_url
+
+
+# ── Gemini ────────────────────────────────────────────────────────────────────
+# When GEMINI_API_KEY is configured, Gemini is the primary generator. It degrades
+# to Ollama (then the stub) on any error, so the pipeline never hard-fails.
+_gemini_available: bool | None = None
+
+
+def _gemini_key() -> str:
+    return get_settings().gemini_api_key
+
+
+async def _check_gemini_availability() -> bool:
+    global _gemini_available
+    if _gemini_available is not None:
+        return _gemini_available
+    key = _gemini_key()
+    if not key:
+        _gemini_available = False
+        return False
+    try:
+        s = get_settings()
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(
+                f"{s.gemini_base_url}/v1beta/models",
+                headers={"x-goog-api-key": key},
+            )
+            _gemini_available = r.status_code == 200
+    except Exception:
+        _gemini_available = False
+    logger.info("Gemini available: %s", _gemini_available)
+    return _gemini_available
+
+
+async def _gemini_generate(prompt: str, temperature: float) -> str | None:
+    """Call Gemini generateContent. Returns text, or None on any failure (so the
+    caller falls through to Ollama)."""
+    key = _gemini_key()
+    if not key:
+        return None
+    s = get_settings()
+    url = f"{s.gemini_base_url}/v1beta/models/{s.gemini_model}:generateContent"
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                url,
+                headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": temperature},
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            candidates = data.get("candidates") or []
+            if not candidates:
+                return None
+            parts = candidates[0].get("content", {}).get("parts", []) or []
+            text = "".join(p.get("text", "") for p in parts).strip()
+            return text or None
+    except Exception as e:
+        logger.error("Gemini generate error: %s", e)
+        return None
 
 # When OLLAMA_BASE_URL points at an ngrok tunnel, the free tier serves an HTML
 # "browser warning" interstitial unless this header is present — which would make
@@ -42,6 +108,11 @@ async def _check_availability() -> bool:
 
 
 async def generate(prompt: str, model: str = MAIN_MODEL, temperature: float = 0.1) -> str:
+    # 1. Prefer Gemini when an API key is configured.
+    gemini_out = await _gemini_generate(prompt, temperature)
+    if gemini_out is not None:
+        return gemini_out
+    # 2. Fall back to Ollama (local / ngrok).
     if not await _check_availability():
         return _stub_response(prompt)
     try:
@@ -73,9 +144,10 @@ async def generate(prompt: str, model: str = MAIN_MODEL, temperature: float = 0.
 
 
 def reset_availability_cache():
-    """Call this to re-probe Ollama (e.g. after a server restart)."""
-    global _available
+    """Call this to re-probe Gemini and Ollama (e.g. after a server restart)."""
+    global _available, _gemini_available
     _available = None
+    _gemini_available = None
 
 
 def _stub_response(prompt: str) -> str:

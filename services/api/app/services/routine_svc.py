@@ -327,20 +327,24 @@ async def ai_edit_slots(slots: list[dict], text: str) -> dict:
         f"Instruction: {text}\n\nReturn ONLY the JSON object."
     )
 
-    try:
-        import httpx
-        from app.config import get_settings
-        ollama_url = getattr(get_settings(), "ollama_base_url", "http://localhost:11434")
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{ollama_url}/api/generate",
-                json={"model": "qwen3:1.7b", "prompt": prompt, "stream": False},
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "")
-    except Exception as exc:
-        logger.warning(f"Routine AI edit — Ollama unavailable: {exc}")
-        return {"ok": False, "reason": "The AI assistant is offline. Edit the cell directly or try again later."}
+    # Prefer Gemini when configured; fall back to local Ollama.
+    from app.services import gemini_client
+    raw = await gemini_client.generate(prompt, temperature=0.1, timeout=20.0)
+    if raw is None:
+        try:
+            import httpx
+            from app.config import get_settings
+            ollama_url = getattr(get_settings(), "ollama_base_url", "http://localhost:11434")
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    f"{ollama_url}/api/generate",
+                    json={"model": "qwen3:1.7b", "prompt": prompt, "stream": False},
+                )
+                resp.raise_for_status()
+                raw = resp.json().get("response", "")
+        except Exception as exc:
+            logger.warning(f"Routine AI edit — Gemini + Ollama unavailable: {exc}")
+            return {"ok": False, "reason": "The AI assistant is offline. Edit the cell directly or try again later."}
 
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     if not match:
