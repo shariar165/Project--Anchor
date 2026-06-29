@@ -16,7 +16,7 @@ import re
 import httpx
 
 from app.config import get_settings
-from app.services import skill_loader
+from app.services import gemini_client, skill_loader
 
 logger = logging.getLogger(__name__)
 
@@ -99,22 +99,25 @@ async def generate_notice(*, prompt: str, language: str = "en", tone: str | None
         prompt=prompt, language=language, tone=tone, audience=audience, subject=subject
     )
 
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{ollama_url}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": full_prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.3},
-                },
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "")
-    except Exception as exc:
-        logger.warning("Notice generation falling back (Ollama unavailable): %s", exc)
-        return _fallback(prompt=prompt, language=language, subject=subject)
+    # Prefer Gemini when configured; fall back to Ollama, then a templated draft.
+    raw = await gemini_client.generate(full_prompt, temperature=0.3, timeout=120.0)
+    if raw is None:
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(
+                    f"{ollama_url}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": full_prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.3},
+                    },
+                )
+                resp.raise_for_status()
+                raw = resp.json().get("response", "")
+        except Exception as exc:
+            logger.warning("Notice generation falling back (Gemini + Ollama unavailable): %s", exc)
+            return _fallback(prompt=prompt, language=language, subject=subject)
 
     cleaned = _strip_think(raw)
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)

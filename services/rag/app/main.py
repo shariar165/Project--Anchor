@@ -234,6 +234,7 @@ async def health() -> dict[str, Any]:
     if settings.disable_ai_warmup:
         status["embedder"] = "disabled"
         status["chromadb"] = "disabled"
+        status["gemini"] = "disabled"
         status["ollama"] = "disabled"
         return status
 
@@ -253,10 +254,15 @@ async def health() -> dict[str, Any]:
 
     try:
         from app.pipeline import llm_client
-        # Force a live re-probe: the availability flag is cached for the life of
+        # Force a live re-probe: the availability flags are cached for the life of
         # the process, so a transient failure (e.g. ngrok tunnel briefly down at
         # startup) would otherwise pin /health to "unavailable" until restart.
         llm_client.reset_availability_cache()
+        gemini_ok = await llm_client._check_gemini_availability()
+        # "not configured" distinguishes "no API key set" from a key that fails.
+        status["gemini"] = "ok" if gemini_ok else (
+            "unavailable" if llm_client._gemini_key() else "not configured"
+        )
         available = await llm_client._check_availability()
         status["ollama"] = "ok" if available else "unavailable"
     except Exception as e:

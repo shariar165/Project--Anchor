@@ -10,6 +10,10 @@ import uuid
 # Must be set BEFORE importing app modules so get_settings() picks them up
 os.environ.setdefault("HIBP_CHECK_ENABLED", "false")
 os.environ.setdefault("ENVIRONMENT", "testing")
+# Tests must be hermetic — never hit the live Gemini API even when the developer's
+# .env carries a real GEMINI_API_KEY. An (empty) env var overrides the .env value,
+# so AI features deterministically fall back to Ollama/stub paths under test.
+os.environ["GEMINI_API_KEY"] = ""
 
 import pytest
 import pytest_asyncio

@@ -58,6 +58,7 @@ async def ai_health(
             "pipeline": herr or "unavailable",
             "embedder": herr or "unavailable",
             "chromadb": herr or "unavailable",
+            "gemini": herr or "unavailable",
             "ollama": herr or "unavailable",
         }
         rag_reachable = False
@@ -66,6 +67,7 @@ async def ai_health(
             "pipeline": health.get("pipeline", "unknown"),
             "embedder": health.get("embedder", "unknown"),
             "chromadb": health.get("chromadb", "unknown"),
+            "gemini": health.get("gemini", "unknown"),
             "ollama": health.get("ollama", "unknown"),
         }
         rag_reachable = True

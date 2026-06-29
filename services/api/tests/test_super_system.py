@@ -65,7 +65,7 @@ async def test_ai_health_degrades_without_rag(client, db_session, mock_redis):
     body = r.json()
     # RAG not running in tests → unreachable, but endpoint still renders.
     assert body["rag_reachable"] is False
-    assert set(body["components"].keys()) == {"pipeline", "embedder", "chromadb", "ollama"}
+    assert set(body["components"].keys()) == {"pipeline", "embedder", "chromadb", "gemini", "ollama"}
     assert "host" in body and "namespaces" in body
 
 
