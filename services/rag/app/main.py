@@ -41,20 +41,28 @@ def _verify_internal(secret: str | None) -> None:
 async def lifespan(app: FastAPI):
     from app.config import get_settings
     settings = get_settings()
-    if not settings.disable_ai_warmup:
-        async def _warmup():
-            try:
+
+    async def _startup():
+        try:
+            from app.pipeline.ingestion import rebuild_bm25_from_store
+            # BM25 is in-memory, cheap, and needs NO ML model — always rebuild it
+            # from the persisted vector store (including a store baked into the
+            # image) so sparse retrieval works even when warmup is disabled.
+            for ns in ("national", "diu"):
+                rebuild_bm25_from_store(ns)
+            # Re-embedding the sample corpus requires loading the embedder model.
+            # On memory-constrained tiers (Railway 512 MB) set DISABLE_AI_WARMUP=true
+            # and ship a prebuilt data/vectors store in the image: the service then
+            # boots without loading any model and only loads it on the first query.
+            if not settings.disable_ai_warmup:
                 from app.pipeline.sample_corpus import load_sample_corpus
-                from app.pipeline.ingestion import rebuild_bm25_from_store
                 await load_sample_corpus()
-                # BM25 is in-memory; rebuild it from the persisted numpy vector
-                # store on every boot so custom-ingested documents (not just the
-                # sample corpus) are searchable after a restart.
                 for ns in ("national", "diu"):
                     rebuild_bm25_from_store(ns)
-            except Exception as e:
-                logger.warning("AI warmup skipped: %s", e)
-        asyncio.create_task(_warmup())
+        except Exception as e:
+            logger.warning("AI startup tasks skipped: %s", e)
+
+    asyncio.create_task(_startup())
     yield
 
 

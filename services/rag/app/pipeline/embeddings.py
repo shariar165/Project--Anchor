@@ -67,8 +67,19 @@ def _get_embedder():
                     pass
 
                 cache_dir = get_settings().fastembed_cache_path or None
-                _embedder = TextEmbedding(model_name=model, cache_dir=cache_dir)
-                logger.info("Embedder loaded: %s", model)
+                # Memory squeeze for Railway's 512 MB tier:
+                #  - threads=1 → onnxruntime keeps a single intra/inter-op thread
+                #    pool instead of one per CPU (each pool reserves an arena).
+                #  - enable_cpu_mem_arena=False → onnxruntime doesn't pre-allocate
+                #    and retain a large reusable memory arena; resident RAM tracks
+                #    actual use. Costs a little latency, irrelevant at our QPS.
+                _embedder = TextEmbedding(
+                    model_name=model,
+                    cache_dir=cache_dir,
+                    threads=1,
+                    enable_cpu_mem_arena=False,
+                )
+                logger.info("Embedder loaded: %s (threads=1, mem_arena=off)", model)
             except Exception as e:
                 logger.warning("Embedder unavailable: %s — dense retrieval disabled", e)
     return _embedder

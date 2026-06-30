@@ -13,4 +13,11 @@ RUN python -c "from fastembed import TextEmbedding; import os; TextEmbedding(os.
 
 COPY . .
 
+# Bake the prebuilt numpy vector store (data/vectors/*.npy + *.json) into the
+# image so the service can boot with DISABLE_AI_WARMUP=true and load ZERO models
+# at startup — the embedder is only loaded lazily on the first query. This keeps
+# startup RAM low enough for Railway's 512 MB tier (no warmup batch-embed spike).
+# Uses generate_prefixes=False, so no LLM is needed at build time.
+RUN python -m app.pipeline.sample_corpus
+
 CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001}
