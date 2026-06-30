@@ -47,9 +47,9 @@ async def lifespan(app: FastAPI):
                 from app.pipeline.sample_corpus import load_sample_corpus
                 from app.pipeline.ingestion import rebuild_bm25_from_store
                 await load_sample_corpus()
-                # BM25 is in-memory; rebuild it from the persisted ChromaDB store
-                # on every boot so custom-ingested documents (not just the sample
-                # corpus) are searchable after a restart.
+                # BM25 is in-memory; rebuild it from the persisted numpy vector
+                # store on every boot so custom-ingested documents (not just the
+                # sample corpus) are searchable after a restart.
                 for ns in ("national", "diu"):
                     rebuild_bm25_from_store(ns)
             except Exception as e:
@@ -97,7 +97,7 @@ async def chat(
 async def ingest(
     x_internal_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Load the built-in sample legal corpus into ChromaDB (dev/demo setup)."""
+    """Load the built-in sample legal corpus into the vector store (dev/demo setup)."""
     _verify_internal(x_internal_secret)
     try:
         from app.pipeline.sample_corpus import load_sample_corpus
@@ -233,7 +233,7 @@ async def health() -> dict[str, Any]:
 
     if settings.disable_ai_warmup:
         status["embedder"] = "disabled"
-        status["chromadb"] = "disabled"
+        status["vector_store"] = "disabled"
         status["gemini"] = "disabled"
         status["ollama"] = "disabled"
         return status
@@ -247,10 +247,9 @@ async def health() -> dict[str, Any]:
 
     try:
         from app.pipeline import vector_store as vs_mod
-        client = vs_mod._get_client()
-        status["chromadb"] = "ok" if client is not None else "unavailable"
+        status["vector_store"] = "ok" if vs_mod.is_ready() else "unavailable"
     except Exception as e:
-        status["chromadb"] = f"error: {e}"
+        status["vector_store"] = f"error: {e}"
 
     try:
         from app.pipeline import llm_client

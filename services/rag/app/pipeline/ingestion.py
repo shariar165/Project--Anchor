@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def rebuild_bm25_from_store(namespace: str = "national") -> int:
-    """Rebuild the in-memory BM25 index from the full persisted ChromaDB store.
+    """Rebuild the in-memory BM25 index from the full persisted vector store.
 
     BM25 is in-memory and rebuilt wholesale by build_index(). Building from a
     single ingest batch (the old behaviour) silently dropped every other
@@ -96,7 +96,7 @@ async def ingest_document(
     generate_prefixes: bool = True,
 ) -> int:
     """
-    Ingest a batch of document chunks into ChromaDB (dense) + BM25 (sparse).
+    Ingest a batch of document chunks into the numpy store (dense) + BM25 (sparse).
 
     Each chunk dict must have:
       chunk_id      — unique identifier
@@ -133,7 +133,7 @@ async def ingest_document(
             "metadata": chunk.get("metadata", {}),
         })
 
-    # Dense embed + upsert to ChromaDB
+    # Dense embed + upsert to the numpy vector store
     texts = [c["text"] for c in processed]
     vecs = embeddings.embed(texts)
     if vecs:

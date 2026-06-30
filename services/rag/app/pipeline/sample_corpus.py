@@ -588,7 +588,7 @@ CORPUS: list[dict] = [
 
 async def load_sample_corpus(generate_prefixes: bool = False) -> int:
     """
-    Load the built-in sample corpus into ChromaDB and BM25 indices.
+    Load the built-in sample corpus into the numpy vector store and BM25 indices.
     generate_prefixes=False for fast load (skips LLM prefix generation).
     """
     from app.pipeline.ingestion import ingest_document

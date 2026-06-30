@@ -5,8 +5,10 @@ pydantic[email]>=2.11
 python-dotenv>=1.0
 
 # AI Engine — RAG pipeline
-sentence-transformers>=3.0
-chromadb>=0.6
+# fastembed (ONNX) replaces sentence-transformers/torch + chromadb to fit
+# Railway's free-tier RAM budget. Dense vectors live in an in-memory numpy store.
+fastembed>=0.8
+numpy>=1.26
 rank-bm25>=0.2
 ddgs>=0.1
 fpdf2>=2.8.1
