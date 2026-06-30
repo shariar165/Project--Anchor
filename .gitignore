@@ -11,6 +11,7 @@ __pycache__/
 backend/data/
 services/api/data/
 services/rag/data/
+services/rag/.fastembed_cache/
 
 # Logs
 *.log

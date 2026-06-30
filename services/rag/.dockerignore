@@ -4,5 +4,9 @@ __pycache__
 *.pyo
 .env
 data/chromadb
+# Local fastembed model cache — the image builds its own baked copy; don't ship
+# the dev one in the build context. (data/vectors IS shipped so the prebuilt
+# numpy store is available at boot.)
+.fastembed_cache
 *.egg-info
 .pytest_cache

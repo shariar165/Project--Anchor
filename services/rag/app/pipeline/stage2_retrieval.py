@@ -1,11 +1,12 @@
 ﻿"""
-Stage 2 — Contextual Hybrid Retrieval + Cross-Encoder Reranking.
+Stage 2 — Contextual Hybrid Retrieval.
 
 Pipeline per query:
-  dense (multilingual embed, both lang variants)
+  dense (multilingual fastembed, both lang variants)
   + sparse (contextual BM25 with synonym expansion, both lang variants)
   → RRF merge (60/40 dense/sparse)
-  → cross-encoder rerank (CENTRAL — runs on every path)
+  → rerank (order-preserving; the cross-encoder was removed for memory — see
+    embeddings.rerank)
 """
 import logging
 from app.pipeline.models import RetrievedChunk, QueryAnalysis
@@ -45,22 +46,21 @@ def rrf_merge(
 # ── Metadata filter builder ──────────────────────────────────────
 
 def _build_where(analysis: QueryAnalysis) -> dict | None:
-    """Translate query analysis into a ChromaDB metadata filter."""
-    conditions: list[dict] = []
+    """Build a plain metadata filter for the numpy store.
+
+    Scalar value → equality; list value → membership (AND across keys).
+    """
+    where: dict = {}
 
     if not analysis.historical_law:
-        conditions.append({"amendment_status": {"$eq": "current"}})
+        where["amendment_status"] = "current"
 
     hint = analysis.entities.get("jurisdiction_hint", "national")
     if hint == "campus":
         # Campus queries can hit both campus-scoped and national docs
-        conditions.append({"tenant_scope": {"$in": ["diu", "national"]}})
+        where["tenant_scope"] = ["diu", "national"]
 
-    if not conditions:
-        return None
-    if len(conditions) == 1:
-        return conditions[0]
-    return {"$and": conditions}
+    return where or None
 
 
 # ── Cross-encoder reranking (CENTRAL) ───────────────────────────
@@ -71,8 +71,9 @@ def rerank_chunks(
     top_k: int = 5,
 ) -> list[RetrievedChunk]:
     """
-    Cross-encoder reranker — the single highest-leverage retrieval step.
-    Runs on every path (medium and hard) and again after corrective web merge.
+    Rerank + top-k truncation. The cross-encoder was removed for memory; this
+    now preserves the RRF order via embeddings.rerank's descending scores. Kept
+    as a single choke point so a reranker can be reintroduced here later.
     """
     if not chunks:
         return []
@@ -108,7 +109,7 @@ async def retrieve(
 
     # ── Dense retrieval ──────────────────────────────────────────
     queries_to_embed = list({query_en, query_bn} - {""})
-    all_embeddings = embeddings.embed(queries_to_embed) if queries_to_embed else None
+    all_embeddings = embeddings.embed_query(queries_to_embed) if queries_to_embed else None
 
     dense_combined: list[RetrievedChunk] = []
     if all_embeddings:
