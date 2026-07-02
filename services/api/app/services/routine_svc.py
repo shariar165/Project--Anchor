@@ -208,57 +208,86 @@ async def import_slots(
     return {"imported": len(slots), "errors": errors}
 
 
+def _time_range_mins(slot: dict) -> tuple[int, int] | None:
+    """Parse a slot's time into a (start, end) minute range. Hours below 8 are
+    read as PM (campus afternoon slots like "1:00-2:30"), mirroring the admin
+    editor's sort heuristic. Returns None when the time can't be parsed."""
+    def _mins(part: str) -> int | None:
+        m = re.match(r"\s*(\d{1,2})(?::(\d{2}))?", part or "")
+        if not m:
+            return None
+        h = int(m.group(1))
+        if h < 8:
+            h += 12
+        return h * 60 + int(m.group(2) or 0)
+
+    start_s, end_s = _split_time(_slot_time(slot))
+    start = _mins(start_s)
+    if start is None:
+        return None
+    end = _mins(end_s) if end_s else None
+    if end is None or end <= start:
+        end = start + 1  # unknown/degenerate end: still clashes on equal starts
+    return (start, end)
+
+
 def validate_slots(slots: list[dict]) -> list[dict]:
     """Pure conflict detector over a routine's flat slot list. Mirrors the hard
     rules in timetable_svc.validate_entries, but on the projected slots so the
     friendly editor can highlight clashes without the full entity graph.
 
+    Times are compared as minute *ranges*, so "08:30-10:00" clashes with
+    "8:30-10:00" and a 9:00-9:45 class clashes with an 8:30-10:00 one.
+    Unparseable times fall back to normalized-string equality.
+
     Each conflict: {type, slot_indexes: [...], description}.
     """
     conflicts: list[dict] = []
-    teacher_seen: dict = {}
+    teacher_seen: dict = {}  # (teacher, day) -> [(time_key, index)]
     room_seen: dict = {}
-    section_seen: dict = {}  # one routine == one section, so (day,time) must be unique
+    section_seen: dict = {}  # one routine == one section, so day-time overlap clashes
+
+    def _time_key(s: dict):
+        rng = _time_range_mins(s)
+        if rng is not None:
+            return rng
+        t = _slot_time(s).strip().lower()
+        return ("s", t) if t else None
+
+    def _clash(a, b) -> bool:
+        if isinstance(a[0], int) and isinstance(b[0], int):
+            return a[0] < b[1] and b[0] < a[1]
+        return a == b
+
+    def _check(bucket_map: dict, bucket_key, time_key, i: int, conflict_type: str, description: str):
+        bucket = bucket_map.setdefault(bucket_key, [])
+        for prev_key, j in bucket:
+            if _clash(time_key, prev_key):
+                conflicts.append({
+                    "type": conflict_type,
+                    "slot_indexes": [j, i],
+                    "description": description,
+                })
+                break
+        bucket.append((time_key, i))
 
     for i, s in enumerate(slots or []):
-        day = (s.get("day") or "").strip()
-        time = _slot_time(s)
-        if not day or not time:
+        day = (s.get("day") or "").strip().lower()
+        time_key = _time_key(s)
+        if not day or time_key is None:
             continue
+        time = _slot_time(s)
         teacher = (s.get("teacher") or "").strip().lower()
         room = (s.get("room") or "").strip().lower()
 
         if teacher:
-            key = (teacher, day, time)
-            if key in teacher_seen:
-                conflicts.append({
-                    "type": "teacher_double_booked",
-                    "slot_indexes": [teacher_seen[key], i],
-                    "description": f"{s.get('teacher')} is assigned two classes on {day} {time}",
-                })
-            else:
-                teacher_seen[key] = i
-
+            _check(teacher_seen, (teacher, day), time_key, i, "teacher_double_booked",
+                   f"{s.get('teacher')} is assigned two overlapping classes on {s.get('day')} {time}")
         if room:
-            key = (room, day, time)
-            if key in room_seen:
-                conflicts.append({
-                    "type": "room_double_booked",
-                    "slot_indexes": [room_seen[key], i],
-                    "description": f"Room {s.get('room')} is double-booked on {day} {time}",
-                })
-            else:
-                room_seen[key] = i
-
-        key = (day, time)
-        if key in section_seen:
-            conflicts.append({
-                "type": "section_overlap",
-                "slot_indexes": [section_seen[key], i],
-                "description": f"Two classes are scheduled at the same time on {day} {time}",
-            })
-        else:
-            section_seen[key] = i
+            _check(room_seen, (room, day), time_key, i, "room_double_booked",
+                   f"Room {s.get('room')} is double-booked on {s.get('day')} {time}")
+        _check(section_seen, day, time_key, i, "section_overlap",
+               f"Two classes overlap on {s.get('day')} {time}")
 
     return conflicts
 
@@ -346,12 +375,9 @@ async def ai_edit_slots(slots: list[dict], text: str) -> dict:
             logger.warning(f"Routine AI edit — Gemini + Ollama unavailable: {exc}")
             return {"ok": False, "reason": "The AI assistant is offline. Edit the cell directly or try again later."}
 
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not match:
-        return {"ok": False, "reason": "Couldn't understand that. Try naming the course and the new day/time."}
-    try:
-        data = json.loads(match.group())
-    except Exception:
+    from app.services.llm_json import extract_json_object
+    data = extract_json_object(raw)
+    if data is None:
         return {"ok": False, "reason": "Couldn't understand that. Try naming the course and the new day/time."}
 
     idx = data.get("target_index")

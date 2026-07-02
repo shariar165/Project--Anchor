@@ -515,7 +515,21 @@ async def get_entry(db: AsyncSession, entry_id: uuid.UUID) -> TimetableEntry | N
     return result.scalars().first()
 
 
-async def patch_entry(db: AsyncSession, entry: TimetableEntry, data: EntryEdit) -> TimetableEntry:
+async def patch_entry(
+    db: AsyncSession,
+    entry: TimetableEntry,
+    data: EntryEdit,
+    config: TimetableScheduleConfig | None = None,
+) -> TimetableEntry:
+    if config is not None:
+        if data.new_day is not None and not (0 <= data.new_day < len(config.days)):
+            raise ValueError(
+                f"day index {data.new_day} is out of range — this term has {len(config.days)} days"
+            )
+        if data.new_slot is not None and not (0 <= data.new_slot < len(config.slots)):
+            raise ValueError(
+                f"slot index {data.new_slot} is out of range — this term has {len(config.slots)} slots"
+            )
     if data.new_day is not None:
         entry.day = data.new_day
     if data.new_slot is not None:
@@ -548,6 +562,49 @@ async def bulk_insert_entries(
     await db.commit()
 
 
+# ── Bulk name resolution ──────────────────────────────────────────────────────
+
+async def resolve_entry_names(db: AsyncSession, entries: list[TimetableEntry]) -> dict:
+    """Bulk-load the entities a set of entries references (one IN query per
+    table instead of one query per entry). Returns lookup maps keyed by id:
+    courses, sections, batches, lab_groups, rooms, faculty, plus
+    faculty_names: {faculty_profile_id: user full name}."""
+
+    async def _by_ids(model, ids):
+        ids = [i for i in ids if i]
+        if not ids:
+            return {}
+        r = await db.execute(select(model).where(model.id.in_(ids)))
+        return {obj.id: obj for obj in r.scalars().all()}
+
+    courses = await _by_ids(TimetableCourse, {e.course_id for e in entries})
+    sections = await _by_ids(TimetableSection, {e.section_id for e in entries})
+    batches = await _by_ids(TimetableBatch, {s.batch_id for s in sections.values()})
+    lab_groups = await _by_ids(TimetableLabGroup, {e.lab_group_id for e in entries if e.lab_group_id})
+    rooms = await _by_ids(TimetableRoom, {e.room_id for e in entries})
+    faculty = await _by_ids(TimetableFacultyProfile, {e.faculty_id for e in entries})
+
+    users = {}
+    user_ids = [fp.user_id for fp in faculty.values()]
+    if user_ids:
+        ur = await db.execute(select(User).where(User.id.in_(user_ids)))
+        users = {u.id: u for u in ur.scalars().all()}
+    faculty_names = {
+        fid: (users[fp.user_id].full_name if fp.user_id in users else "")
+        for fid, fp in faculty.items()
+    }
+
+    return {
+        "courses": courses,
+        "sections": sections,
+        "batches": batches,
+        "lab_groups": lab_groups,
+        "rooms": rooms,
+        "faculty": faculty,
+        "faculty_names": faculty_names,
+    }
+
+
 # ── Validate entries ──────────────────────────────────────────────────────────
 
 async def validate_entries(
@@ -556,13 +613,12 @@ async def validate_entries(
     entries = await list_entries(db, term_id, version)
     conflicts: list[ConflictOut] = []
 
-    # Load room types
-    room_ids = {e.room_id for e in entries}
-    rooms = {}
-    for rid in room_ids:
-        r = await get_room(db, rid)
-        if r:
-            rooms[rid] = r
+    # Load room types (single IN query)
+    room_ids = [rid for rid in {e.room_id for e in entries} if rid]
+    rooms: dict = {}
+    if room_ids:
+        r = await db.execute(select(TimetableRoom).where(TimetableRoom.id.in_(room_ids)))
+        rooms = {room.id: room for room in r.scalars().all()}
 
     # Check (room, day, slot) uniqueness
     room_slot_seen: dict = {}
@@ -607,15 +663,32 @@ async def validate_entries(
             else:
                 theory_slot_seen[key] = e
 
-    # Check room type matches is_lab
+    # Check the same lab group isn't double-booked — the solver prevents this,
+    # but manual entry edits can create it and nothing else would catch it.
+    lab_group_slot_seen: dict = {}
+    for e in entries:
+        if e.is_lab and e.lab_group_id is not None:
+            key = (e.lab_group_id, e.day, e.slot)
+            if key in lab_group_slot_seen:
+                prev = lab_group_slot_seen[key]
+                conflicts.append(ConflictOut(
+                    conflict_type="lab_group_overlap",
+                    entry_ids=[prev.id, e.id],
+                    description=f"Lab group has two classes on day {e.day} slot {e.slot}",
+                ))
+            else:
+                lab_group_slot_seen[key] = e
+
+    # Check room type matches is_lab (labs need a LAB room; theory must not
+    # occupy one — THEORY or ONLINE are both fine for theory)
     for e in entries:
         room = rooms.get(e.room_id)
         if room:
-            if e.is_lab and room.room_type == "THEORY":
+            if e.is_lab and room.room_type != "LAB":
                 conflicts.append(ConflictOut(
                     conflict_type="room_type_mismatch",
                     entry_ids=[e.id],
-                    description=f"Lab class assigned to THEORY room {room.name}",
+                    description=f"Lab class assigned to {room.room_type} room {room.name}",
                 ))
             elif not e.is_lab and room.room_type == "LAB":
                 conflicts.append(ConflictOut(
@@ -680,48 +753,14 @@ async def publish_version(
     days_list: list[str] = config.days
     slots_list: list[str] = config.slots
 
-    # Load supporting data (batch via section, course, faculty→user, room)
-    section_ids = {e.section_id for e in entries}
-    sections = {}
-    for sid in section_ids:
-        r = await db.execute(select(TimetableSection).where(TimetableSection.id == sid))
-        s = r.scalars().first()
-        if s:
-            sections[sid] = s
-
-    batch_ids = {s.batch_id for s in sections.values()}
-    batches = {}
-    for bid in batch_ids:
-        r = await db.execute(select(TimetableBatch).where(TimetableBatch.id == bid))
-        b = r.scalars().first()
-        if b:
-            batches[bid] = b
-
-    faculty_ids = {e.faculty_id for e in entries}
-    faculty_map = {}
-    for fid in faculty_ids:
-        r = await db.execute(select(TimetableFacultyProfile).where(TimetableFacultyProfile.id == fid))
-        fp = r.scalars().first()
-        if fp:
-            ur = await db.execute(select(User).where(User.id == fp.user_id))
-            user = ur.scalars().first()
-            faculty_map[fid] = user.full_name if user else str(fid)
-
-    room_ids = {e.room_id for e in entries}
-    room_map = {}
-    for rid in room_ids:
-        r = await db.execute(select(TimetableRoom).where(TimetableRoom.id == rid))
-        room = r.scalars().first()
-        if room:
-            room_map[rid] = room.name
-
-    lab_group_ids = {e.lab_group_id for e in entries if e.lab_group_id}
-    lab_group_map = {}
-    for lgid in lab_group_ids:
-        r = await db.execute(select(TimetableLabGroup).where(TimetableLabGroup.id == lgid))
-        lg = r.scalars().first()
-        if lg:
-            lab_group_map[lgid] = lg.name
+    # Load supporting data in bulk (batch via section, course, faculty→user, room)
+    names = await resolve_entry_names(db, entries)
+    sections = names["sections"]
+    batches = names["batches"]
+    courses = names["courses"]
+    faculty_map = names["faculty_names"]
+    room_map = {rid: r.name for rid, r in names["rooms"].items()}
+    lab_group_map = {lgid: lg.name for lgid, lg in names["lab_groups"].items()}
 
     # Group entries by section
     by_section: dict[uuid.UUID, list[TimetableEntry]] = {}
@@ -755,9 +794,7 @@ async def publish_version(
             room_name = room_map.get(e.room_id, "")
             lab_suffix = f" [{lab_group_map.get(e.lab_group_id, '')}]" if e.lab_group_id else ""
 
-            # Load course
-            cr = await db.execute(select(TimetableCourse).where(TimetableCourse.id == e.course_id))
-            course = cr.scalars().first()
+            course = courses.get(e.course_id)
 
             slot_items.append({
                 "day": day_name,

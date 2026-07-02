@@ -170,7 +170,14 @@ def solve(
     room_list = data.rooms
 
     if not offering_count or not faculty_list or not room_list:
-        return {"status": "feasible", "objective": 0, "entries": [], "infeasible_core": []}
+        missing = []
+        if not offering_count:
+            missing.append("no_offerings")
+        if not faculty_list:
+            missing.append("no_faculty")
+        if not room_list:
+            missing.append("no_rooms")
+        return {"status": "infeasible", "objective": None, "entries": [], "infeasible_core": missing}
 
     n_f = len(faculty_list)
     n_r = len(room_list)
@@ -303,9 +310,9 @@ def solve(
         if len(vars_list) > cap:
             model.add(sum(vars_list) <= cap)
 
-    # Registry-driven constraints
+    # Registry-driven constraints — hard only; soft ones become penalties below
     for con in data.constraints:
-        if not con.enabled:
+        if not con.enabled or con.enforcement != "hard":
             continue
         builder = CONSTRAINT_BUILDERS.get(con.constraint_type)
         if builder is None:
@@ -321,11 +328,26 @@ def solve(
     # ── Perturbation hints (minimal-perturbation re-solve) ────────────────────
     penalty_terms = []
 
+    locked_offerings: set[int] = set()
+    pinned_offering: int | None = None
+    pin_lock = pinned_change.lock if pinned_change else True
     if base_entries:
-        _add_perturbation(
+        pert = _add_perturbation(
             model, x, data, faculty_list, room_list, faculty_idx, room_idx,
             base_entries, locked_entry_ids or set(), pinned_change, penalty_terms,
         )
+        if pert["pin_error"]:
+            # The requested move points at a combo with no decision variable
+            # (teacher off-day / ineligible / out-of-range slot). Fail loudly
+            # instead of returning an unchanged timetable as "success".
+            return {
+                "status": "infeasible",
+                "objective": None,
+                "entries": [],
+                "infeasible_core": [f"pin_impossible: {pert['pin_error']}"],
+            }
+        locked_offerings = pert["locked_offerings"]
+        pinned_offering = pert["pinned_offering"]
 
     # ── Soft constraints (penalties) ──────────────────────────────────────────
     for con in data.constraints:
@@ -360,12 +382,17 @@ def solve(
     infeasible_core: list[str] = []
     if status == cp_model.INFEASIBLE and assumption_map:
         try:
-            core_vars = solver.sufficient_assumptions_for_infeasibility()
-            # Map BoolVar index back to constraint ID
+            # Returns literal indices (ints); a positive literal's index equals
+            # its BoolVar's index. Map those back to constraint IDs.
+            core = solver.sufficient_assumptions_for_infeasibility()
             reverse_map = {v.index: k for k, v in assumption_map.items()}
-            infeasible_core = [reverse_map[v.index] for v in core_vars if v.index in reverse_map]
+            infeasible_core = [
+                reverse_map[idx]
+                for idx in (lit if isinstance(lit, int) else lit.index for lit in core)
+                if idx in reverse_map
+            ]
         except Exception:
-            pass
+            logger.warning("Could not extract infeasible core", exc_info=True)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return {
@@ -383,7 +410,7 @@ def solve(
     for o_idx, offering in enumerate(data.offerings):
         for (f_idx, d, s), var in x[o_idx].items():
             if solver.boolean_value(var):
-                rec = (offering, faculty_list[f_idx].id, d, s)
+                rec = (o_idx, offering, faculty_list[f_idx].id, d, s)
                 bucket = placed_lab if offering.course.is_lab else placed_theory
                 bucket.setdefault((d, s), []).append(rec)
 
@@ -391,8 +418,11 @@ def solve(
 
     def _emit(buckets: dict, pool: list):
         for recs in buckets.values():
-            for i, (offering, faculty_id, d, s) in enumerate(recs):
+            for i, (o_idx, offering, faculty_id, d, s) in enumerate(recs):
                 room_id = pool[i] if i < len(pool) else pool[i % len(pool)]
+                # Locks must survive into the new version, or the next re-solve
+                # silently moves cells the admin pinned down.
+                locked = o_idx in locked_offerings or (o_idx == pinned_offering and pin_lock)
                 result_entries.append({
                     "course_id": offering.course.id,
                     "section_id": offering.section.id,
@@ -402,7 +432,7 @@ def solve(
                     "day": d,
                     "slot": s,
                     "is_lab": offering.course.is_lab,
-                    "locked": False,
+                    "locked": locked,
                     "source": "solver",
                 })
 
@@ -420,14 +450,28 @@ def solve(
 def _add_perturbation(
     model, x, data, faculty_list, room_list, faculty_idx, room_idx,
     base_entries, locked_ids, pinned_change, penalty_terms,
-):
-    """Add warm hints + lock constraints + perturbation penalty."""
+) -> dict:
+    """Add lock constraints + perturbation penalty + the pinned change.
+
+    Returns {"locked_offerings": set[int], "pinned_offering": int | None,
+    "pin_error": str | None}. A non-None pin_error means the requested change
+    cannot be expressed in the model and the caller must abort the solve.
+    """
+    result = {"locked_offerings": set(), "pinned_offering": None, "pin_error": None}
+
     # Build lookup: (section_id, lab_group_id, course_id, copy_idx) → offering_idx
     offering_key_map: dict[tuple, int] = {}
     for o_idx, offering in enumerate(data.offerings):
         lg_id = offering.lab_group.id if offering.lab_group else None
         key = (offering.section.id, lg_id, offering.course.id, offering.copy_idx)
         offering_key_map[key] = o_idx
+
+    pinned_entry = None
+    if pinned_change and pinned_change.entry_id:
+        pinned_entry = next((e for e in base_entries if e.id == pinned_change.entry_id), None)
+        if pinned_entry is None:
+            result["pin_error"] = "entry not found in the base version"
+            return result
 
     for entry in base_entries:
         lg_id = entry.lab_group_id
@@ -439,6 +483,12 @@ def _add_perturbation(
                 o_idx = offering_key_map.pop(key)
                 break
         if o_idx is None:
+            continue
+
+        # The entry being moved is pinned at its NEW position below — pinning
+        # or rewarding its old position here would fight (or contradict) that.
+        if pinned_entry is not None and entry.id == pinned_entry.id:
+            result["pinned_offering"] = o_idx
             continue
 
         f_idx = faculty_idx.get(entry.faculty_id)
@@ -454,37 +504,35 @@ def _add_perturbation(
         if entry.id in locked_ids:
             # Hard-pin locked entry
             model.add(var == 1)
+            result["locked_offerings"].add(o_idx)
         else:
-            # Soft: reward staying in same position
-            stay = model.new_bool_var(f"stay_{o_idx}")
-            model.add(var == 1).only_enforce_if(stay)
-            model.add(var == 0).only_enforce_if(stay.negated())
-            # Add movement penalty (weight 5 = strongly prefer not to move)
+            # Movement penalty (weight 5 = strongly prefer not to move):
+            # move ⇔ ¬var, so any relocation of this class costs 5.
             move = model.new_bool_var(f"move_{o_idx}")
-            model.add_bool_or([stay, move])
-            model.add_bool_and([stay.negated()]).only_enforce_if(move)
+            model.add(var == 0).only_enforce_if(move)
+            model.add(var == 1).only_enforce_if(move.negated())
             penalty_terms.append(5 * move)
 
-    # Apply pinned change
-    if pinned_change and pinned_change.entry_id:
-        # Find the entry in base_entries
-        for entry in base_entries:
-            if entry.id == pinned_change.entry_id:
-                # Use new values for pinning
-                new_day = pinned_change.new_day if pinned_change.new_day is not None else entry.day
-                new_slot = pinned_change.new_slot if pinned_change.new_slot is not None else entry.slot
-                new_f_id = pinned_change.new_faculty_id or entry.faculty_id
-                nf_idx = faculty_idx.get(new_f_id)
-                # Find o_idx for this entry
-                for o_idx, offering in enumerate(data.offerings):
-                    if (offering.section.id == entry.section_id and
-                            offering.course.id == entry.course_id):
-                        if nf_idx is not None:
-                            var = x[o_idx].get((nf_idx, new_day, new_slot))
-                            if var is not None:
-                                model.add(var == 1)
-                        break
-                break
+    # Apply pinned change at its new coordinates
+    if pinned_entry is not None:
+        o_idx = result["pinned_offering"]
+        if o_idx is None:
+            result["pin_error"] = "no schedulable offering matches the entry (course/section changed?)"
+            return result
+        new_day = pinned_change.new_day if pinned_change.new_day is not None else pinned_entry.day
+        new_slot = pinned_change.new_slot if pinned_change.new_slot is not None else pinned_entry.slot
+        new_f_id = pinned_change.new_faculty_id or pinned_entry.faculty_id
+        nf_idx = faculty_idx.get(new_f_id)
+        if nf_idx is None:
+            result["pin_error"] = "target teacher is not schedulable (inactive or unknown)"
+            return result
+        var = x[o_idx].get((nf_idx, new_day, new_slot))
+        if var is None:
+            result["pin_error"] = "target teacher/day/slot is unavailable (off-day, ineligible, or out of range)"
+            return result
+        model.add(var == 1)
+
+    return result
 
 
 def _add_warm_hints(model, x, data, faculty_list, room_list, faculty_idx, room_idx):
@@ -560,9 +608,49 @@ def _soft_online_penalty(model, x, data, faculty_list, room_list, faculty_idx, r
     return
 
 
+def _soft_max_per_day(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
+                      scope, params, weight, penalty_terms):
+    # Penalise each class beyond `limit` a teacher gets on one day.
+    limit = int(params.get("limit", 4))
+    by_fd: dict[tuple, list] = {}
+    for cell in x.values():
+        for (f_idx, d, _s), var in cell.items():
+            by_fd.setdefault((f_idx, d), []).append(var)
+    for (f_idx, d), day_vars in by_fd.items():
+        if len(day_vars) <= limit:
+            continue
+        excess = model.new_int_var(0, len(day_vars), f"soft_mpd_{f_idx}_{d}")
+        model.add(sum(day_vars) - limit <= excess)
+        penalty_terms.append(weight * excess)
+
+
+def _soft_consecutive(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
+                      scope, params, weight, penalty_terms):
+    # Penalise each class beyond `limit` inside any window of limit+1 slots.
+    limit = int(params.get("limit", 2))
+    by_fd_s: dict[tuple, dict] = {}
+    for cell in x.values():
+        for (f_idx, d, s), var in cell.items():
+            by_fd_s.setdefault((f_idx, d), {}).setdefault(s, []).append(var)
+    for (f_idx, d), slot_map in by_fd_s.items():
+        for s_start in range(data.n_slots - limit):
+            window_vars = [
+                v
+                for s in range(s_start, s_start + limit + 1)
+                for v in slot_map.get(s, [])
+            ]
+            if len(window_vars) <= limit:
+                continue
+            over = model.new_int_var(0, len(window_vars), f"soft_cons_{f_idx}_{d}_{s_start}")
+            model.add(sum(window_vars) - limit <= over)
+            penalty_terms.append(weight * over)
+
+
 SOFT_BUILDERS = {
     "pref_slot_reward": _soft_pref_slot,
     "online_penalty": _soft_online_penalty,
+    "max_classes_per_day": _soft_max_per_day,
+    "consecutive_limit": _soft_consecutive,
 }
 
 
@@ -640,9 +728,13 @@ async def run_solve_job(
                     infeasible_core=result.get("infeasible_core") or [],
                 )
             else:
+                # CP-SAT can also end UNKNOWN (time limit, no solution yet) or
+                # MODEL_INVALID; clients only understand infeasible/failed, so
+                # collapse everything else to failed and keep the raw status.
+                job_status = result["status"] if result["status"] == "infeasible" else "failed"
                 await timetable_svc.update_solve_job(
                     db, job,
-                    status=result["status"],
+                    status=job_status,
                     progress=100,
                     solver_status=result["status"],
                     finished_at=datetime.now(timezone.utc),
@@ -687,10 +779,10 @@ async def nl_to_entry_edit(text: str, entries_context: list[dict]) -> EntryEdit 
         )
         rules = skill_loader.grounding("timetable-nl-edit", fallback=_fallback_rules)
 
-        context_summary = json.dumps(entries_context[:20], default=str)
+        context_summary = json.dumps(entries_context[:60], default=str)
         prompt = (
             f"{rules}\n\n"
-            f"Current entries (first 20): {context_summary}\n\n"
+            f"Current entries (first 60): {context_summary}\n\n"
             f"User command: {text}\n\n"
             "Return ONLY the JSON object, no explanation."
         )
@@ -707,12 +799,11 @@ async def nl_to_entry_edit(text: str, entries_context: list[dict]) -> EntryEdit 
                 resp.raise_for_status()
                 raw = resp.json().get("response", "")
 
-        # Extract JSON from response
-        import re
-        match = re.search(r"\{.*?\}", raw, re.DOTALL)
-        if not match:
+        # Extract JSON from response (strips <think> blocks, brace-balanced)
+        from app.services.llm_json import extract_json_object
+        data = extract_json_object(raw)
+        if data is None:
             return None
-        data = json.loads(match.group())
         return EntryEdit(
             entry_id=uuid.UUID(data["entry_id"]) if data.get("entry_id") else None,
             new_day=data.get("new_day"),
