@@ -472,38 +472,16 @@ async def list_entries(
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
-    from sqlalchemy import select
-    from app.models.timetable import (
-        TimetableCourse, TimetableSection, TimetableBatch,
-        TimetableLabGroup, TimetableFacultyProfile, TimetableRoom,
-    )
-    from app.models.user import User
-
     entries = await timetable_svc.list_entries(db, term_id, version)
+    names = await timetable_svc.resolve_entry_names(db, entries)
     result = []
     for e in entries:
-        # Resolve names inline
-        course_r = await db.execute(select(TimetableCourse).where(TimetableCourse.id == e.course_id))
-        course = course_r.scalars().first()
-        sec_r = await db.execute(select(TimetableSection).where(TimetableSection.id == e.section_id))
-        section = sec_r.scalars().first()
-        batch = None
-        if section:
-            batch_r = await db.execute(select(TimetableBatch).where(TimetableBatch.id == section.batch_id))
-            batch = batch_r.scalars().first()
-        lg = None
-        if e.lab_group_id:
-            lg_r = await db.execute(select(TimetableLabGroup).where(TimetableLabGroup.id == e.lab_group_id))
-            lg = lg_r.scalars().first()
-        fp_r = await db.execute(select(TimetableFacultyProfile).where(TimetableFacultyProfile.id == e.faculty_id))
-        fp = fp_r.scalars().first()
-        faculty_name = ""
-        if fp:
-            ur = await db.execute(select(User).where(User.id == fp.user_id))
-            user = ur.scalars().first()
-            faculty_name = user.full_name if user else ""
-        room_r = await db.execute(select(TimetableRoom).where(TimetableRoom.id == e.room_id))
-        room = room_r.scalars().first()
+        course = names["courses"].get(e.course_id)
+        section = names["sections"].get(e.section_id)
+        batch = names["batches"].get(section.batch_id) if section else None
+        lg = names["lab_groups"].get(e.lab_group_id) if e.lab_group_id else None
+        room = names["rooms"].get(e.room_id)
+        faculty_name = names["faculty_names"].get(e.faculty_id, "")
 
         result.append(EntryDetailOut(
             id=e.id, term_id=e.term_id, result_version=e.result_version,
@@ -535,7 +513,11 @@ async def patch_entry(
     entry = await timetable_svc.get_entry(db, entry_id)
     if not entry:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Entry not found")
-    return await timetable_svc.patch_entry(db, entry, body)
+    config = await timetable_svc.get_schedule_config(db, term_id=entry.term_id)
+    try:
+        return await timetable_svc.patch_entry(db, entry, body, config=config)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
 
 
 # ── Resolve (minimal-perturbation re-solve) ───────────────────────────────────
@@ -578,18 +560,25 @@ async def nl_edit(
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
     base_entries = await timetable_svc.list_entries(db, body.term_id, body.base_version)
-    entries_context = [
-        {
+    # The model must map phrases like "SE223 section A" to an entry_id, so the
+    # context needs names — raw UUIDs alone are unresolvable.
+    names = await timetable_svc.resolve_entry_names(db, base_entries)
+    entries_context = []
+    for e in base_entries:
+        course = names["courses"].get(e.course_id)
+        section = names["sections"].get(e.section_id)
+        batch = names["batches"].get(section.batch_id) if section else None
+        room = names["rooms"].get(e.room_id)
+        entries_context.append({
             "id": str(e.id),
-            "course_id": str(e.course_id),
-            "section_id": str(e.section_id),
-            "faculty_id": str(e.faculty_id),
-            "room_id": str(e.room_id),
+            "course": course.code if course else "",
+            "section": section.name if section else "",
+            "batch": batch.name if batch else "",
+            "teacher": names["faculty_names"].get(e.faculty_id, ""),
+            "room": room.name if room else "",
             "day": e.day,
             "slot": e.slot,
-        }
-        for e in base_entries
-    ]
+        })
     edit = await nl_to_entry_edit(body.text, entries_context)
     if edit is None:
         raise HTTPException(

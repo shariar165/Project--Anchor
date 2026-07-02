@@ -11305,7 +11305,7 @@ function TimetableGenerate({ termId, onSolved }) {
       try {
         const j = await AnchorAPI.apiGet(`${TT_BASE}/solve/${jobId}`);
         setJob(j);
-        if (["optimal","feasible","infeasible","failed"].includes(j.status)) {
+        if (["optimal","feasible","infeasible","failed","unknown"].includes(j.status)) {
           clearInterval(pollRef.current);
           setPolling(false);
           if ((j.status === "optimal" || j.status === "feasible") && j.result_version) {
@@ -11464,6 +11464,7 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
   const [prevEntries, setPrevEntries] = useState([]);
   const [editEntry, setEditEntry] = useState(null);
   const [resolving, setResolving] = useState(false);
+  const [resolveMsg, setResolveMsg] = useState("");
   const [loading, setLoading] = useState(false);
   const pollRef = useRef(null);
 
@@ -11514,15 +11515,21 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
 
   function pollResolveJob(jId) {
     setResolving(true);
+    setResolveMsg("");
     pollRef.current = setInterval(async () => {
       try {
         const j = await AnchorAPI.apiGet(`${TT_BASE}/solve/${jId}`);
-        if (["optimal","feasible","failed","infeasible"].includes(j.status)) {
+        if (["optimal","feasible","failed","infeasible","unknown"].includes(j.status)) {
           clearInterval(pollRef.current);
           setResolving(false);
           if (j.result_version) {
             setPrevEntries(entries);
             onVersionChange(j.result_version);
+          } else {
+            const core = (j.infeasible_core || []).join(", ");
+            setResolveMsg(j.status === "infeasible"
+              ? `Re-solve infeasible — the change conflicts with locked cells or rules${core ? ` (${core})` : ""}.`
+              : "Re-solve failed — the previous version is unchanged.");
           }
         }
       } catch { clearInterval(pollRef.current); setResolving(false); }
@@ -11582,6 +11589,11 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
           {resolving && (
             <span className="text-[12px] flex items-center gap-1" style={{ color:"var(--gold)" }}>
               <Icon name="loader" size={12} className="animate-spin" /> Re-solving…
+            </span>
+          )}
+          {!resolving && resolveMsg && (
+            <span className="text-[11.5px] flex items-center gap-1" style={{ color:"var(--red)" }}>
+              <Icon name="alert-circle" size={12} /> {resolveMsg}
             </span>
           )}
           {changedIds.size > 0 && (
@@ -11705,6 +11717,8 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
       {editEntry && (
         <CellEditModal
           entry={editEntry}
+          days={days}
+          slots={slots}
           onClose={() => setEditEntry(null)}
           onLock={() => { toggleLock(editEntry); setEditEntry(null); }}
           onApply={applyEdit}
@@ -11756,7 +11770,7 @@ function RoutineCell({ entry, moved, conflict, onLockToggle, onClick }) {
 }
 
 // Cell detail & edit modal
-function CellEditModal({ entry, onClose, onLock, onApply }) {
+function CellEditModal({ entry, days = DAY_NAMES, slots = [], onClose, onLock, onApply }) {
   const [rooms, setRooms] = useState([]);
   const [faculty, setFaculty] = useState([]);
   const [newDay, setNewDay] = useState(entry.day);
@@ -11793,14 +11807,21 @@ function CellEditModal({ entry, onClose, onLock, onApply }) {
               <label className="smallcaps text-[var(--muted)] mb-1 block">Day</label>
               <select className="w-full px-2 py-1.5 hair border rounded-sm bg-white"
                 value={newDay} onChange={e => setNewDay(+e.target.value)}>
-                {DAY_NAMES.map((d, i) => <option key={d} value={i}>{d}</option>)}
+                {days.map((d, i) => <option key={d} value={i}>{d}</option>)}
               </select>
             </div>
             <div>
-              <label className="smallcaps text-[var(--muted)] mb-1 block">Slot (0-indexed)</label>
-              <input type="number" min="0" value={newSlot}
-                onChange={e => setNewSlot(+e.target.value)}
-                className="w-full px-2 py-1.5 hair border rounded-sm bg-white" />
+              <label className="smallcaps text-[var(--muted)] mb-1 block">Slot</label>
+              {slots.length > 0 ? (
+                <select className="w-full px-2 py-1.5 hair border rounded-sm bg-white"
+                  value={newSlot} onChange={e => setNewSlot(+e.target.value)}>
+                  {slots.map((s, i) => <option key={i} value={i}>{i} — {s}</option>)}
+                </select>
+              ) : (
+                <input type="number" min="0" value={newSlot}
+                  onChange={e => setNewSlot(+e.target.value)}
+                  className="w-full px-2 py-1.5 hair border rounded-sm bg-white" />
+              )}
             </div>
           </div>
           <div>
