@@ -206,8 +206,7 @@ function TimetableData({ termId }) {
   const [loading, setLoading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [importMsg, setImportMsg] = useState("");
-  const [importErrors, setImportErrors] = useState([]);
-  const [importErrCount, setImportErrCount] = useState(0);
+  const [importOk, setImportOk] = useState(null); // null | true | false — colors the status line
   const fileRef = useRef();
 
   const subTabs = ["courses", "rooms", "faculty", "batches", "offerings", "eligibility"];
@@ -222,7 +221,7 @@ function TimetableData({ termId }) {
     finally { setLoading(false); }
   }
 
-  useEffect(() => { load(); setShowAdd(false); setImportMsg(""); setImportErrors([]); setImportErrCount(0); }, [sub]);
+  useEffect(() => { load(); setShowAdd(false); setImportMsg(""); setImportOk(null); }, [sub]);
 
   function downloadTemplate() {
     const header = (IMPORT_COLS[sub] || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -239,9 +238,8 @@ function TimetableData({ termId }) {
   async function handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
-    setImportErrors([]); setImportErrCount(0);
-    if (sub === "offerings" && !termId) { setImportMsg("Select a term above first"); e.target.value = ""; return; }
-    setImportMsg("Importing…");
+    if (sub === "offerings" && !termId) { setImportMsg("Select a term above first"); setImportOk(false); e.target.value = ""; return; }
+    setImportMsg("Importing…"); setImportOk(null);
     const fd = new FormData();
     fd.append("file", file);
     const termQ = sub === "offerings" && termId ? `&term_id=${termId}` : "";
@@ -253,15 +251,27 @@ function TimetableData({ termId }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setImportMsg(typeof data.detail === "string" ? data.detail : `Import failed (${res.status})`);
+        setImportOk(false);
         return;
       }
-      const total = data.total ?? data.created ?? 0;
+      // Show only a compact yes/no status — never the per-row list (a huge list
+      // froze the browser on big files). On failure, keep one short reason line.
+      const created = data.created || 0;
+      const total = data.total ?? created;
       const errCount = data.error_count ?? (data.errors?.length || 0);
-      setImportMsg(`Imported ${data.created || 0} of ${total} row${total === 1 ? "" : "s"}${errCount ? ` · ${errCount} error${errCount === 1 ? "" : "s"}` : ""}`);
-      setImportErrors(Array.isArray(data.errors) ? data.errors : []);
-      setImportErrCount(errCount);
+      if (created > 0 && errCount === 0) {
+        setImportMsg(`✓ Imported ${created} row${created === 1 ? "" : "s"}`);
+        setImportOk(true);
+      } else if (created > 0) {
+        setImportMsg(`Imported ${created} of ${total} rows · ${errCount} skipped`);
+        setImportOk(true);
+      } else {
+        const reason = data.errors && data.errors[0] ? ` — ${String(data.errors[0]).slice(0, 140)}` : "";
+        setImportMsg(`✗ Not imported${reason}`);
+        setImportOk(false);
+      }
       load();
-    } catch { setImportMsg("Import failed — check the file and try again."); }
+    } catch { setImportMsg("Import failed — check the file and try again."); setImportOk(false); }
     finally { if (fileRef.current) fileRef.current.value = ""; }
   }
 
@@ -277,7 +287,11 @@ function TimetableData({ termId }) {
         ))}
         <div className="flex-1" />
         <div className="flex items-center gap-2 mb-1.5">
-          {importMsg && <span className="text-[11px] text-[var(--sage)]">{importMsg}</span>}
+          {importMsg && (
+            <span className="text-[11px] max-w-[280px] truncate"
+              style={{ color: importOk === false ? "var(--ember)" : "var(--sage)" }}
+              title={importMsg}>{importMsg}</span>
+          )}
           <>
             <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleImport} />
             <GhostButton size="sm" icon="download" onClick={downloadTemplate}
@@ -288,22 +302,6 @@ function TimetableData({ termId }) {
           <PrimaryButton size="sm" icon="plus" mode="sage" onClick={() => setShowAdd(true)}>Add</PrimaryButton>
         </div>
       </div>
-
-      {/* Import error detail — surfaces the actual per-row messages so a failed
-          import is diagnosable (e.g. "Missing required column(s): code, name"). */}
-      {importErrors.length > 0 && (
-        <div className="px-3 py-2 hair-b" style={{ background: "rgba(196,69,54,0.05)" }}>
-          <div className="text-[11.5px] font-medium text-[var(--ember)] mb-1">
-            {importErrCount > importErrors.length
-              ? `${importErrCount} rows had errors (showing first ${importErrors.length}):`
-              : `${importErrors.length} row${importErrors.length === 1 ? "" : "s"} had errors:`}
-          </div>
-          <ul className="max-h-32 overflow-auto text-[11px] text-[var(--graphite)] leading-relaxed"
-              style={{ fontFamily: "var(--font-mono, monospace)" }}>
-            {importErrors.map((msg, idx) => <li key={idx}>• {msg}</li>)}
-          </ul>
-        </div>
-      )}
 
       {loading ? (
         <div className="p-8 text-center text-[var(--muted)] text-[13px]">Loading…</div>
