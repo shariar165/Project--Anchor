@@ -321,8 +321,17 @@ async def list_offerings(
     q = select(TimetableCourseOffering)
     if term_id:
         q = q.where(TimetableCourseOffering.term_id == term_id)
-    result = await db.execute(q)
-    return list(result.scalars().all())
+    offerings = list((await db.execute(q)).scalars().all())
+    if offerings:
+        # Attach human-readable labels so the admin table shows codes/names, not UUIDs.
+        courses = {c.id: c.code for c in (await db.execute(select(TimetableCourse))).scalars().all()}
+        batches = {b.id: b.name for b in (await db.execute(select(TimetableBatch))).scalars().all()}
+        terms = {t.id: t.name for t in (await db.execute(select(TimetableTerm))).scalars().all()}
+        for o in offerings:
+            o.course_code = courses.get(o.course_id)
+            o.batch_name = batches.get(o.batch_id)
+            o.term_name = terms.get(o.term_id)
+    return offerings
 
 
 async def create_offering(db: AsyncSession, data: OfferingCreate) -> TimetableCourseOffering:
@@ -355,8 +364,16 @@ async def list_eligibility(
         q = q.where(TimetableTeacherEligibility.faculty_id == faculty_id)
     if course_id:
         q = q.where(TimetableTeacherEligibility.course_id == course_id)
-    result = await db.execute(q)
-    return list(result.scalars().all())
+    eligs = list((await db.execute(q)).scalars().all())
+    if eligs:
+        # Attach human-readable labels for the admin table.
+        courses = {c.id: c.code for c in (await db.execute(select(TimetableCourse))).scalars().all()}
+        faculty = {f.id: f for f in (await db.execute(select(TimetableFacultyProfile))).scalars().all()}
+        for e in eligs:
+            e.course_code = courses.get(e.course_id)
+            fp = faculty.get(e.faculty_id)
+            e.faculty_name = (fp.name or fp.email) if fp else None
+    return eligs
 
 
 async def create_eligibility(

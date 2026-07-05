@@ -177,6 +177,10 @@ class OfferingOut(BaseModel):
     term_id: uuid.UUID
     course_id: uuid.UUID
     batch_id: uuid.UUID
+    # Human-readable labels for the admin table (populated by the service layer).
+    course_code: str | None = None
+    batch_name: str | None = None
+    term_name: str | None = None
 
 class EligibilityCreate(BaseModel):
     faculty_id: uuid.UUID
@@ -187,6 +191,9 @@ class EligibilityOut(BaseModel):
     id: uuid.UUID
     faculty_id: uuid.UUID
     course_id: uuid.UUID
+    # Human-readable labels for the admin table (populated by the service layer).
+    course_code: str | None = None
+    faculty_name: str | None = None
 
 
 # ── Schedule config ───────────────────────────────────────────────────────────
