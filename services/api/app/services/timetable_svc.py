@@ -901,6 +901,27 @@ _EXPECTED_HEADER: dict[str, str] = {
 }
 
 
+def _norm_code(s) -> str:
+    """Normalise a course code for forgiving matching: case-, space-, hyphen-insensitive.
+
+    So 'SE 111', 'se-111', and 'SE111' all resolve to the same course.
+    """
+    return "".join(str(s or "").split()).replace("-", "").replace("_", "").lower()
+
+
+def _norm_batch(s) -> str:
+    """Normalise a batch name for forgiving matching.
+
+    Tolerates a leading 'batch' word and any spacing/hyphens, so an offerings
+    file that says '38', 'Batch 38', 'Batch-38', or 'batch38' all resolve to
+    the batch stored as 'Batch 38'.
+    """
+    x = "".join(str(s or "").split()).replace("-", "").replace("_", "").lower()
+    if x.startswith("batch"):
+        x = x[len("batch"):]
+    return x
+
+
 def _sniff_delimiter(text: str) -> str:
     """Detect the CSV delimiter (comma, semicolon, tab, or pipe).
 
@@ -962,11 +983,17 @@ async def import_entities(
     user_id_by_email: dict[str, uuid.UUID] = {}
     faculty_id_by_email: dict[str, uuid.UUID] = {}
     seen_faculty_emails: set[str] = set()
+    course_codes_display: list[str] = []   # original codes, for error messages
+    batch_names_display: list[str] = []     # original names, for error messages
 
     if entity in ("offerings", "eligibility"):
-        course_id_by_code = {c.code.strip().lower(): c.id for c in await list_courses(db, tenant_id)}
+        _courses = await list_courses(db, tenant_id)
+        course_id_by_code = {_norm_code(c.code): c.id for c in _courses}
+        course_codes_display = [c.code for c in _courses]
     if entity == "offerings":
-        batch_id_by_name = {b.name.strip().lower(): b.id for b in await list_batches(db, tenant_id)}
+        _batches = await list_batches(db, tenant_id)
+        batch_id_by_name = {_norm_batch(b.name): b.id for b in _batches}
+        batch_names_display = [b.name for b in _batches]
     if entity in ("faculty", "eligibility"):
         result = await db.execute(select(User))
         user_id_by_email = {u.email.strip().lower(): u.id for u in result.scalars().all() if u.email}
@@ -1041,20 +1068,20 @@ async def import_entities(
             elif entity == "offerings":
                 if not term_id:
                     raise ValueError("no term selected — pick a term before importing offerings")
-                code = str(row.get("course_code") or "").strip().lower()
-                course_id = course_id_by_code.get(code)
+                raw_code = str(row.get("course_code") or "").strip()
+                course_id = course_id_by_code.get(_norm_code(raw_code))
                 if course_id is None:
-                    avail = ", ".join(sorted(course_id_by_code)[:8]) or "(none)"
+                    avail = ", ".join(sorted(course_codes_display)[:8]) or "(none)"
                     raise ValueError(
-                        f"no course with code '{code}' — {len(course_id_by_code)} course(s) "
+                        f"no course with code '{raw_code}' — {len(course_id_by_code)} course(s) "
                         f"visible to this account: {avail}. Import Courses first (under the same login)."
                     )
-                bname = str(row.get("batch_name") or "").strip().lower()
-                batch_id = batch_id_by_name.get(bname)
+                raw_batch = str(row.get("batch_name") or "").strip()
+                batch_id = batch_id_by_name.get(_norm_batch(raw_batch))
                 if batch_id is None:
-                    avail = ", ".join(sorted(batch_id_by_name)[:8]) or "(none)"
+                    avail = ", ".join(sorted(batch_names_display)[:8]) or "(none)"
                     raise ValueError(
-                        f"no batch named '{bname}' — {len(batch_id_by_name)} batch(es) "
+                        f"no batch named '{raw_batch}' — {len(batch_id_by_name)} batch(es) "
                         f"visible to this account: {avail}. Import Batches first (under the same login)."
                     )
                 await create_offering(db, OfferingCreate(
@@ -1071,12 +1098,12 @@ async def import_entities(
                         f"no faculty found with email '{email}' — {len(faculty_id_by_email)} "
                         f"faculty visible to this account: {avail}. Import Faculty first (under the same login)."
                     )
-                code = str(row.get("course_code") or "").strip().lower()
-                course_id = course_id_by_code.get(code)
+                raw_code = str(row.get("course_code") or "").strip()
+                course_id = course_id_by_code.get(_norm_code(raw_code))
                 if course_id is None:
-                    avail = ", ".join(sorted(course_id_by_code)[:8]) or "(none)"
+                    avail = ", ".join(sorted(course_codes_display)[:8]) or "(none)"
                     raise ValueError(
-                        f"no course with code '{code}' — {len(course_id_by_code)} course(s) "
+                        f"no course with code '{raw_code}' — {len(course_id_by_code)} course(s) "
                         f"visible to this account: {avail}. Import Courses first (under the same login)."
                     )
                 await create_eligibility(db, EligibilityCreate(
