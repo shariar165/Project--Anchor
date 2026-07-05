@@ -647,7 +647,8 @@ async def publish(
 
 @router.post("/import", response_model=ImportResult)
 async def import_data(
-    entity: str = Query(..., description="courses | rooms"),
+    entity: str = Query(..., description="courses | rooms | batches | faculty | offerings | eligibility"),
+    term_id: uuid.UUID | None = Query(default=None, description="Required for offerings import"),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_role("admin", "moderator")),
@@ -655,6 +656,6 @@ async def import_data(
     content = await file.read()
     content_type = file.content_type or ""
     result = await timetable_svc.import_entities(
-        db, entity, content, content_type, tenant_id=token.tenant_id
+        db, entity, content, content_type, tenant_id=token.tenant_id, term_id=term_id
     )
     return ImportResult(entity=entity, **result)
