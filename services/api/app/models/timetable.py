@@ -68,8 +68,12 @@ class TimetableFacultyProfile(Base, TimestampMixin):
     __tablename__ = "tt_faculty_profiles"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False, index=True)
+    # Faculty are standalone scheduling entities: user_id links a login account
+    # when one exists, but is optional so a roster can be bulk-imported by email.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True, index=True)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("tenants.id"), nullable=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     rank: Mapped[str] = mapped_column(String(30), nullable=False)
     min_credits: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_credits: Mapped[int | None] = mapped_column(Integer, nullable=True)
