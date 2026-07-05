@@ -571,14 +571,13 @@ async def explain_attachment(attach: FilingAttachment, lang: str) -> dict:
     )
 
     try:
-        from app.ai.models import ChatRequest
-        from app.ai import pipeline
-        response = await asyncio.wait_for(
-            pipeline.run(ChatRequest(query=prompt, mode="campus", lang="EN" if lang == "en" else "BN")),
+        from app.services.rag_proxy import rag_chat
+        answer = await asyncio.wait_for(
+            rag_chat(prompt, mode="campus", lang="EN" if lang == "en" else "BN"),
             timeout=20.0,
         )
         return {
-            "explanation": response.answer.strip(),
+            "explanation": answer,
             "document_type_detected": doc_type_hint,
             "language": lang,
         }
