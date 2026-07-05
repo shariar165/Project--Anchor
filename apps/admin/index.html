@@ -10690,7 +10690,32 @@ function DataEmptyState({ sub }) {
   );
 }
 
+const TT_PAGE_SIZE = 25;
+
+// Compact pager for the entity tables — keeps the DOM to one page of rows so a
+// large import (hundreds/thousands of rows) never renders all at once.
+function TablePager({ page, pageCount, total, start, shown, onPage }) {
+  if (total <= TT_PAGE_SIZE) return null;
+  return (
+    <div className="flex items-center justify-between px-3 py-2 hair-t text-[11.5px] text-[var(--muted)]">
+      <span>Showing {total === 0 ? 0 : start + 1}–{start + shown} of {total}</span>
+      <div className="flex items-center gap-1.5">
+        <GhostButton size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>Prev</GhostButton>
+        <span className="px-1 font-mono text-[var(--graphite)]">{page} / {pageCount}</span>
+        <GhostButton size="sm" disabled={page >= pageCount} onClick={() => onPage(page + 1)}>Next</GhostButton>
+      </div>
+    </div>
+  );
+}
+
 function DataEntityTable({ sub, items, onRefresh }) {
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(items.length / TT_PAGE_SIZE));
+  useEffect(() => { setPage(1); }, [sub]);                          // reset on tab switch
+  useEffect(() => { if (page > pageCount) setPage(pageCount); }, [page, pageCount]); // clamp after deletes
+  const start = (page - 1) * TT_PAGE_SIZE;
+  const paged = items.slice(start, start + TT_PAGE_SIZE);
+
   async function del(url) {
     if (!confirm("Delete this item?")) return;
     try { await AnchorAPI.apiDelete(url); onRefresh(); }
@@ -10703,7 +10728,12 @@ function DataEntityTable({ sub, items, onRefresh }) {
     </button>
   );
 
-  if (sub === "courses") return (
+  const pager = (
+    <TablePager page={page} pageCount={pageCount} total={items.length}
+      start={start} shown={paged.length} onPage={setPage} />
+  );
+
+  if (sub === "courses") return (<>
     <DataTable columns={[
       { key:"code",   label:"Code",        render:r => <MonoChip>{r.code}</MonoChip> },
       { key:"name",   label:"Course name" },
@@ -10711,31 +10741,34 @@ function DataEntityTable({ sub, items, onRefresh }) {
       { key:"is_lab", label:"Type",        render:r => <Tag tone={r.is_lab?"gold":"sage"}>{r.is_lab?"Lab":"Theory"}</Tag> },
       { key:"weekly_classes", label:"Classes/wk", align:"right" },
       { key:"",       label:"",            render:r => delBtn(`${TT_BASE}/courses/${r.id}`) },
-    ]} rows={items} />
-  );
+    ]} rows={paged} />
+    {pager}
+  </>);
 
-  if (sub === "rooms") return (
+  if (sub === "rooms") return (<>
     <DataTable columns={[
       { key:"name",      label:"Room",     render:r => <MonoChip>{r.name}</MonoChip> },
       { key:"room_type", label:"Type",     render:r => <Tag tone={r.room_type==="LAB"?"gold":r.room_type==="ONLINE"?"mist":"sage"}>{r.room_type}</Tag> },
       { key:"capacity",  label:"Capacity", align:"right" },
       { key:"",          label:"",         render:r => delBtn(`${TT_BASE}/rooms/${r.id}`) },
-    ]} rows={items} />
-  );
+    ]} rows={paged} />
+    {pager}
+  </>);
 
-  if (sub === "faculty") return (
+  if (sub === "faculty") return (<>
     <DataTable columns={[
       { key:"id",         label:"ID",        render:r => <MonoChip>{String(r.id).slice(0,8)}</MonoChip> },
       { key:"rank",       label:"Rank" },
       { key:"max_per_day",label:"Max/day",   align:"right" },
       { key:"active",     label:"Status",    render:r => <Tag tone={r.active?"sage":"mist"}>{r.active?"Active":"Off"}</Tag> },
       { key:"",           label:"",          render:r => delBtn(`${TT_BASE}/faculty/${r.id}`) },
-    ]} rows={items} />
-  );
+    ]} rows={paged} />
+    {pager}
+  </>);
 
-  if (sub === "batches") return (
+  if (sub === "batches") return (<>
     <div className="p-4 space-y-3">
-      {items.map(b => (
+      {paged.map(b => (
         <div key={b.id} className="hair border rounded-sm p-3">
           <div className="flex items-center justify-between mb-2">
             <div>
@@ -10761,24 +10794,27 @@ function DataEntityTable({ sub, items, onRefresh }) {
         </div>
       ))}
     </div>
-  );
+    {pager}
+  </>);
 
-  if (sub === "offerings") return (
+  if (sub === "offerings") return (<>
     <DataTable columns={[
       { key:"course_id", label:"Course", render:r => <MonoChip>{String(r.course_id).slice(0,8)}</MonoChip> },
       { key:"batch_id",  label:"Batch",  render:r => <MonoChip>{String(r.batch_id).slice(0,8)}</MonoChip> },
       { key:"term_id",   label:"Term",   render:r => <MonoChip>{String(r.term_id).slice(0,8)}</MonoChip> },
       { key:"",          label:"",       render:r => delBtn(`${TT_BASE}/offerings/${r.id}`) },
-    ]} rows={items} />
-  );
+    ]} rows={paged} />
+    {pager}
+  </>);
 
-  if (sub === "eligibility") return (
+  if (sub === "eligibility") return (<>
     <DataTable columns={[
       { key:"faculty_id", label:"Faculty", render:r => <MonoChip>{String(r.faculty_id).slice(0,8)}</MonoChip> },
       { key:"course_id",  label:"Course",  render:r => <MonoChip>{String(r.course_id).slice(0,8)}</MonoChip> },
       { key:"",           label:"",        render:r => delBtn(`${TT_BASE}/eligibility/${r.id}`) },
-    ]} rows={items} />
-  );
+    ]} rows={paged} />
+    {pager}
+  </>);
 
   return null;
 }
