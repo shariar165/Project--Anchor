@@ -857,19 +857,44 @@ async def publish_version(
 
 # ── CSV / XLSX import ─────────────────────────────────────────────────────────
 
+def _int_or_none(val) -> int | None:
+    val = str(val or "").strip()
+    return int(val) if val else None
+
+
 async def import_entities(
     db: AsyncSession,
     entity: str,
     file_bytes: bytes,
     content_type: str,
     tenant_id: uuid.UUID | None = None,
+    term_id: uuid.UUID | None = None,
 ) -> dict:
     rows = _parse_file(file_bytes, content_type)
     created = 0
     errors: list[str] = []
 
+    # Pre-load reference lookups for relational entities (human-readable keys →
+    # UUIDs) so admins never have to paste IDs into a spreadsheet.
+    course_by_code: dict[str, TimetableCourse] = {}
+    batch_by_name: dict[str, TimetableBatch] = {}
+    users_by_email: dict[str, User] = {}
+    faculty_by_user: dict[uuid.UUID, TimetableFacultyProfile] = {}
+
+    if entity in ("offerings", "eligibility"):
+        course_by_code = {c.code.strip().lower(): c for c in await list_courses(db, tenant_id)}
+    if entity == "offerings":
+        batch_by_name = {b.name.strip().lower(): b for b in await list_batches(db, tenant_id)}
+    if entity in ("faculty", "eligibility"):
+        result = await db.execute(select(User))
+        users_by_email = {u.email.strip().lower(): u for u in result.scalars().all() if u.email}
+    if entity == "eligibility":
+        faculty_by_user = {fp.user_id: fp for fp in await list_faculty(db, tenant_id)}
+
     for i, row in enumerate(rows, start=2):  # row 1 = header
         try:
+            # Normalise headers to lowercase so CSV/XLSX behave the same regardless of casing.
+            row = {(k.strip().lower() if k else ""): v for k, v in row.items()}
             if entity == "courses":
                 await create_course(db, CourseCreate(
                     code=row["code"],
@@ -885,6 +910,55 @@ async def import_entities(
                     room_type=row.get("room_type", "THEORY").upper(),
                     capacity=int(row.get("capacity", 30)),
                     tenant_id=tenant_id,
+                ))
+            elif entity == "batches":
+                await create_batch(db, BatchCreate(
+                    name=row["name"],
+                    program=(row.get("program") or "SWE").strip() or "SWE",
+                    tenant_id=tenant_id,
+                ))
+            elif entity == "faculty":
+                email = str(row.get("email") or "").strip().lower()
+                user = users_by_email.get(email)
+                if not user:
+                    raise ValueError(f"no user found with email '{email}'")
+                await create_faculty_profile(db, FacultyProfileCreate(
+                    user_id=user.id,
+                    rank=str(row.get("rank") or "").strip().upper(),
+                    max_per_day=int(row.get("max_per_day") or 4),
+                    min_credits=_int_or_none(row.get("min_credits")),
+                    max_credits=_int_or_none(row.get("max_credits")),
+                    pref_slot=_int_or_none(row.get("pref_slot")),
+                    tenant_id=tenant_id,
+                ))
+            elif entity == "offerings":
+                if not term_id:
+                    raise ValueError("no term selected — pick a term before importing offerings")
+                code = str(row.get("course_code") or "").strip().lower()
+                course = course_by_code.get(code)
+                if not course:
+                    raise ValueError(f"no course with code '{code}'")
+                bname = str(row.get("batch_name") or "").strip().lower()
+                batch = batch_by_name.get(bname)
+                if not batch:
+                    raise ValueError(f"no batch named '{bname}'")
+                await create_offering(db, OfferingCreate(
+                    term_id=term_id, course_id=course.id, batch_id=batch.id,
+                ))
+            elif entity == "eligibility":
+                email = str(row.get("faculty_email") or "").strip().lower()
+                user = users_by_email.get(email)
+                if not user:
+                    raise ValueError(f"no user found with email '{email}'")
+                fp = faculty_by_user.get(user.id)
+                if not fp:
+                    raise ValueError(f"'{email}' is not a registered faculty member")
+                code = str(row.get("course_code") or "").strip().lower()
+                course = course_by_code.get(code)
+                if not course:
+                    raise ValueError(f"no course with code '{code}'")
+                await create_eligibility(db, EligibilityCreate(
+                    faculty_id=fp.id, course_id=course.id,
                 ))
             else:
                 errors.append(f"Row {i}: unsupported entity '{entity}'")

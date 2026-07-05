@@ -10390,6 +10390,15 @@ const EMPTY_HINTS = {
   offerings:   { icon:"link",          msg:"Pair each course with the batches taking it this term." },
   eligibility: { icon:"check-square",  msg:"Specify which teachers can teach which courses." },
 };
+// Expected CSV/XLSX header columns per entity (shown as a tooltip on the Import button).
+const IMPORT_COLS = {
+  courses:     "code, name, credits, weekly_classes, is_lab",
+  rooms:       "name, room_type, capacity",
+  batches:     "name, program",
+  faculty:     "email, rank, max_per_day",
+  offerings:   "course_code, batch_name",
+  eligibility: "faculty_email, course_code",
+};
 
 // ── SectionLabel helper ───────────────────────────────────────────────────────
 function SectionLabel({ children, right }) {
@@ -10559,12 +10568,14 @@ function TimetableData({ termId }) {
   async function handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
+    if (sub === "offerings" && !termId) { setImportMsg("Select a term above first"); e.target.value = ""; return; }
     setImportMsg("Importing…");
     const fd = new FormData();
     fd.append("file", file);
+    const termQ = sub === "offerings" && termId ? `&term_id=${termId}` : "";
     try {
       const res = await fetch(
-        `${window.ANCHOR_API_URL || 'http://localhost:8000'}${TT_BASE}/import?entity=${sub}`,
+        `${window.ANCHOR_API_URL || 'http://localhost:8000'}${TT_BASE}/import?entity=${sub}${termQ}`,
         { method:"POST", headers:{ Authorization:`Bearer ${localStorage.getItem("anchor_admin_access_token")}` }, body:fd }
       );
       const data = await res.json().catch(() => ({}));
@@ -10591,12 +10602,11 @@ function TimetableData({ termId }) {
         <div className="flex-1" />
         <div className="flex items-center gap-2 mb-1.5">
           {importMsg && <span className="text-[11px] text-[var(--sage)]">{importMsg}</span>}
-          {(sub === "courses" || sub === "rooms") && (
-            <>
-              <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleImport} />
-              <GhostButton size="sm" icon="upload" onClick={() => fileRef.current.click()}>Import</GhostButton>
-            </>
-          )}
+          <>
+            <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleImport} />
+            <GhostButton size="sm" icon="upload" onClick={() => fileRef.current.click()}
+              title={`CSV columns: ${IMPORT_COLS[sub] || ""}`}>Import</GhostButton>
+          </>
           <PrimaryButton size="sm" icon="plus" mode="sage" onClick={() => setShowAdd(true)}>Add</PrimaryButton>
         </div>
       </div>
