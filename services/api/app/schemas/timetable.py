@@ -365,4 +365,6 @@ class PublishOut(BaseModel):
 class ImportResult(BaseModel):
     entity: str
     created: int
+    total: int = 0           # rows parsed (excluding header + blank rows)
+    error_count: int = 0     # true number of errors (errors[] below may be capped)
     errors: list[str]

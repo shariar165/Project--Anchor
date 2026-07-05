@@ -10400,6 +10400,18 @@ const IMPORT_COLS = {
   eligibility: "faculty_email, course_code",
 };
 
+// Example rows for the downloadable per-entity CSV template (header comes from
+// IMPORT_COLS). Keeps admins from guessing column names — the #1 import failure.
+const TEMPLATE_ROWS = {
+  courses:     [["CSE101", "Introduction to Programming", "3", "2", "false"],
+                ["CSE102L", "Programming Lab", "1", "1", "true"]],
+  rooms:       [["KT-101", "THEORY", "40"], ["AB-Lab-1", "LAB", "30"]],
+  batches:     [["61-A", "SWE"], ["62-B", "CSE"]],
+  faculty:     [["teacher@diu.edu.bd", "PROFESSOR", "4"]],
+  offerings:   [["CSE101", "61-A"]],
+  eligibility: [["teacher@diu.edu.bd", "CSE101"]],
+};
+
 // ── SectionLabel helper ───────────────────────────────────────────────────────
 function SectionLabel({ children, right }) {
   return (
@@ -10549,6 +10561,8 @@ function TimetableData({ termId }) {
   const [loading, setLoading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [importMsg, setImportMsg] = useState("");
+  const [importErrors, setImportErrors] = useState([]);
+  const [importErrCount, setImportErrCount] = useState(0);
   const fileRef = useRef();
 
   const subTabs = ["courses", "rooms", "faculty", "batches", "offerings", "eligibility"];
@@ -10563,11 +10577,24 @@ function TimetableData({ termId }) {
     finally { setLoading(false); }
   }
 
-  useEffect(() => { load(); setShowAdd(false); setImportMsg(""); }, [sub]);
+  useEffect(() => { load(); setShowAdd(false); setImportMsg(""); setImportErrors([]); setImportErrCount(0); }, [sub]);
+
+  function downloadTemplate() {
+    const header = (IMPORT_COLS[sub] || "").split(",").map(s => s.trim()).filter(Boolean);
+    const esc = v => /[",\n]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+    const lines = [header, ...(TEMPLATE_ROWS[sub] || [])].map(r => r.map(esc).join(","));
+    const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${sub}_template.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
 
   async function handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
+    setImportErrors([]); setImportErrCount(0);
     if (sub === "offerings" && !termId) { setImportMsg("Select a term above first"); e.target.value = ""; return; }
     setImportMsg("Importing…");
     const fd = new FormData();
@@ -10583,7 +10610,11 @@ function TimetableData({ termId }) {
         setImportMsg(typeof data.detail === "string" ? data.detail : `Import failed (${res.status})`);
         return;
       }
-      setImportMsg(`Imported ${data.created || 0} row${data.created === 1 ? "" : "s"}${data.errors?.length ? ` · ${data.errors.length} errors` : ""}`);
+      const total = data.total ?? data.created ?? 0;
+      const errCount = data.error_count ?? (data.errors?.length || 0);
+      setImportMsg(`Imported ${data.created || 0} of ${total} row${total === 1 ? "" : "s"}${errCount ? ` · ${errCount} error${errCount === 1 ? "" : "s"}` : ""}`);
+      setImportErrors(Array.isArray(data.errors) ? data.errors : []);
+      setImportErrCount(errCount);
       load();
     } catch { setImportMsg("Import failed — check the file and try again."); }
     finally { if (fileRef.current) fileRef.current.value = ""; }
@@ -10604,12 +10635,30 @@ function TimetableData({ termId }) {
           {importMsg && <span className="text-[11px] text-[var(--sage)]">{importMsg}</span>}
           <>
             <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleImport} />
+            <GhostButton size="sm" icon="download" onClick={downloadTemplate}
+              title={`Download a ${sub} CSV template with the correct columns`}>Template</GhostButton>
             <GhostButton size="sm" icon="upload" onClick={() => fileRef.current.click()}
               title={`CSV columns: ${IMPORT_COLS[sub] || ""}`}>Import</GhostButton>
           </>
           <PrimaryButton size="sm" icon="plus" mode="sage" onClick={() => setShowAdd(true)}>Add</PrimaryButton>
         </div>
       </div>
+
+      {/* Import error detail — surfaces the actual per-row messages so a failed
+          import is diagnosable (e.g. "Missing required column(s): code, name"). */}
+      {importErrors.length > 0 && (
+        <div className="px-3 py-2 hair-b" style={{ background: "rgba(196,69,54,0.05)" }}>
+          <div className="text-[11.5px] font-medium text-[var(--ember)] mb-1">
+            {importErrCount > importErrors.length
+              ? `${importErrCount} rows had errors (showing first ${importErrors.length}):`
+              : `${importErrors.length} row${importErrors.length === 1 ? "" : "s"} had errors:`}
+          </div>
+          <ul className="max-h-32 overflow-auto text-[11px] text-[var(--graphite)] leading-relaxed"
+              style={{ fontFamily: "var(--font-mono, monospace)" }}>
+            {importErrors.map((msg, idx) => <li key={idx}>• {msg}</li>)}
+          </ul>
+        </div>
+      )}
 
       {loading ? (
         <div className="p-8 text-center text-[var(--muted)] text-[13px]">Loading…</div>
