@@ -862,6 +862,45 @@ def _int_or_none(val) -> int | None:
     return int(val) if val else None
 
 
+# Minimum columns each entity import needs. Missing any of these is reported once
+# (a clear header error) instead of once per data row.
+_REQUIRED_COLS: dict[str, tuple[str, ...]] = {
+    "courses": ("code", "name"),
+    "rooms": ("name",),
+    "batches": ("name",),
+    "faculty": ("email",),
+    "offerings": ("course_code", "batch_name"),
+    "eligibility": ("faculty_email", "course_code"),
+}
+
+# Full expected header, shown in the "missing column" message to guide the admin.
+_EXPECTED_HEADER: dict[str, str] = {
+    "courses": "code, name, credits, weekly_classes, is_lab",
+    "rooms": "name, room_type, capacity",
+    "batches": "name, program",
+    "faculty": "email, rank, max_per_day",
+    "offerings": "course_code, batch_name",
+    "eligibility": "faculty_email, course_code",
+}
+
+
+def _sniff_delimiter(text: str) -> str:
+    """Detect the CSV delimiter (comma, semicolon, tab, or pipe).
+
+    Excel in some locales exports CSV with ';'; without this every row lands in
+    a single column and the whole import fails. Falls back to the most common
+    candidate on the header line, then to comma.
+    """
+    sample = text[:4096]
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except Exception:
+        header = sample.splitlines()[0] if sample.splitlines() else ""
+        counts = {d: header.count(d) for d in (",", ";", "\t", "|")}
+        best = max(counts, key=counts.get)
+        return best if counts[best] > 0 else ","
+
+
 async def import_entities(
     db: AsyncSession,
     entity: str,
@@ -870,60 +909,94 @@ async def import_entities(
     tenant_id: uuid.UUID | None = None,
     term_id: uuid.UUID | None = None,
 ) -> dict:
-    rows = _parse_file(file_bytes, content_type)
+    fieldnames, rows = _parse_file(file_bytes, content_type)
     created = 0
+    error_count = 0
     errors: list[str] = []
+    MAX_ERRORS = 50  # cap the returned list so a huge bad file stays lightweight
+
+    required = _REQUIRED_COLS.get(entity)
+    if required is None:
+        return {"created": 0, "total": 0, "error_count": 1,
+                "errors": [f"unsupported entity '{entity}'"]}
+
+    # Header validation up front: collapse "every row fails with a cryptic
+    # KeyError" into one actionable message naming the missing/expected columns.
+    field_set = {f for f in fieldnames if f}
+    missing = [c for c in required if c not in field_set]
+    if missing:
+        found = ", ".join(f for f in fieldnames if f) or "(none)"
+        return {
+            "created": 0,
+            "total": len(rows),
+            "error_count": 1,
+            "errors": [
+                f"Missing required column(s): {', '.join(missing)}. "
+                f"Found: {found}. Expected header: {_EXPECTED_HEADER.get(entity, '')}"
+            ],
+        }
 
     # Pre-load reference lookups for relational entities (human-readable keys →
-    # UUIDs) so admins never have to paste IDs into a spreadsheet.
-    course_by_code: dict[str, TimetableCourse] = {}
-    batch_by_name: dict[str, TimetableBatch] = {}
-    users_by_email: dict[str, User] = {}
-    faculty_by_user: dict[uuid.UUID, TimetableFacultyProfile] = {}
+    # UUIDs) so admins never have to paste IDs into a spreadsheet. We store the
+    # scalar IDs (not ORM objects) because the per-row rollback below expires all
+    # instances in the session — holding IDs keeps the lookups valid regardless.
+    course_id_by_code: dict[str, uuid.UUID] = {}
+    batch_id_by_name: dict[str, uuid.UUID] = {}
+    user_id_by_email: dict[str, uuid.UUID] = {}
+    faculty_id_by_user: dict[uuid.UUID, uuid.UUID] = {}
 
     if entity in ("offerings", "eligibility"):
-        course_by_code = {c.code.strip().lower(): c for c in await list_courses(db, tenant_id)}
+        course_id_by_code = {c.code.strip().lower(): c.id for c in await list_courses(db, tenant_id)}
     if entity == "offerings":
-        batch_by_name = {b.name.strip().lower(): b for b in await list_batches(db, tenant_id)}
+        batch_id_by_name = {b.name.strip().lower(): b.id for b in await list_batches(db, tenant_id)}
     if entity in ("faculty", "eligibility"):
         result = await db.execute(select(User))
-        users_by_email = {u.email.strip().lower(): u for u in result.scalars().all() if u.email}
+        user_id_by_email = {u.email.strip().lower(): u.id for u in result.scalars().all() if u.email}
     if entity == "eligibility":
-        faculty_by_user = {fp.user_id: fp for fp in await list_faculty(db, tenant_id)}
+        faculty_id_by_user = {fp.user_id: fp.id for fp in await list_faculty(db, tenant_id)}
 
     for i, row in enumerate(rows, start=2):  # row 1 = header
         try:
-            # Normalise headers to lowercase so CSV/XLSX behave the same regardless of casing.
-            row = {(k.strip().lower() if k else ""): v for k, v in row.items()}
+            # Keys are already stripped + lowercased by _parse_file.
             if entity == "courses":
+                code = (row.get("code") or "").strip()
+                name = (row.get("name") or "").strip()
+                if not code or not name:
+                    raise ValueError("missing value for 'code' or 'name'")
                 await create_course(db, CourseCreate(
-                    code=row["code"],
-                    name=row["name"],
-                    credits=int(row.get("credits", 3)),
-                    is_lab=str(row.get("is_lab", "false")).lower() == "true",
-                    weekly_classes=int(row.get("weekly_classes", 2)),
+                    code=code,
+                    name=name,
+                    credits=int(row.get("credits") or 3),
+                    is_lab=str(row.get("is_lab") or "false").strip().lower() in ("true", "1", "yes", "y"),
+                    weekly_classes=int(row.get("weekly_classes") or 2),
                     tenant_id=tenant_id,
                 ))
             elif entity == "rooms":
+                name = (row.get("name") or "").strip()
+                if not name:
+                    raise ValueError("missing value for 'name'")
                 await create_room(db, RoomCreate(
-                    name=row["name"],
-                    room_type=row.get("room_type", "THEORY").upper(),
-                    capacity=int(row.get("capacity", 30)),
+                    name=name,
+                    room_type=((row.get("room_type") or "THEORY").strip().upper() or "THEORY"),
+                    capacity=int(row.get("capacity") or 30),
                     tenant_id=tenant_id,
                 ))
             elif entity == "batches":
+                name = (row.get("name") or "").strip()
+                if not name:
+                    raise ValueError("missing value for 'name'")
                 await create_batch(db, BatchCreate(
-                    name=row["name"],
+                    name=name,
                     program=(row.get("program") or "SWE").strip() or "SWE",
                     tenant_id=tenant_id,
                 ))
             elif entity == "faculty":
                 email = str(row.get("email") or "").strip().lower()
-                user = users_by_email.get(email)
-                if not user:
+                user_id = user_id_by_email.get(email)
+                if user_id is None:
                     raise ValueError(f"no user found with email '{email}'")
                 await create_faculty_profile(db, FacultyProfileCreate(
-                    user_id=user.id,
+                    user_id=user_id,
                     rank=str(row.get("rank") or "").strip().upper(),
                     max_per_day=int(row.get("max_per_day") or 4),
                     min_credits=_int_or_none(row.get("min_credits")),
@@ -935,58 +1008,84 @@ async def import_entities(
                 if not term_id:
                     raise ValueError("no term selected — pick a term before importing offerings")
                 code = str(row.get("course_code") or "").strip().lower()
-                course = course_by_code.get(code)
-                if not course:
+                course_id = course_id_by_code.get(code)
+                if course_id is None:
                     raise ValueError(f"no course with code '{code}'")
                 bname = str(row.get("batch_name") or "").strip().lower()
-                batch = batch_by_name.get(bname)
-                if not batch:
+                batch_id = batch_id_by_name.get(bname)
+                if batch_id is None:
                     raise ValueError(f"no batch named '{bname}'")
                 await create_offering(db, OfferingCreate(
-                    term_id=term_id, course_id=course.id, batch_id=batch.id,
+                    term_id=term_id, course_id=course_id, batch_id=batch_id,
                 ))
             elif entity == "eligibility":
                 email = str(row.get("faculty_email") or "").strip().lower()
-                user = users_by_email.get(email)
-                if not user:
+                user_id = user_id_by_email.get(email)
+                if user_id is None:
                     raise ValueError(f"no user found with email '{email}'")
-                fp = faculty_by_user.get(user.id)
-                if not fp:
+                fp_id = faculty_id_by_user.get(user_id)
+                if fp_id is None:
                     raise ValueError(f"'{email}' is not a registered faculty member")
                 code = str(row.get("course_code") or "").strip().lower()
-                course = course_by_code.get(code)
-                if not course:
+                course_id = course_id_by_code.get(code)
+                if course_id is None:
                     raise ValueError(f"no course with code '{code}'")
                 await create_eligibility(db, EligibilityCreate(
-                    faculty_id=fp.id, course_id=course.id,
+                    faculty_id=fp_id, course_id=course_id,
                 ))
-            else:
-                errors.append(f"Row {i}: unsupported entity '{entity}'")
-                continue
             created += 1
         except Exception as exc:
-            errors.append(f"Row {i}: {exc}")
+            try:
+                await db.rollback()  # clear any failed txn so one bad row can't cascade
+            except Exception:
+                pass
+            error_count += 1
+            if len(errors) < MAX_ERRORS:
+                errors.append(f"Row {i}: {exc}")
 
-    return {"created": created, "errors": errors}
+    return {"created": created, "total": len(rows), "error_count": error_count, "errors": errors}
 
 
-def _parse_file(file_bytes: bytes, content_type: str) -> list[dict]:
+def _parse_file(file_bytes: bytes, content_type: str) -> tuple[list[str], list[dict]]:
+    """Parse a CSV/XLSX upload into ``(fieldnames, rows)``.
+
+    Headers are stripped + lowercased so CSV and XLSX behave identically. Fully
+    blank rows (common trailing rows in exported sheets) are dropped. CSV
+    delimiter is auto-detected so files saved by Excel in non-US locales (which
+    use ';') still import.
+    """
     if "spreadsheet" in content_type or "xlsx" in content_type or "excel" in content_type:
         try:
             from openpyxl import load_workbook
             wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
             ws = wb.active
-            rows = list(ws.iter_rows(values_only=True))
-            if not rows:
-                return []
-            headers = [str(h).strip().lower() if h else "" for h in rows[0]]
-            return [
-                {headers[j]: (str(v).strip() if v is not None else "") for j, v in enumerate(row)}
-                for row in rows[1:]
-            ]
+            raw = list(ws.iter_rows(values_only=True))
+            if not raw:
+                return [], []
+            headers = [str(h).strip().lower() if h is not None else "" for h in raw[0]]
+            rows: list[dict] = []
+            for r in raw[1:]:
+                values = [(str(v).strip() if v is not None else "") for v in r]
+                if not any(values):
+                    continue  # skip fully-blank rows
+                rows.append({
+                    headers[j]: (values[j] if j < len(values) else "")
+                    for j in range(len(headers))
+                })
+            return headers, rows
         except Exception as exc:
             raise ValueError(f"Failed to parse XLSX: {exc}")
     else:
         text = file_bytes.decode("utf-8-sig", errors="replace")
-        reader = csv.DictReader(io.StringIO(text))
-        return [dict(row) for row in reader]
+        reader = csv.DictReader(io.StringIO(text), delimiter=_sniff_delimiter(text))
+        headers = [(h.strip().lower() if h else "") for h in (reader.fieldnames or [])]
+        rows = []
+        for raw_row in reader:
+            row = {
+                (k.strip().lower() if k else ""): (v.strip() if isinstance(v, str) else (v or ""))
+                for k, v in raw_row.items()
+            }
+            if not any(str(v).strip() for v in row.values()):
+                continue  # skip fully-blank rows
+            rows.append(row)
+        return headers, rows

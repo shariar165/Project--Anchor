@@ -135,3 +135,85 @@ async def test_import_headers_case_insensitive(client, admin_headers):
     )
     assert r.status_code == 200, r.json()
     assert r.json()["created"] == 1, r.json()
+
+
+@pytest.mark.asyncio
+async def test_import_semicolon_delimited_csv(client, admin_headers):
+    # Excel in some locales exports ';'-separated CSV — must still import.
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=courses", headers=admin_headers,
+        files=_csv("code;name;credits;weekly_classes;is_lab\nSE301;Networks;3;2;false\nSE302;OS;3;2;false\n"),
+    )
+    assert r.status_code == 200, r.json()
+    assert r.json()["created"] == 2 and r.json()["errors"] == [], r.json()
+
+
+@pytest.mark.asyncio
+async def test_import_missing_columns_reported_once(client, admin_headers):
+    # Wrong headers on a standalone entity → one clear message, not one per row.
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=courses", headers=admin_headers,
+        files=_csv("courseid,title\nSE1,Intro\nSE2,Data\nSE3,Algo\n"),
+    )
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["created"] == 0
+    assert len(body["errors"]) == 1
+    assert "Missing required column" in body["errors"][0]
+    assert "code" in body["errors"][0] and "name" in body["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_import_missing_columns_dependency_entity(client, admin_headers):
+    # Same single-message behaviour for a dependency entity (faculty needs 'email').
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=faculty", headers=admin_headers,
+        files=_csv("name,rank\nSomeone,LECTURER\n"),
+    )
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["created"] == 0 and len(body["errors"]) == 1
+    assert "Missing required column" in body["errors"][0] and "email" in body["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_import_skips_blank_rows(client, admin_headers):
+    # A trailing all-empty row must not be counted as an error.
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=courses", headers=admin_headers,
+        files=_csv("code,name,credits,weekly_classes,is_lab\nSE400,Intro,3,2,false\n,,,,\n"),
+    )
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["created"] == 1 and body["errors"] == [] and body["total"] == 1, body
+
+
+@pytest.mark.asyncio
+async def test_import_bad_row_does_not_cascade(client, admin_headers):
+    # A bad row in the middle must not abort the valid rows around it.
+    csv = (
+        "code,name,credits,weekly_classes,is_lab\n"
+        "SE501,Intro,3,2,false\n"
+        "SE502,,3,2,false\n"        # missing name → row error
+        "SE503,Advanced,3,2,false\n"
+    )
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=courses", headers=admin_headers, files=_csv(csv),
+    )
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["created"] == 2, body
+    assert body["error_count"] == 1 and len(body["errors"]) == 1, body
+    codes = [c["code"] for c in (await client.get("/v1/admin/timetable/courses", headers=admin_headers)).json()]
+    assert "SE501" in codes and "SE503" in codes
+
+
+@pytest.mark.asyncio
+async def test_import_response_has_total_and_error_count(client, admin_headers):
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=rooms", headers=admin_headers,
+        files=_csv("name,room_type,capacity\nKT-601,THEORY,40\nKT-602,LAB,30\n"),
+    )
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["created"] == 2 and body["total"] == 2 and body["error_count"] == 0, body
