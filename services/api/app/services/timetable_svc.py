@@ -1044,11 +1044,19 @@ async def import_entities(
                 code = str(row.get("course_code") or "").strip().lower()
                 course_id = course_id_by_code.get(code)
                 if course_id is None:
-                    raise ValueError(f"no course with code '{code}'")
+                    avail = ", ".join(sorted(course_id_by_code)[:8]) or "(none)"
+                    raise ValueError(
+                        f"no course with code '{code}' — {len(course_id_by_code)} course(s) "
+                        f"visible to this account: {avail}. Import Courses first (under the same login)."
+                    )
                 bname = str(row.get("batch_name") or "").strip().lower()
                 batch_id = batch_id_by_name.get(bname)
                 if batch_id is None:
-                    raise ValueError(f"no batch named '{bname}'")
+                    avail = ", ".join(sorted(batch_id_by_name)[:8]) or "(none)"
+                    raise ValueError(
+                        f"no batch named '{bname}' — {len(batch_id_by_name)} batch(es) "
+                        f"visible to this account: {avail}. Import Batches first (under the same login)."
+                    )
                 await create_offering(db, OfferingCreate(
                     term_id=term_id, course_id=course_id, batch_id=batch_id,
                 ))
@@ -1058,11 +1066,19 @@ async def import_entities(
                     raise ValueError("missing value for 'faculty_email'")
                 fp_id = faculty_id_by_email.get(email)
                 if fp_id is None:
-                    raise ValueError(f"no faculty found with email '{email}' — import faculty first")
+                    avail = ", ".join(sorted(faculty_id_by_email)[:5]) or "(none)"
+                    raise ValueError(
+                        f"no faculty found with email '{email}' — {len(faculty_id_by_email)} "
+                        f"faculty visible to this account: {avail}. Import Faculty first (under the same login)."
+                    )
                 code = str(row.get("course_code") or "").strip().lower()
                 course_id = course_id_by_code.get(code)
                 if course_id is None:
-                    raise ValueError(f"no course with code '{code}'")
+                    avail = ", ".join(sorted(course_id_by_code)[:8]) or "(none)"
+                    raise ValueError(
+                        f"no course with code '{code}' — {len(course_id_by_code)} course(s) "
+                        f"visible to this account: {avail}. Import Courses first (under the same login)."
+                    )
                 await create_eligibility(db, EligibilityCreate(
                     faculty_id=fp_id, course_id=course_id,
                 ))
