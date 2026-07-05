@@ -248,12 +248,18 @@ function ConfirmModal({ open, onClose, onConfirm, title, body, confirmWord='CONF
 }
 
 // SlideOver panel (right-aligned)
-function SlideOver({ open, onClose, children, width=520 }) {
+function SlideOver({ open, onClose, title, children, width=520 }) {
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-40 flex justify-end fade-in" style={{ background:'rgba(11,29,53,0.18)' }} onClick={onClose}>
       <div className="bg-[var(--paper)] h-full hair-l border-l slide-in overflow-y-auto scrollbar-thin" style={{ width }} onClick={e=>e.stopPropagation()}>
-        {children}
+        {title && (
+          <div className="flex items-center justify-between px-5 py-3 hair-b sticky top-0 bg-[var(--paper)] z-10">
+            <h3 className="font-serif text-[17px] text-[var(--navy)]">{title}</h3>
+            <button onClick={onClose} className="text-[var(--muted)] hover:text-[var(--ink)] text-[18px] leading-none">✕</button>
+          </div>
+        )}
+        {title ? <div className="p-5">{children}</div> : children}
       </div>
     </div>
   );

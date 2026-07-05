@@ -204,17 +204,23 @@ function TimetableData({ termId }) {
   async function handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
+    setImportMsg("Importing…");
     const fd = new FormData();
     fd.append("file", file);
     try {
       const res = await fetch(
         `${window.ANCHOR_API_URL || 'http://localhost:8000'}${TT_BASE}/import?entity=${sub}`,
         { method:"POST", headers:{ Authorization:`Bearer ${localStorage.getItem("anchor_admin_access_token")}` }, body:fd }
-      ).then(r => r.json());
-      setImportMsg(`Imported ${res.created} rows${res.errors?.length ? ` · ${res.errors.length} errors` : ""}`);
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setImportMsg(typeof data.detail === "string" ? data.detail : `Import failed (${res.status})`);
+        return;
+      }
+      setImportMsg(`Imported ${data.created || 0} row${data.created === 1 ? "" : "s"}${data.errors?.length ? ` · ${data.errors.length} errors` : ""}`);
       load();
-    } catch { setImportMsg("Import failed"); }
-    fileRef.current.value = "";
+    } catch { setImportMsg("Import failed — check the file and try again."); }
+    finally { if (fileRef.current) fileRef.current.value = ""; }
   }
 
   return (
@@ -483,7 +489,7 @@ function AddEntitySlideOver({ sub, onClose, onDone }) {
   };
 
   return (
-    <SlideOver title={`Add ${sub.slice(0,-1)}`} onClose={onClose}>
+    <SlideOver open title={`Add ${sub.slice(0,-1)}`} onClose={onClose}>
       <div className="space-y-4">
         {(fields[sub] || []).map(f => (
           <div key={f.k}>
@@ -536,7 +542,7 @@ function AddOfferingSlideOver({ termId, onClose, onDone }) {
   }
 
   return (
-    <SlideOver title="Add offering" onClose={onClose}>
+    <SlideOver open title="Add offering" onClose={onClose}>
       <div className="space-y-4">
         {!termId && (
           <div className="px-3 py-2 rounded-sm text-[12px]"
@@ -593,7 +599,7 @@ function AddEligibilitySlideOver({ onClose, onDone }) {
   }
 
   return (
-    <SlideOver title="Add eligibility" onClose={onClose}>
+    <SlideOver open title="Add eligibility" onClose={onClose}>
       <div className="space-y-4">
         <div>
           <label className="smallcaps text-[var(--muted)] mb-1 block">Teacher</label>
@@ -882,7 +888,7 @@ function AddConstraintSlideOver({ termId, onClose, onDone }) {
   }
 
   return (
-    <SlideOver title="Add constraint rule" onClose={onClose}>
+    <SlideOver open title="Add constraint rule" onClose={onClose}>
       <div className="space-y-4">
         <div>
           <label className="smallcaps text-[var(--muted)] mb-1 block">Constraint type</label>

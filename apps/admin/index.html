@@ -670,12 +670,18 @@ function ConfirmModal({ open, onClose, onConfirm, title, body, confirmWord='CONF
 }
 
 // SlideOver panel (right-aligned)
-function SlideOver({ open, onClose, children, width=520 }) {
+function SlideOver({ open, onClose, title, children, width=520 }) {
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-40 flex justify-end fade-in" style={{ background:'rgba(11,29,53,0.18)' }} onClick={onClose}>
       <div className="bg-[var(--paper)] h-full hair-l border-l slide-in overflow-y-auto scrollbar-thin" style={{ width }} onClick={e=>e.stopPropagation()}>
-        {children}
+        {title && (
+          <div className="flex items-center justify-between px-5 py-3 hair-b sticky top-0 bg-[var(--paper)] z-10">
+            <h3 className="font-serif text-[17px] text-[var(--navy)]">{title}</h3>
+            <button onClick={onClose} className="text-[var(--muted)] hover:text-[var(--ink)] text-[18px] leading-none">✕</button>
+          </div>
+        )}
+        {title ? <div className="p-5">{children}</div> : children}
       </div>
     </div>
   );
@@ -10553,17 +10559,23 @@ function TimetableData({ termId }) {
   async function handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
+    setImportMsg("Importing…");
     const fd = new FormData();
     fd.append("file", file);
     try {
       const res = await fetch(
         `${window.ANCHOR_API_URL || 'http://localhost:8000'}${TT_BASE}/import?entity=${sub}`,
         { method:"POST", headers:{ Authorization:`Bearer ${localStorage.getItem("anchor_admin_access_token")}` }, body:fd }
-      ).then(r => r.json());
-      setImportMsg(`Imported ${res.created} rows${res.errors?.length ? ` · ${res.errors.length} errors` : ""}`);
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setImportMsg(typeof data.detail === "string" ? data.detail : `Import failed (${res.status})`);
+        return;
+      }
+      setImportMsg(`Imported ${data.created || 0} row${data.created === 1 ? "" : "s"}${data.errors?.length ? ` · ${data.errors.length} errors` : ""}`);
       load();
-    } catch { setImportMsg("Import failed"); }
-    fileRef.current.value = "";
+    } catch { setImportMsg("Import failed — check the file and try again."); }
+    finally { if (fileRef.current) fileRef.current.value = ""; }
   }
 
   return (
@@ -10832,7 +10844,7 @@ function AddEntitySlideOver({ sub, onClose, onDone }) {
   };
 
   return (
-    <SlideOver title={`Add ${sub.slice(0,-1)}`} onClose={onClose}>
+    <SlideOver open title={`Add ${sub.slice(0,-1)}`} onClose={onClose}>
       <div className="space-y-4">
         {(fields[sub] || []).map(f => (
           <div key={f.k}>
@@ -10885,7 +10897,7 @@ function AddOfferingSlideOver({ termId, onClose, onDone }) {
   }
 
   return (
-    <SlideOver title="Add offering" onClose={onClose}>
+    <SlideOver open title="Add offering" onClose={onClose}>
       <div className="space-y-4">
         {!termId && (
           <div className="px-3 py-2 rounded-sm text-[12px]"
@@ -10942,7 +10954,7 @@ function AddEligibilitySlideOver({ onClose, onDone }) {
   }
 
   return (
-    <SlideOver title="Add eligibility" onClose={onClose}>
+    <SlideOver open title="Add eligibility" onClose={onClose}>
       <div className="space-y-4">
         <div>
           <label className="smallcaps text-[var(--muted)] mb-1 block">Teacher</label>
@@ -11231,7 +11243,7 @@ function AddConstraintSlideOver({ termId, onClose, onDone }) {
   }
 
   return (
-    <SlideOver title="Add constraint rule" onClose={onClose}>
+    <SlideOver open title="Add constraint rule" onClose={onClose}>
       <div className="space-y-4">
         <div>
           <label className="smallcaps text-[var(--muted)] mb-1 block">Constraint type</label>
