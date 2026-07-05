@@ -10801,19 +10801,19 @@ function DataEntityTable({ sub, items, onRefresh }) {
 
   if (sub === "offerings") return (<>
     <DataTable columns={[
-      { key:"course_id", label:"Course", render:r => <MonoChip>{String(r.course_id).slice(0,8)}</MonoChip> },
-      { key:"batch_id",  label:"Batch",  render:r => <MonoChip>{String(r.batch_id).slice(0,8)}</MonoChip> },
-      { key:"term_id",   label:"Term",   render:r => <MonoChip>{String(r.term_id).slice(0,8)}</MonoChip> },
-      { key:"",          label:"",       render:r => delBtn(`${TT_BASE}/offerings/${r.id}`) },
+      { key:"course_code", label:"Course", render:r => <MonoChip>{r.course_code || String(r.course_id).slice(0,8)}</MonoChip> },
+      { key:"batch_name",  label:"Batch",  render:r => r.batch_name || String(r.batch_id).slice(0,8) },
+      { key:"term_name",   label:"Term",   render:r => r.term_name || String(r.term_id).slice(0,8) },
+      { key:"",            label:"",       render:r => delBtn(`${TT_BASE}/offerings/${r.id}`) },
     ]} rows={paged} />
     {pager}
   </>);
 
   if (sub === "eligibility") return (<>
     <DataTable columns={[
-      { key:"faculty_id", label:"Faculty", render:r => <MonoChip>{String(r.faculty_id).slice(0,8)}</MonoChip> },
-      { key:"course_id",  label:"Course",  render:r => <MonoChip>{String(r.course_id).slice(0,8)}</MonoChip> },
-      { key:"",           label:"",        render:r => delBtn(`${TT_BASE}/eligibility/${r.id}`) },
+      { key:"faculty_name", label:"Faculty", render:r => r.faculty_name || String(r.faculty_id).slice(0,8) },
+      { key:"course_code",  label:"Course",  render:r => <MonoChip>{r.course_code || String(r.course_id).slice(0,8)}</MonoChip> },
+      { key:"",             label:"",        render:r => delBtn(`${TT_BASE}/eligibility/${r.id}`) },
     ]} rows={paged} />
     {pager}
   </>);
