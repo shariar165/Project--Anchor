@@ -257,8 +257,18 @@ async def list_faculty(db: AsyncSession, tenant_id: uuid.UUID | None = None) -> 
 async def create_faculty_profile(
     db: AsyncSession, data: FacultyProfileCreate
 ) -> TimetableFacultyProfile:
+    name = (data.name or "").strip() or None
+    email = (data.email or "").strip().lower() or None
+    # When only a login account is supplied (manual "Add faculty" flow), derive
+    # the display name / email from that user so faculty always have a label.
+    if data.user_id and (not name or not email):
+        u = (await db.execute(select(User).where(User.id == data.user_id))).scalars().first()
+        if u:
+            email = email or (u.email or "").strip().lower() or None
+            name = name or (u.full_name or "").strip() or None
+    name = name or (email.split("@")[0] if email else None)  # fall back to email prefix
     fp = TimetableFacultyProfile(
-        user_id=data.user_id, rank=data.rank,
+        user_id=data.user_id, name=name, email=email, rank=data.rank,
         min_credits=data.min_credits, max_credits=data.max_credits,
         pref_slot=data.pref_slot, off_days=data.off_days,
         max_per_day=data.max_per_day, tenant_id=data.tenant_id,
@@ -585,14 +595,21 @@ async def resolve_entry_names(db: AsyncSession, entries: list[TimetableEntry]) -
     faculty = await _by_ids(TimetableFacultyProfile, {e.faculty_id for e in entries})
 
     users = {}
-    user_ids = [fp.user_id for fp in faculty.values()]
+    user_ids = [fp.user_id for fp in faculty.values() if fp.user_id]
     if user_ids:
         ur = await db.execute(select(User).where(User.id.in_(user_ids)))
         users = {u.id: u for u in ur.scalars().all()}
-    faculty_names = {
-        fid: (users[fp.user_id].full_name if fp.user_id in users else "")
-        for fid, fp in faculty.items()
-    }
+
+    def _fac_name(fp):
+        # Prefer the faculty's own name; fall back to a linked account, then the
+        # email prefix, so account-less imported faculty still show a label.
+        if fp.name:
+            return fp.name
+        if fp.user_id in users:
+            return users[fp.user_id].full_name
+        return (fp.email.split("@")[0] if fp.email else "")
+
+    faculty_names = {fid: _fac_name(fp) for fid, fp in faculty.items()}
 
     return {
         "courses": courses,
@@ -943,7 +960,8 @@ async def import_entities(
     course_id_by_code: dict[str, uuid.UUID] = {}
     batch_id_by_name: dict[str, uuid.UUID] = {}
     user_id_by_email: dict[str, uuid.UUID] = {}
-    faculty_id_by_user: dict[uuid.UUID, uuid.UUID] = {}
+    faculty_id_by_email: dict[str, uuid.UUID] = {}
+    seen_faculty_emails: set[str] = set()
 
     if entity in ("offerings", "eligibility"):
         course_id_by_code = {c.code.strip().lower(): c.id for c in await list_courses(db, tenant_id)}
@@ -952,8 +970,20 @@ async def import_entities(
     if entity in ("faculty", "eligibility"):
         result = await db.execute(select(User))
         user_id_by_email = {u.email.strip().lower(): u.id for u in result.scalars().all() if u.email}
+    if entity == "faculty":
+        # Dedupe: don't re-create faculty that already exist for this tenant.
+        seen_faculty_emails = {
+            (fp.email or "").strip().lower()
+            for fp in await list_faculty(db, tenant_id) if fp.email
+        }
     if entity == "eligibility":
-        faculty_id_by_user = {fp.user_id: fp.id for fp in await list_faculty(db, tenant_id)}
+        # Resolve faculty by their own email, falling back to a linked account's
+        # email so eligibility CSVs work whether or not the teacher has a login.
+        email_by_user_id = {uid: em for em, uid in user_id_by_email.items()}
+        for fp in await list_faculty(db, tenant_id):
+            key = (fp.email or "").strip().lower() or email_by_user_id.get(fp.user_id)
+            if key:
+                faculty_id_by_email[key] = fp.id
 
     for i, row in enumerate(rows, start=2):  # row 1 = header
         try:
@@ -992,18 +1022,22 @@ async def import_entities(
                 ))
             elif entity == "faculty":
                 email = str(row.get("email") or "").strip().lower()
-                user_id = user_id_by_email.get(email)
-                if user_id is None:
-                    raise ValueError(f"no user found with email '{email}'")
+                if not email:
+                    raise ValueError("missing value for 'email'")
+                if email in seen_faculty_emails:
+                    raise ValueError(f"duplicate faculty email '{email}'")
                 await create_faculty_profile(db, FacultyProfileCreate(
-                    user_id=user_id,
-                    rank=str(row.get("rank") or "").strip().upper(),
+                    user_id=user_id_by_email.get(email),  # link a login account if one exists, else None
+                    name=str(row.get("name") or "").strip() or None,
+                    email=email,
+                    rank=str(row.get("rank") or "").strip().upper() or "LECTURER",
                     max_per_day=int(row.get("max_per_day") or 4),
                     min_credits=_int_or_none(row.get("min_credits")),
                     max_credits=_int_or_none(row.get("max_credits")),
                     pref_slot=_int_or_none(row.get("pref_slot")),
                     tenant_id=tenant_id,
                 ))
+                seen_faculty_emails.add(email)
             elif entity == "offerings":
                 if not term_id:
                     raise ValueError("no term selected — pick a term before importing offerings")
@@ -1020,12 +1054,11 @@ async def import_entities(
                 ))
             elif entity == "eligibility":
                 email = str(row.get("faculty_email") or "").strip().lower()
-                user_id = user_id_by_email.get(email)
-                if user_id is None:
-                    raise ValueError(f"no user found with email '{email}'")
-                fp_id = faculty_id_by_user.get(user_id)
+                if not email:
+                    raise ValueError("missing value for 'faculty_email'")
+                fp_id = faculty_id_by_email.get(email)
                 if fp_id is None:
-                    raise ValueError(f"'{email}' is not a registered faculty member")
+                    raise ValueError(f"no faculty found with email '{email}' — import faculty first")
                 code = str(row.get("course_code") or "").strip().lower()
                 course_id = course_id_by_code.get(code)
                 if course_id is None:

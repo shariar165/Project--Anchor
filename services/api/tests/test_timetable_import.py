@@ -70,14 +70,45 @@ async def test_import_faculty_resolves_email(client, admin_headers, registered_u
 
 
 @pytest.mark.asyncio
-async def test_import_faculty_unknown_email_errors_row(client, admin_headers):
+async def test_import_faculty_without_account_creates_standalone(client, admin_headers):
+    # Faculty are standalone: an email with no user account still imports.
     r = await client.post(
         "/v1/admin/timetable/import?entity=faculty", headers=admin_headers,
-        files=_csv("email,rank,max_per_day\nnobody@example.com,LECTURER,4\n"),
+        files=_csv("email,name,rank,max_per_day\njc@diu.edu.bd,Dr. Jane,PROFESSOR,4\nmes@diu.edu.bd,,LECTURER,3\n"),
     )
     assert r.status_code == 200, r.json()
-    assert r.json()["created"] == 0
-    assert len(r.json()["errors"]) == 1 and "nobody@example.com" in r.json()["errors"][0]
+    assert r.json()["created"] == 2 and r.json()["errors"] == [], r.json()
+    fac = (await client.get("/v1/admin/timetable/faculty", headers=admin_headers)).json()
+    by_email = {f["email"]: f for f in fac}
+    assert by_email["jc@diu.edu.bd"]["user_id"] is None
+    assert by_email["jc@diu.edu.bd"]["name"] == "Dr. Jane"
+    assert by_email["mes@diu.edu.bd"]["name"] == "mes"          # falls back to email prefix
+    assert by_email["mes@diu.edu.bd"]["rank"] == "LECTURER"
+
+
+@pytest.mark.asyncio
+async def test_import_faculty_links_account_when_present(client, admin_headers, registered_user):
+    # When a user with that email exists, the faculty links to it.
+    email = registered_user["email"]
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=faculty", headers=admin_headers,
+        files=_csv(f"email,name,rank,max_per_day\n{email},,LECTURER,4\n"),
+    )
+    assert r.json()["created"] == 1, r.json()
+    fac = (await client.get("/v1/admin/timetable/faculty", headers=admin_headers)).json()
+    assert fac[0]["user_id"] is not None and fac[0]["email"] == email.lower()
+
+
+@pytest.mark.asyncio
+async def test_import_faculty_skips_duplicate_email(client, admin_headers):
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=faculty", headers=admin_headers,
+        files=_csv("email,rank,max_per_day\ndup@diu.edu.bd,LECTURER,4\ndup@diu.edu.bd,LECTURER,4\n"),
+    )
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["created"] == 1 and body["error_count"] == 1, body
+    assert "duplicate" in body["errors"][0].lower()
 
 
 @pytest.mark.asyncio
@@ -121,6 +152,26 @@ async def test_import_eligibility(client, admin_headers, registered_user):
     r = await client.post(
         "/v1/admin/timetable/import?entity=eligibility", headers=admin_headers,
         files=_csv(f"faculty_email,course_code\n{email},SE202\n"),
+    )
+    assert r.status_code == 200, r.json()
+    assert r.json()["created"] == 1, r.json()
+
+
+@pytest.mark.asyncio
+async def test_import_eligibility_resolves_faculty_without_account(client, admin_headers):
+    # Faculty imported without a login account; eligibility still resolves by email.
+    await client.post(
+        "/v1/admin/timetable/import?entity=faculty", headers=admin_headers,
+        files=_csv("email,rank,max_per_day\nnoacct@diu.edu.bd,LECTURER,4\n"),
+    )
+    await client.post(
+        "/v1/admin/timetable/courses",
+        json={"code": "SE303", "name": "OS", "credits": 3, "is_lab": False, "weekly_classes": 2},
+        headers=admin_headers,
+    )
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=eligibility", headers=admin_headers,
+        files=_csv("faculty_email,course_code\nnoacct@diu.edu.bd,SE303\n"),
     )
     assert r.status_code == 200, r.json()
     assert r.json()["created"] == 1, r.json()

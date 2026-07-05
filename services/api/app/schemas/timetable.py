@@ -128,7 +128,9 @@ VALID_RANKS = {
 }
 
 class FacultyProfileCreate(BaseModel):
-    user_id: uuid.UUID
+    user_id: uuid.UUID | None = None          # optional — link a login account when one exists
+    name: str | None = Field(default=None, max_length=120)
+    email: str | None = Field(default=None, max_length=255)
     rank: str = Field(min_length=1, max_length=30)
     min_credits: int | None = Field(default=None, ge=0)
     max_credits: int | None = Field(default=None, ge=0)
@@ -149,8 +151,10 @@ class FacultyProfilePatch(BaseModel):
 class FacultyProfileOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
-    user_id: uuid.UUID
+    user_id: uuid.UUID | None
     tenant_id: uuid.UUID | None
+    name: str | None
+    email: str | None
     rank: str
     min_credits: int | None
     max_credits: int | None

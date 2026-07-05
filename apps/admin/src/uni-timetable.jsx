@@ -40,7 +40,7 @@ const IMPORT_COLS = {
   courses:     "code, name, credits, weekly_classes, is_lab",
   rooms:       "name, room_type, capacity",
   batches:     "name, program",
-  faculty:     "email, rank, max_per_day",
+  faculty:     "email, name, rank, max_per_day",
   offerings:   "course_code, batch_name",
   eligibility: "faculty_email, course_code",
 };
@@ -52,9 +52,10 @@ const TEMPLATE_ROWS = {
                 ["CSE102L", "Programming Lab", "1", "1", "true"]],
   rooms:       [["KT-101", "THEORY", "40"], ["AB-Lab-1", "LAB", "30"]],
   batches:     [["61-A", "SWE"], ["62-B", "CSE"]],
-  faculty:     [["teacher@diu.edu.bd", "PROFESSOR", "4"]],
+  faculty:     [["jc@diu.edu.bd", "Dr. Jane Cooper", "PROFESSOR", "4"],
+                ["mes@diu.edu.bd", "", "LECTURER", "3"]],
   offerings:   [["CSE101", "61-A"]],
-  eligibility: [["teacher@diu.edu.bd", "CSE101"]],
+  eligibility: [["jc@diu.edu.bd", "CSE101"]],
 };
 
 // ── SectionLabel helper ───────────────────────────────────────────────────────
@@ -402,7 +403,8 @@ function DataEntityTable({ sub, items, onRefresh }) {
 
   if (sub === "faculty") return (<>
     <DataTable columns={[
-      { key:"id",         label:"ID",        render:r => <MonoChip>{String(r.id).slice(0,8)}</MonoChip> },
+      { key:"name",       label:"Name",      render:r => r.name || <span className="text-[var(--muted)]">—</span> },
+      { key:"email",      label:"Email",     render:r => r.email ? <span className="font-mono text-[12px]">{r.email}</span> : <span className="text-[var(--muted)]">—</span> },
       { key:"rank",       label:"Rank" },
       { key:"max_per_day",label:"Max/day",   align:"right" },
       { key:"active",     label:"Status",    render:r => <Tag tone={r.active?"sage":"mist"}>{r.active?"Active":"Off"}</Tag> },
