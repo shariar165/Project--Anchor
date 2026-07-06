@@ -43,9 +43,16 @@ from app.services.timetable_solver_types import (
 logger = logging.getLogger(__name__)
 
 # Diagnostics that mean class sessions would be silently dropped from the
-# model (the old behavior behind the misleading "no_offerings" core). A solve
-# must fail fast on these instead of producing a timetable with missing rows.
-_BLOCKING_DIAGNOSTIC_PREFIXES = ("no_sections_for_batch:", "no_lab_groups_for_section:")
+# model (the old behavior behind the misleading "no_offerings" core), or that
+# the instance is provably infeasible before building a model (capacity
+# pre-checks — the solver would only burn its budget/memory proving it). A
+# solve must fail fast on these with actionable cores.
+_BLOCKING_DIAGNOSTIC_PREFIXES = (
+    "no_sections_for_batch:",
+    "no_lab_groups_for_section:",
+    "insufficient_teacher_capacity:",
+    "sole_teacher_overload:",
+)
 
 # ── Data containers ───────────────────────────────────────────────────────────
 
@@ -237,6 +244,49 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
         course = courses_by_id.get(c_id)
         if course and not eligible.get(c_id):
             diagnostics.append(f"no_eligibility_for_course:{course.code}")
+
+    # Capacity pre-check (a necessary condition): a course's weekly sessions
+    # can never exceed what its eligible teachers can physically teach
+    # (available days × max_per_day). Real data hit this — one teacher solely
+    # eligible for a course offered to two batches (40 sessions vs 24 teachable)
+    # — and the solver burned its whole budget (or the container's memory)
+    # proving the inevitable. Catch it here with an actionable core instead.
+    fac_by_id = {f.id: f for f in faculty}
+
+    def _teach_cap(f) -> int:
+        avail = n_days - sum(1 for d in f.off_days if 0 <= d < n_days)
+        return max(avail, 0) * max(f.max_per_day, 0)
+
+    sessions_by_course: dict[uuid.UUID, int] = {}
+    for slot in offering_slots:
+        sessions_by_course[slot.course.id] = sessions_by_course.get(slot.course.id, 0) + 1
+
+    for c_id in sorted(sessions_by_course, key=lambda c: courses_by_id[c].code):
+        pool = [fac_by_id[fid] for fid in eligible.get(c_id, []) if fid in fac_by_id]
+        if not pool:
+            continue  # already reported as no_eligibility_for_course
+        required, capacity = sessions_by_course[c_id], sum(_teach_cap(f) for f in pool)
+        if required > capacity:
+            diagnostics.append(
+                f"insufficient_teacher_capacity:{courses_by_id[c_id].code}"
+                f":{required}:{capacity}:{len(pool)}"
+            )
+
+    # Same bound per teacher, across every course they are the SOLE teacher of.
+    sole_courses: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for c_id, pool_ids in eligible.items():
+        if len(pool_ids) == 1 and c_id in sessions_by_course:
+            sole_courses.setdefault(pool_ids[0], []).append(c_id)
+    for fid, c_ids in sole_courses.items():
+        f = fac_by_id.get(fid)
+        if f is None or len(c_ids) < 2:
+            continue  # the single-course case is the per-course check above
+        required, cap = sum(sessions_by_course[c] for c in c_ids), _teach_cap(f)
+        if required > cap:
+            codes = "+".join(sorted(courses_by_id[c].code for c in c_ids))
+            diagnostics.append(
+                f"sole_teacher_overload:{f.name or fid}:{codes}:{required}:{cap}"
+            )
 
     # Load constraints
     con_r = await db.execute(
@@ -873,7 +923,12 @@ SOFT_BUILDERS = {
 # ── Decomposition planning ────────────────────────────────────────────────────
 
 def plan_groups(data: SolverData, strategy: str, threshold: int) -> list[list[OfferingSlot]]:
-    """Split offerings into per-batch solve groups, tightest (largest) first.
+    """Split offerings into per-batch solve groups, tightest first.
+
+    Tightness is teacher scarcity, not raw size: a batch whose course has one
+    eligible teacher must solve while that teacher's week is still empty —
+    solved last, earlier (wide) groups may already have reserved his slots and
+    only an expensive merge can undo that. Size breaks ties.
 
     Returns a single group (monolith) when strategy says so or the term has few
     enough batches that decomposition buys nothing.
@@ -885,9 +940,15 @@ def plan_groups(data: SolverData, strategy: str, threshold: int) -> list[list[Of
     if strategy == "monolith" or (strategy != "per_batch" and len(by_batch) <= threshold):
         return [list(data.offerings)]
 
+    def _scarcity(g: list[OfferingSlot]) -> float:
+        return sum(
+            1.0 / max(len(data.eligible.get(o.course.id, ())), 1) for o in g
+        )
+
     groups = sorted(
         by_batch.values(),
-        key=lambda g: (-len(g), data.batch_names.get(g[0].section.batch_id, "")),
+        key=lambda g: (-_scarcity(g), -len(g),
+                       data.batch_names.get(g[0].section.batch_id, "")),
     )
     return groups
 
@@ -896,6 +957,73 @@ def split_budget(group_sizes: list[int], total_s: int, min_s: int = 5) -> list[i
     """Per-group time budgets proportional to group size, floored at min_s."""
     total_sessions = sum(group_sizes) or 1
     return [max(min_s, int(total_s * size / total_sessions)) for size in group_sizes]
+
+
+def trim_eligible(
+    data: SolverData,
+    grp: list[OfferingSlot],
+    reservations: Reservations | None,
+    k: int,
+    base_entries: list[EntryD] | None = None,
+    pinned_change: EntryEdit | None = None,
+) -> dict[uuid.UUID, list[uuid.UUID]] | None:
+    """Cap the candidate-teacher pool per course for one group solve.
+
+    Real rosters mark 100+ teachers eligible per course; every extra candidate
+    multiplies BoolVars (course sessions × days × slots), peak memory, and the
+    symmetric search plateau CP-SAT has to wade through. Keep the k candidates
+    with the fewest reserved slots (stable roster order as tiebreak) so later
+    groups naturally drift toward less-loaded teachers. Teachers already placed
+    in base entries for a course — and a pin's target teacher — are always
+    kept, so re-solves and pin edits stay expressible.
+
+    Returns None when no course in the group exceeds k (solve with the full
+    pool; the caller uses this to know a full-pool retry would change nothing).
+    """
+    if k <= 0:
+        return None
+
+    busy_count: dict[uuid.UUID, int] = {}
+    if reservations is not None:
+        for fid, _d, _s in reservations.faculty_busy:
+            busy_count[fid] = busy_count.get(fid, 0) + 1
+
+    # Term-wide demand pressure per teacher: a session of a 1-teacher course
+    # weighs 1.0, a session of a 100-teacher course ~0.01. Used as a ranking
+    # tiebreak so wide courses don't grab teachers that scarce courses (in
+    # this or a later group) cannot do without.
+    demand: dict[uuid.UUID, float] = {}
+    for o in data.offerings:
+        pool = data.eligible.get(o.course.id, ())
+        if pool:
+            w = 1.0 / len(pool)
+            for fid in pool:
+                demand[fid] = demand.get(fid, 0.0) + w
+
+    must_keep: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for e in base_entries or []:
+        if e.faculty_id is not None:
+            must_keep.setdefault(e.course_id, set()).add(e.faculty_id)
+    if pinned_change is not None and pinned_change.new_faculty_id:
+        for cid in {o.course.id for o in grp}:
+            must_keep.setdefault(cid, set()).add(pinned_change.new_faculty_id)
+
+    out: dict[uuid.UUID, list[uuid.UUID]] = dict(data.eligible)
+    trimmed_any = False
+    for cid in {o.course.id for o in grp}:
+        pool = data.eligible.get(cid, [])
+        keep = must_keep.get(cid, set()) & set(pool)
+        if len(pool) <= max(k, len(keep)):
+            continue
+        order = {fid: idx for idx, fid in enumerate(pool)}
+        ranked = sorted(
+            (fid for fid in pool if fid not in keep),
+            key=lambda fid: (busy_count.get(fid, 0), demand.get(fid, 0.0), order[fid]),
+        )
+        kept = keep | set(ranked[: max(k - len(keep), 0)])
+        out[cid] = [fid for fid in pool if fid in kept]
+        trimmed_any = True
+    return out if trimmed_any else None
 
 
 def _batches_of(group: list[OfferingSlot]) -> set[uuid.UUID]:
@@ -1045,6 +1173,8 @@ async def run_solve_job(
         committed: list[list[dict]] = []      # per solved group, parallel to groups[:i]
         statuses: list[str] = []
         tried_pair: set[frozenset] = set()
+        widened: set[frozenset] = set()       # groups re-solving with a wider candidate pool
+        extended: set[frozenset] = set()      # groups re-solving with the remaining budget
         final_merged = False
         failure: tuple[str, list[str]] | None = None
         deadline = time.monotonic() + request.time_limit_s * 1.5
@@ -1061,7 +1191,7 @@ async def run_solve_job(
                     progress=10 + int(85 * i / len(groups)),
                     solver_status=f"batch {i + 1}/{len(groups)}"[:30],
                 )
-            slice_data = replace(data, offerings=grp)
+            key = frozenset(_batches_of(grp))
 
             # Reservations = carried entries + already-solved groups + (in a
             # no-pin perturbation) the still-standing base of unsolved groups.
@@ -1074,8 +1204,31 @@ async def run_solve_job(
                         res_entries.extend(base_by_batch.get(b, []))
             reservations = build_reservations(res_entries) if res_entries else None
 
+            # Wide real-world eligibility (100+ teachers/course) is what blew
+            # up model size and memory at scale — cap candidates per course.
+            # A retry widens the cap instead of dropping it entirely: a truly
+            # uncapped merged-group model measured 1.5 GB on real data, which
+            # is a guaranteed OOM on small containers.
+            k = settings.solver_max_candidates
+            if key in widened and k > 0:
+                k = max(4 * k, 40)
+            trimmed = trim_eligible(
+                data, grp, reservations, k,
+                base_entries=base or None,
+                pinned_change=pinned_change if pinned_entry is not None else None,
+            )
+            slice_data = replace(data, offerings=grp,
+                                 eligible=trimmed if trimmed is not None else data.eligible)
+
             budget = max(5, int(request.time_limit_s * len(grp) / total_sessions)) if multi \
                 else request.time_limit_s
+            if key in extended:
+                # Retry after an UNKNOWN: proportional slice wasn't enough —
+                # hand the group the rest of the wall-clock deadline (capped at
+                # time_limit_s so the reaper's heartbeat-staleness window,
+                # time_limit_s + 120s, can never fire on a live solve).
+                budget = max(budget, min(int(deadline - time.monotonic()),
+                                         request.time_limit_s))
             budget = max(5, min(budget, int(deadline - time.monotonic())))
 
             kwargs = dict(
@@ -1095,9 +1248,26 @@ async def run_solve_job(
                 i += 1
                 continue
 
+            if trimmed is not None and key not in widened and st in ("infeasible", "unknown"):
+                # The cap may have hidden the teachers a solution needs —
+                # retry this group with a wider pool before escalating.
+                widened.add(key)
+                continue
+
             cores = result.get("infeasible_core") or []
+            if st == "unknown":
+                if key not in extended and deadline - time.monotonic() > 5:
+                    # No solution within the proportional slice; give the
+                    # group the remaining budget before declaring defeat.
+                    extended.add(key)
+                    continue
+                failure = ("unknown", [
+                    "solver_timeout: no timetable found within the time limit"
+                    " — increase the time limit and solve again",
+                ])
+                break
+
             if st == "infeasible" and multi:
-                key = frozenset(_batches_of(grp))
                 if i > 0 and key not in tried_pair and not final_merged:
                     # The previous group may have greedily taken this group's
                     # resources — merge the pair and re-solve them together.
