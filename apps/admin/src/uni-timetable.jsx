@@ -1197,7 +1197,10 @@ function TimetableGenerate({ termId, onSolved }) {
 
         {job?.status === "failed" && (
           <div className="text-[var(--red)] text-[12.5px] flex items-center gap-2">
-            <Icon name="x-circle" size={14} /> Solver failed. Check that schedule config and data are set up correctly.
+            <Icon name="x-circle" size={14} />
+            {job.solver_status === "orphaned"
+              ? "Solve timed out or the server restarted mid-run. Click Re-generate to try again."
+              : "Solver failed. Check that schedule config and data are set up correctly."}
           </div>
         )}
       </Card>
