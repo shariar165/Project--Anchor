@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -253,6 +253,9 @@ class SolveRequest(BaseModel):
     term_id: uuid.UUID
     time_limit_s: int = Field(default=60, ge=10, le=600)
     seed_from_version: int | None = None
+    # auto: per-batch decomposition when the term has more batches than
+    # solver_decompose_threshold; monolith/per_batch force either path.
+    strategy: Literal["auto", "monolith", "per_batch"] = "auto"
 
 class SolveJobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -376,6 +379,8 @@ class PublishOut(BaseModel):
 class ImportResult(BaseModel):
     entity: str
     created: int
+    updated: int = 0         # rows that matched an existing record and updated it
+    skipped: int = 0         # rows already present verbatim (offerings/eligibility)
     total: int = 0           # rows parsed (excluding header + blank rows)
     error_count: int = 0     # true number of errors (errors[] below may be capped)
     errors: list[str]

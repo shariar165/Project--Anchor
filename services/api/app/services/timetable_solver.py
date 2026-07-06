@@ -1,55 +1,93 @@
-"""CP-SAT timetable solver with registry-driven constraints."""
+"""CP-SAT timetable solver with registry-driven constraints.
+
+Scale architecture: the term is solved **per batch** (batches are course-
+disjoint; they couple only through faculty time, room capacity, and faculty
+count-limits). Each batch group is a small CP-SAT model solved sequentially;
+resources consumed by earlier groups are passed forward as `Reservations`
+constants. This keeps peak model size ~1/n_batches of the old monolith, which
+is what let a 9-batch term OOM a small container. The monolith path is kept
+for small inputs (`solver_decompose_threshold`) and as an escalation fallback.
+
+Solves run in a spawned subprocess by default (`SOLVER_ISOLATION=process`) so
+an OOM kill takes down the child, not the API — the job then fails with
+`solver_oom` instead of orphaning at 10%.
+"""
 import asyncio
 import json
 import logging
+import multiprocessing
+import time
 import uuid
-from dataclasses import dataclass, field
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.timetable import (
     TimetableTerm, TimetableBatch, TimetableSection, TimetableLabGroup,
     TimetableRoom, TimetableCourse, TimetableFacultyProfile,
     TimetableCourseOffering, TimetableTeacherEligibility,
-    TimetableScheduleConfig, TimetableConstraint,
-    TimetableSolveJob, TimetableEntry,
+    TimetableConstraint, TimetableEntry,
 )
 from app.schemas.timetable import SolveRequest, EntryEdit
 from app.services import timetable_svc
+from app.services.timetable_solver_types import (
+    CourseD, SectionD, LabGroupD, FacultyD, RoomD, ConstraintD, EntryD,
+    Reservations, build_reservations, to_entry_d,
+)
 
 logger = logging.getLogger(__name__)
 
+# Diagnostics that mean class sessions would be silently dropped from the
+# model (the old behavior behind the misleading "no_offerings" core). A solve
+# must fail fast on these instead of producing a timetable with missing rows.
+_BLOCKING_DIAGNOSTIC_PREFIXES = ("no_sections_for_batch:", "no_lab_groups_for_section:")
+
 # ── Data containers ───────────────────────────────────────────────────────────
 
-@dataclass
+@dataclass(frozen=True)
 class OfferingSlot:
     """One class occurrence that needs to be placed (copy_idx handles weekly_classes > 1)."""
     offering_id: uuid.UUID
-    course: TimetableCourse
-    section: TimetableSection
-    lab_group: TimetableLabGroup | None
+    course: CourseD
+    section: SectionD
+    lab_group: LabGroupD | None
     copy_idx: int
 
 @dataclass
 class SolverData:
-    term: TimetableTerm
-    config: TimetableScheduleConfig
+    """Everything the solver needs, as plain picklable data (no ORM, no session)."""
+    term_id: uuid.UUID
+    term_name: str
+    tenant_id: uuid.UUID | None
     n_days: int
     n_slots: int
     offerings: list[OfferingSlot] = field(default_factory=list)
-    faculty: list[TimetableFacultyProfile] = field(default_factory=list)
-    rooms: list[TimetableRoom] = field(default_factory=list)
-    constraints: list[TimetableConstraint] = field(default_factory=list)
+    faculty: list[FacultyD] = field(default_factory=list)
+    rooms: list[RoomD] = field(default_factory=list)
+    constraints: list[ConstraintD] = field(default_factory=list)
     # Maps eligible faculty for each course_id
-    eligible: dict[uuid.UUID, list[uuid.UUID]] = field(default_factory=dict)  # course_id → [faculty_id]
+    eligible: dict[uuid.UUID, list[uuid.UUID]] = field(default_factory=dict)
     # Existing entries for warm-start / perturbation
-    prev_entries: list[TimetableEntry] = field(default_factory=list)
+    prev_entries: list[EntryD] = field(default_factory=list)
+    batch_names: dict[uuid.UUID, str] = field(default_factory=dict)
+    batch_id_by_section: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
+    # Machine-readable data problems detected at load time (see diagnose notes)
+    diagnostics: list[str] = field(default_factory=list)
 
 
 async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: int | None = None) -> SolverData:
-    """Load all scheduling data for a term."""
+    """Load all scheduling data for a term, scoped to what the term references.
+
+    Courses, sections, lab groups, and eligibility are derived from the term's
+    offerings; rooms and faculty are filtered to the term's tenant (rows with a
+    NULL tenant count as global). This keeps other tenants/terms out of the
+    model entirely.
+    """
     term_r = await db.execute(select(TimetableTerm).where(TimetableTerm.id == term_id))
     term = term_r.scalars().first()
     if not term:
@@ -62,54 +100,119 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
     n_days = len(config.days)
     n_slots = len(config.slots)
 
-    # Load rooms
-    rooms_r = await db.execute(select(TimetableRoom))
-    rooms = list(rooms_r.scalars().all())
+    def _tenant_scoped(q, col):
+        if term.tenant_id is not None:
+            return q.where(or_(col == term.tenant_id, col.is_(None)))
+        return q
 
-    # Load faculty
-    faculty_r = await db.execute(
-        select(TimetableFacultyProfile).where(TimetableFacultyProfile.active == True)
-    )
-    faculty = list(faculty_r.scalars().all())
-    faculty_by_id = {fp.id: fp for fp in faculty}
+    # Load rooms + faculty (tenant-scoped)
+    rooms_r = await db.execute(_tenant_scoped(select(TimetableRoom), TimetableRoom.tenant_id))
+    rooms = [RoomD(id=r.id, name=r.name, room_type=r.room_type) for r in rooms_r.scalars().all()]
 
-    # Build eligibility map
-    elig_r = await db.execute(select(TimetableTeacherEligibility))
-    eligible: dict[uuid.UUID, list[uuid.UUID]] = {}
-    for elig in elig_r.scalars().all():
-        eligible.setdefault(elig.course_id, []).append(elig.faculty_id)
+    faculty_r = await db.execute(_tenant_scoped(
+        select(TimetableFacultyProfile).where(TimetableFacultyProfile.active == True),
+        TimetableFacultyProfile.tenant_id,
+    ))
+    faculty = [
+        FacultyD(
+            id=fp.id, name=fp.name or fp.email,
+            off_days=tuple(fp.off_days or []),
+            max_per_day=fp.max_per_day or 4, pref_slot=fp.pref_slot,
+        )
+        for fp in faculty_r.scalars().all()
+    ]
+    faculty_ids = {fp.id for fp in faculty}
 
-    # Load offerings for this term
+    # Load offerings for this term, then everything they reference
     off_r = await db.execute(
         select(TimetableCourseOffering).where(TimetableCourseOffering.term_id == term_id)
     )
     raw_offerings = list(off_r.scalars().all())
+    offered_course_ids = {o.course_id for o in raw_offerings}
+    offered_batch_ids = {o.batch_id for o in raw_offerings}
 
-    # Load courses + sections + lab groups
-    courses_r = await db.execute(select(TimetableCourse))
-    courses_by_id = {c.id: c for c in courses_r.scalars().all()}
+    courses_by_id: dict[uuid.UUID, CourseD] = {}
+    if offered_course_ids:
+        courses_r = await db.execute(
+            select(TimetableCourse).where(TimetableCourse.id.in_(offered_course_ids))
+        )
+        courses_by_id = {
+            c.id: CourseD(id=c.id, code=c.code, is_lab=c.is_lab, weekly_classes=c.weekly_classes)
+            for c in courses_r.scalars().all()
+        }
 
-    secs_r = await db.execute(select(TimetableSection))
-    sections_by_batch: dict[uuid.UUID, list[TimetableSection]] = {}
-    for s in secs_r.scalars().all():
-        sections_by_batch.setdefault(s.batch_id, []).append(s)
+    batch_names: dict[uuid.UUID, str] = {}
+    if offered_batch_ids:
+        batches_r = await db.execute(
+            select(TimetableBatch).where(TimetableBatch.id.in_(offered_batch_ids))
+        )
+        batch_names = {b.id: b.name for b in batches_r.scalars().all()}
 
-    lgs_r = await db.execute(select(TimetableLabGroup))
-    lab_groups_by_section: dict[uuid.UUID, list[TimetableLabGroup]] = {}
-    for lg in lgs_r.scalars().all():
-        lab_groups_by_section.setdefault(lg.section_id, []).append(lg)
+    sections_by_batch: dict[uuid.UUID, list[SectionD]] = {}
+    batch_id_by_section: dict[uuid.UUID, uuid.UUID] = {}
+    if offered_batch_ids:
+        secs_r = await db.execute(
+            select(TimetableSection).where(TimetableSection.batch_id.in_(offered_batch_ids))
+        )
+        for s in secs_r.scalars().all():
+            sec = SectionD(id=s.id, batch_id=s.batch_id, name=s.name)
+            sections_by_batch.setdefault(s.batch_id, []).append(sec)
+            batch_id_by_section[s.id] = s.batch_id
 
-    # Build OfferingSlot list
+    lab_groups_by_section: dict[uuid.UUID, list[LabGroupD]] = {}
+    if batch_id_by_section:
+        lgs_r = await db.execute(
+            select(TimetableLabGroup).where(TimetableLabGroup.section_id.in_(batch_id_by_section.keys()))
+        )
+        for lg in lgs_r.scalars().all():
+            lab_groups_by_section.setdefault(lg.section_id, []).append(
+                LabGroupD(id=lg.id, name=lg.name)
+            )
+
+    # Eligibility, restricted to offered courses and loaded (active, in-tenant) faculty
+    eligible: dict[uuid.UUID, list[uuid.UUID]] = {}
+    if offered_course_ids:
+        elig_r = await db.execute(
+            select(TimetableTeacherEligibility).where(
+                TimetableTeacherEligibility.course_id.in_(offered_course_ids)
+            )
+        )
+        for elig in elig_r.scalars().all():
+            if elig.faculty_id in faculty_ids:
+                eligible.setdefault(elig.course_id, []).append(elig.faculty_id)
+
+    # Build OfferingSlot list + structural diagnostics
+    diagnostics: list[str] = []
+    if not raw_offerings:
+        diagnostics.append("no_offerings_for_term")
+    if not faculty:
+        diagnostics.append("no_faculty")
+
     offering_slots: list[OfferingSlot] = []
+    batches_missing_sections: set[uuid.UUID] = set()
+    sections_missing_lab_groups: list[str] = []
+    any_theory = any_lab = False
     for off in raw_offerings:
         course = courses_by_id.get(off.course_id)
         if not course:
             continue
         sections = sections_by_batch.get(off.batch_id, [])
+        if not sections:
+            batches_missing_sections.add(off.batch_id)
+            continue
+        if course.is_lab:
+            any_lab = True
+        else:
+            any_theory = True
         for section in sections:
             if course.is_lab:
-                # One slot per lab group
-                for lg in lab_groups_by_section.get(section.id, []):
+                lgs = lab_groups_by_section.get(section.id, [])
+                if not lgs:
+                    label = f"{batch_names.get(off.batch_id, '?')}/{section.name}"
+                    if label not in sections_missing_lab_groups:
+                        sections_missing_lab_groups.append(label)
+                    continue
+                for lg in lgs:
                     for copy_idx in range(course.weekly_classes):
                         offering_slots.append(OfferingSlot(
                             offering_id=off.id, course=course,
@@ -122,6 +225,19 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
                         section=section, lab_group=None, copy_idx=copy_idx,
                     ))
 
+    for b_id in sorted(batches_missing_sections, key=lambda b: batch_names.get(b, "")):
+        diagnostics.append(f"no_sections_for_batch:{batch_names.get(b_id, str(b_id))}")
+    for label in sections_missing_lab_groups:
+        diagnostics.append(f"no_lab_groups_for_section:{label}")
+    if any_theory and not any(r.room_type in ("THEORY", "ONLINE") for r in rooms):
+        diagnostics.append("no_theory_rooms")
+    if any_lab and not any(r.room_type == "LAB" for r in rooms):
+        diagnostics.append("no_lab_rooms")
+    for c_id in offered_course_ids:
+        course = courses_by_id.get(c_id)
+        if course and not eligible.get(c_id):
+            diagnostics.append(f"no_eligibility_for_course:{course.code}")
+
     # Load constraints
     con_r = await db.execute(
         select(TimetableConstraint).where(
@@ -129,17 +245,29 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
             TimetableConstraint.enabled == True,
         )
     )
-    constraints = list(con_r.scalars().all())
+    constraints = [
+        ConstraintD(
+            id=str(c.id), constraint_type=c.constraint_type,
+            scope=c.scope or {}, params=c.params or {},
+            enforcement=c.enforcement, weight=c.weight, enabled=c.enabled,
+        )
+        for c in con_r.scalars().all()
+    ]
 
     # Load previous entries for warm-start
-    prev_entries: list[TimetableEntry] = []
+    prev_entries: list[EntryD] = []
     if seed_version is not None:
-        prev_entries = await timetable_svc.list_entries(db, term_id, seed_version)
+        prev_entries = [
+            to_entry_d(e) for e in await timetable_svc.list_entries(db, term_id, seed_version)
+        ]
 
     return SolverData(
-        term=term, config=config, n_days=n_days, n_slots=n_slots,
+        term_id=term.id, term_name=term.name, tenant_id=term.tenant_id,
+        n_days=n_days, n_slots=n_slots,
         offerings=offering_slots, faculty=faculty, rooms=rooms,
         constraints=constraints, eligible=eligible, prev_entries=prev_entries,
+        batch_names=batch_names, batch_id_by_section=batch_id_by_section,
+        diagnostics=diagnostics,
     )
 
 
@@ -150,11 +278,16 @@ def solve(
     time_limit_s: int = 60,
     pinned_change: EntryEdit | None = None,
     locked_entry_ids: set[uuid.UUID] | None = None,
-    base_entries: list[TimetableEntry] | None = None,
+    base_entries: list | None = None,
+    reservations: Reservations | None = None,
+    num_workers: int = 1,
 ) -> dict:
     """
-    Run CP-SAT. Returns:
-      {status, objective, entries: list[dict], infeasible_core: list[uuid]}
+    Run CP-SAT over ``data.offerings``. Returns:
+      {status, objective, entries: list[dict], infeasible_core: list[str]}
+
+    ``reservations`` holds resources already consumed by classes outside this
+    model (other batch groups / carried entries) — treated as constants.
     """
     try:
         from ortools.sat.python import cp_model
@@ -162,31 +295,40 @@ def solve(
         return {"status": "failed", "error": "ortools not installed", "entries": [], "infeasible_core": []}
 
     model = cp_model.CpModel()
+    res = reservations or Reservations()
 
-    faculty_by_id = {fp.id: fp for fp in data.faculty}
-    room_by_id = {r.id: r for r in data.rooms}
     offering_count = len(data.offerings)
     faculty_list = data.faculty
     room_list = data.rooms
 
     if not offering_count or not faculty_list or not room_list:
-        missing = []
-        if not offering_count:
-            missing.append("no_offerings")
-        if not faculty_list:
-            missing.append("no_faculty")
-        if not room_list:
-            missing.append("no_rooms")
-        return {"status": "infeasible", "objective": None, "entries": [], "infeasible_core": missing}
+        core = list(data.diagnostics)
+        if not core:
+            if not offering_count:
+                core.append("no_offerings_for_term")
+            if not faculty_list:
+                core.append("no_faculty")
+            if not room_list:
+                core.append("no_theory_rooms")
+        return {"status": "infeasible", "objective": None, "entries": [], "infeasible_core": core}
 
-    n_f = len(faculty_list)
-    n_r = len(room_list)
     n_d = data.n_days
     n_s = data.n_slots
 
-    # faculty/room index maps
+    # faculty index maps
     faculty_idx = {fp.id: i for i, fp in enumerate(faculty_list)}
     room_idx = {r.id: i for i, r in enumerate(room_list)}
+
+    # Reservation constants keyed by faculty index (busy slots from other groups)
+    busy_fds: set[tuple] = set()          # (f_idx, d, s)
+    busy_fd_count: dict[tuple, int] = {}  # (f_idx, d) -> count
+    for (fac_id, d, s) in res.faculty_busy:
+        f_idx = faculty_idx.get(fac_id)
+        if f_idx is None:
+            continue
+        busy_fds.add((f_idx, d, s))
+        busy_fd_count[(f_idx, d)] = busy_fd_count.get((f_idx, d), 0) + 1
+    res_ctx = {"busy_fds": busy_fds, "busy_fd_count": busy_fd_count}
 
     # ── Decision variables: (offering, faculty, day, slot) ────────────────────
     # Rooms are deliberately NOT part of the decision variable. Every room of a
@@ -198,9 +340,8 @@ def solve(
     # clash-free assignment exists once the per-slot capacity holds).
     #
     # x[o] = { (f_idx, d, s): BoolVar }, created only for faculty eligible to teach
-    # the course, on days that are not one of that faculty's off-days. This keeps
-    # the model from ~1e9 booleans (dense offering×faculty×room×day×slot) down to a
-    # few hundred-thousand at full scale.
+    # the course, on days that are not one of that faculty's off-days and slots
+    # not already reserved by another batch group.
 
     eligible_f_idx_by_course: dict[uuid.UUID, list[int]] = {}
     for course_id, fac_ids in data.eligible.items():
@@ -231,8 +372,14 @@ def solve(
         vars_by_offering[o_idx] = []
         # No room of the required type, or no eligible faculty → unplaceable.
         allowed_f = eligible_f_idx_by_course.get(offering.course.id, [])
-        if (is_lab and n_lab_cap == 0) or (not is_lab and n_theory_cap == 0) or not allowed_f:
-            unplaceable.append(offering.course.code)
+        if is_lab and n_lab_cap == 0:
+            unplaceable.append("no_lab_rooms")
+            continue
+        if not is_lab and n_theory_cap == 0:
+            unplaceable.append("no_theory_rooms")
+            continue
+        if not allowed_f:
+            unplaceable.append(f"no_eligibility_for_course:{offering.course.code}")
             continue
         lg_id = offering.lab_group.id if offering.lab_group else None
         slot_bucket = lab_by_slot if is_lab else theory_by_slot
@@ -242,6 +389,8 @@ def solve(
                 if d in off:
                     continue
                 for s in range(n_s):
+                    if (f_idx, d, s) in busy_fds:
+                        continue
                     var = model.new_bool_var(f"x_{o_idx}_{f_idx}_{d}_{s}")
                     cell[(f_idx, d, s)] = var
                     by_faculty_slot.setdefault((f_idx, d, s), []).append(var)
@@ -249,16 +398,16 @@ def solve(
                     slot_bucket.setdefault((d, s), []).append(var)
         vars_by_offering[o_idx] = list(cell.values())
         if not cell:
-            unplaceable.append(offering.course.code)
+            unplaceable.append(f"no_assignment:{offering.course.code}")
 
     # Guard: an offering with no legal placement makes the whole model infeasible
-    # via add_exactly_one([]). Fail loudly instead, naming the offending course(s).
+    # via add_exactly_one([]). Fail loudly instead, naming the cause.
     if unplaceable:
         return {
             "status": "infeasible",
             "objective": None,
             "entries": [],
-            "infeasible_core": [f"no_assignment:{c}" for c in sorted(set(unplaceable))],
+            "infeasible_core": sorted(set(unplaceable)),
         }
 
     # ── Hard constraints ──────────────────────────────────────────────────────
@@ -269,12 +418,15 @@ def solve(
         model.add_exactly_one(vars_by_offering[o_idx])
 
     # Per-slot room capacity: concurrent classes of a type ≤ rooms of that type
-    for vars_list in theory_by_slot.values():
-        if len(vars_list) > n_theory_cap:
-            model.add(sum(vars_list) <= n_theory_cap)
-    for vars_list in lab_by_slot.values():
-        if len(vars_list) > n_lab_cap:
-            model.add(sum(vars_list) <= n_lab_cap)
+    # still free after other groups' reservations.
+    for key, vars_list in theory_by_slot.items():
+        cap = max(n_theory_cap - res.theory_used.get(key, 0), 0)
+        if len(vars_list) > cap:
+            model.add(sum(vars_list) <= cap)
+    for key, vars_list in lab_by_slot.items():
+        cap = max(n_lab_cap - res.lab_used.get(key, 0), 0)
+        if len(vars_list) > cap:
+            model.add(sum(vars_list) <= cap)
 
     # No teacher in two places at once
     for vars_list in by_faculty_slot.values():
@@ -301,12 +453,13 @@ def solve(
                 continue
             model.add(sum(theory_vars) + sum(lab_vars) <= 1)
 
-    # Faculty workload cap — at most fp.max_per_day classes per teacher per day
+    # Faculty workload cap — at most fp.max_per_day classes per teacher per day,
+    # counting classes this teacher already has in other batch groups.
     by_faculty_day: dict[tuple, list] = {}
     for (f_idx, d, _s), vars_list in by_faculty_slot.items():
         by_faculty_day.setdefault((f_idx, d), []).extend(vars_list)
-    for (f_idx, _d), vars_list in by_faculty_day.items():
-        cap = faculty_list[f_idx].max_per_day or 4
+    for (f_idx, d), vars_list in by_faculty_day.items():
+        cap = max((faculty_list[f_idx].max_per_day or 4) - busy_fd_count.get((f_idx, d), 0), 0)
         if len(vars_list) > cap:
             model.add(sum(vars_list) <= cap)
 
@@ -320,7 +473,7 @@ def solve(
         try:
             assumption = model.new_bool_var(f"assume_{con.id}")
             builder(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
-                    con.scope, con.params, assumption)
+                    con.scope, con.params, assumption, res_ctx)
             assumption_map[str(con.id)] = assumption
         except Exception as exc:
             logger.warning(f"Constraint {con.constraint_type} build failed: {exc}")
@@ -338,8 +491,9 @@ def solve(
         )
         if pert["pin_error"]:
             # The requested move points at a combo with no decision variable
-            # (teacher off-day / ineligible / out-of-range slot). Fail loudly
-            # instead of returning an unchanged timetable as "success".
+            # (teacher off-day / ineligible / out-of-range slot / reserved by
+            # another batch). Fail loudly instead of returning an unchanged
+            # timetable as "success".
             return {
                 "status": "infeasible",
                 "objective": None,
@@ -348,6 +502,11 @@ def solve(
             }
         locked_offerings = pert["locked_offerings"]
         pinned_offering = pert["pinned_offering"]
+    else:
+        # Fresh solve → break the two big search symmetries. Not applied in
+        # perturbation mode: an existing (possibly hand-edited) solution may
+        # violate them, and pinning + these constraints could contradict.
+        _add_symmetry_breaking(model, x, data, n_s)
 
     # ── Soft constraints (penalties) ──────────────────────────────────────────
     for con in data.constraints:
@@ -357,7 +516,7 @@ def solve(
         if soft_builder:
             try:
                 soft_builder(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
-                             con.scope, con.params, con.weight or 1, penalty_terms)
+                             con.scope, con.params, con.weight or 1, penalty_terms, res_ctx)
             except Exception as exc:
                 logger.warning(f"Soft constraint {con.constraint_type} build failed: {exc}")
 
@@ -374,10 +533,9 @@ def solve(
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(time_limit_s)
-    # Single worker: portfolio search (4 workers) gave no measurable speedup at
-    # real scale but multiplied CPU threads and peak memory — enough to get the
-    # solve OOM-killed on a small Railway container, orphaning the job at 10%.
-    solver.parameters.num_search_workers = 1
+    # Per-batch models are small; extra portfolio workers mostly multiply CPU
+    # and peak memory. Configurable via SOLVER_NUM_WORKERS (default 1).
+    solver.parameters.num_search_workers = max(int(num_workers), 1)
     status = solver.solve(model)
 
     status_name = solver.status_name(status)
@@ -407,7 +565,8 @@ def solve(
 
     # Extract solution — collect placed classes per (day, slot), grouped by type,
     # then hand out concrete rooms. Distinct index per slot ⇒ no room double-booking;
-    # the per-slot capacity constraint guarantees index < pool size.
+    # the per-slot capacity constraint guarantees index < free-pool size. Rooms
+    # already taken by other groups' entries in the same slot are excluded.
     placed_theory: dict[tuple, list] = {}
     placed_lab: dict[tuple, list] = {}
     for o_idx, offering in enumerate(data.offerings):
@@ -420,9 +579,11 @@ def solve(
     result_entries = []
 
     def _emit(buckets: dict, pool: list):
-        for recs in buckets.values():
+        for key, recs in buckets.items():
+            used = res.rooms_used.get(key, set())
+            avail = [rid for rid in pool if rid not in used] or list(pool)
             for i, (o_idx, offering, faculty_id, d, s) in enumerate(recs):
-                room_id = pool[i] if i < len(pool) else pool[i % len(pool)]
+                room_id = avail[i] if i < len(avail) else avail[i % len(avail)]
                 # Locks must survive into the new version, or the next re-solve
                 # silently moves cells the admin pinned down.
                 locked = o_idx in locked_offerings or (o_idx == pinned_offering and pin_lock)
@@ -450,6 +611,47 @@ def solve(
     }
 
 
+def _add_symmetry_breaking(model, x, data: SolverData, n_s: int) -> None:
+    """Break the two dominant symmetries on fresh solves (S-5).
+
+    1. Same teacher for every weekly copy of a course-section(-lab-group): what
+       universities want anyway, and it collapses the teacher-permutation space.
+    2. Weekly copies are time-ordered (copy 0 earlier in the week than copy 1),
+       killing the copy-permutation symmetry.
+    """
+    copies: dict[tuple, list[tuple[int, int]]] = {}
+    for o_idx, offering in enumerate(data.offerings):
+        lg_id = offering.lab_group.id if offering.lab_group else None
+        key = (offering.offering_id, offering.section.id, lg_id)
+        copies.setdefault(key, []).append((offering.copy_idx, o_idx))
+
+    for group in copies.values():
+        if len(group) < 2:
+            continue
+        group.sort()
+        o_idxs = [o for _, o in group]
+
+        # (1) same teacher across copies
+        f_present: set[int] = set()
+        for o in o_idxs:
+            f_present.update(f for (f, _d, _s) in x[o].keys())
+        first = o_idxs[0]
+        for other in o_idxs[1:]:
+            for f in f_present:
+                lhs = [v for (ff, _d, _s), v in x[first].items() if ff == f]
+                rhs = [v for (ff, _d, _s), v in x[other].items() if ff == f]
+                model.add(sum(lhs) == sum(rhs))
+
+        # (2) copies in strict week order (also ⇒ distinct times)
+        prev_t = None
+        for o in o_idxs:
+            t = model.new_int_var(0, data.n_days * n_s - 1, f"t_{o}")
+            model.add(t == sum(v * (d * n_s + s) for (_f, d, s), v in x[o].items()))
+            if prev_t is not None:
+                model.add(prev_t < t)
+            prev_t = t
+
+
 def _add_perturbation(
     model, x, data, faculty_list, room_list, faculty_idx, room_idx,
     base_entries, locked_ids, pinned_change, penalty_terms,
@@ -459,6 +661,9 @@ def _add_perturbation(
     Returns {"locked_offerings": set[int], "pinned_offering": int | None,
     "pin_error": str | None}. A non-None pin_error means the requested change
     cannot be expressed in the model and the caller must abort the solve.
+
+    Base entries that do not match any offering in this (possibly per-batch)
+    model are skipped — they belong to other groups and are handled there.
     """
     result = {"locked_offerings": set(), "pinned_offering": None, "pin_error": None}
 
@@ -531,7 +736,7 @@ def _add_perturbation(
             return result
         var = x[o_idx].get((nf_idx, new_day, new_slot))
         if var is None:
-            result["pin_error"] = "target teacher/day/slot is unavailable (off-day, ineligible, or out of range)"
+            result["pin_error"] = "target teacher/day/slot is unavailable (off-day, ineligible, busy, or out of range)"
             return result
         model.add(var == 1)
 
@@ -554,37 +759,43 @@ def _add_warm_hints(model, x, data, faculty_list, room_list, faculty_idx, room_i
 
 
 # ── Constraint registry ───────────────────────────────────────────────────────
+# Builders receive res_ctx = {"busy_fds": set[(f_idx,d,s)], "busy_fd_count":
+# dict[(f_idx,d)→n]} so count-limits keep holding across batch groups: a
+# teacher already given 3 classes on Monday by an earlier group has only
+# (limit-3) left here. Pruning the busy vars alone would NOT enforce this.
 
 def _build_max_per_day(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
-                       scope, params, assumption):
+                       scope, params, assumption, res_ctx):
     limit = int(params.get("limit", 4))
+    busy_fd = res_ctx["busy_fd_count"]
     # Group created vars by (faculty, day)
     by_fd: dict[tuple, list] = {}
     for cell in x.values():
         for (f_idx, d, _s), var in cell.items():
             by_fd.setdefault((f_idx, d), []).append(var)
-    for day_vars in by_fd.values():
-        if day_vars:
-            model.add(sum(day_vars) <= limit).only_enforce_if(assumption)
+    for (f_idx, d), day_vars in by_fd.items():
+        cap = max(limit - busy_fd.get((f_idx, d), 0), 0)
+        if len(day_vars) > cap:
+            model.add(sum(day_vars) <= cap).only_enforce_if(assumption)
 
 
 def _build_consecutive_limit(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
-                              scope, params, assumption):
+                              scope, params, assumption, res_ctx):
     limit = int(params.get("limit", 2))
+    busy_fds = res_ctx["busy_fds"]
     # Group created vars by (faculty, day) → {slot: [vars]}
     by_fd_s: dict[tuple, dict] = {}
     for cell in x.values():
         for (f_idx, d, s), var in cell.items():
             by_fd_s.setdefault((f_idx, d), {}).setdefault(s, []).append(var)
-    for slot_map in by_fd_s.values():
+    for (f_idx, d), slot_map in by_fd_s.items():
         for s_start in range(data.n_slots - limit):
-            window_vars = [
-                v
-                for s in range(s_start, s_start + limit + 1)
-                for v in slot_map.get(s, [])
-            ]
-            if window_vars:
-                model.add(sum(window_vars) <= limit).only_enforce_if(assumption)
+            window = range(s_start, s_start + limit + 1)
+            reserved = sum(1 for s in window if (f_idx, d, s) in busy_fds)
+            window_vars = [v for s in window for v in slot_map.get(s, [])]
+            cap = max(limit - reserved, 0)
+            if len(window_vars) > cap:
+                model.add(sum(window_vars) <= cap).only_enforce_if(assumption)
 
 
 CONSTRAINT_BUILDERS = {
@@ -594,7 +805,7 @@ CONSTRAINT_BUILDERS = {
 
 
 def _soft_pref_slot(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
-                    scope, params, weight, penalty_terms):
+                    scope, params, weight, penalty_terms, res_ctx):
     # Penalise any class a teacher with a preferred slot is given outside it.
     for cell in x.values():
         for (f_idx, _d, s), var in cell.items():
@@ -604,7 +815,7 @@ def _soft_pref_slot(model, x, data, faculty_list, room_list, faculty_idx, room_i
 
 
 def _soft_online_penalty(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
-                         scope, params, weight, penalty_terms):
+                         scope, params, weight, penalty_terms, res_ctx):
     # Rooms are assigned in a post-pass (THEORY preferred over ONLINE), so online
     # usage is already minimised structurally; there are no room decision vars to
     # penalise here. Kept as a registered no-op so the constraint type stays valid.
@@ -612,40 +823,42 @@ def _soft_online_penalty(model, x, data, faculty_list, room_list, faculty_idx, r
 
 
 def _soft_max_per_day(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
-                      scope, params, weight, penalty_terms):
-    # Penalise each class beyond `limit` a teacher gets on one day.
+                      scope, params, weight, penalty_terms, res_ctx):
+    # Penalise each class beyond `limit` a teacher gets on one day (counting
+    # classes already committed in other batch groups).
     limit = int(params.get("limit", 4))
+    busy_fd = res_ctx["busy_fd_count"]
     by_fd: dict[tuple, list] = {}
     for cell in x.values():
         for (f_idx, d, _s), var in cell.items():
             by_fd.setdefault((f_idx, d), []).append(var)
     for (f_idx, d), day_vars in by_fd.items():
-        if len(day_vars) <= limit:
+        reserved = busy_fd.get((f_idx, d), 0)
+        if len(day_vars) + reserved <= limit:
             continue
-        excess = model.new_int_var(0, len(day_vars), f"soft_mpd_{f_idx}_{d}")
-        model.add(sum(day_vars) - limit <= excess)
+        excess = model.new_int_var(0, len(day_vars) + reserved, f"soft_mpd_{f_idx}_{d}")
+        model.add(sum(day_vars) + reserved - limit <= excess)
         penalty_terms.append(weight * excess)
 
 
 def _soft_consecutive(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
-                      scope, params, weight, penalty_terms):
+                      scope, params, weight, penalty_terms, res_ctx):
     # Penalise each class beyond `limit` inside any window of limit+1 slots.
     limit = int(params.get("limit", 2))
+    busy_fds = res_ctx["busy_fds"]
     by_fd_s: dict[tuple, dict] = {}
     for cell in x.values():
         for (f_idx, d, s), var in cell.items():
             by_fd_s.setdefault((f_idx, d), {}).setdefault(s, []).append(var)
     for (f_idx, d), slot_map in by_fd_s.items():
         for s_start in range(data.n_slots - limit):
-            window_vars = [
-                v
-                for s in range(s_start, s_start + limit + 1)
-                for v in slot_map.get(s, [])
-            ]
-            if len(window_vars) <= limit:
+            window = range(s_start, s_start + limit + 1)
+            reserved = sum(1 for s in window if (f_idx, d, s) in busy_fds)
+            window_vars = [v for s in window for v in slot_map.get(s, [])]
+            if len(window_vars) + reserved <= limit:
                 continue
-            over = model.new_int_var(0, len(window_vars), f"soft_cons_{f_idx}_{d}_{s_start}")
-            model.add(sum(window_vars) - limit <= over)
+            over = model.new_int_var(0, len(window_vars) + reserved, f"soft_cons_{f_idx}_{d}_{s_start}")
+            model.add(sum(window_vars) + reserved - limit <= over)
             penalty_terms.append(weight * over)
 
 
@@ -657,6 +870,97 @@ SOFT_BUILDERS = {
 }
 
 
+# ── Decomposition planning ────────────────────────────────────────────────────
+
+def plan_groups(data: SolverData, strategy: str, threshold: int) -> list[list[OfferingSlot]]:
+    """Split offerings into per-batch solve groups, tightest (largest) first.
+
+    Returns a single group (monolith) when strategy says so or the term has few
+    enough batches that decomposition buys nothing.
+    """
+    by_batch: dict[uuid.UUID, list[OfferingSlot]] = {}
+    for slot in data.offerings:
+        by_batch.setdefault(slot.section.batch_id, []).append(slot)
+
+    if strategy == "monolith" or (strategy != "per_batch" and len(by_batch) <= threshold):
+        return [list(data.offerings)]
+
+    groups = sorted(
+        by_batch.values(),
+        key=lambda g: (-len(g), data.batch_names.get(g[0].section.batch_id, "")),
+    )
+    return groups
+
+
+def split_budget(group_sizes: list[int], total_s: int, min_s: int = 5) -> list[int]:
+    """Per-group time budgets proportional to group size, floored at min_s."""
+    total_sessions = sum(group_sizes) or 1
+    return [max(min_s, int(total_s * size / total_sessions)) for size in group_sizes]
+
+
+def _batches_of(group: list[OfferingSlot]) -> set[uuid.UUID]:
+    return {slot.section.batch_id for slot in group}
+
+
+def _group_label(data: SolverData, group: list[OfferingSlot]) -> str:
+    names = sorted(data.batch_names.get(b, str(b)) for b in _batches_of(group))
+    return "+".join(names) if names else "?"
+
+
+def _entry_to_row(e: EntryD) -> dict:
+    """A carried-verbatim entry as insert kwargs (keeps locked/source/room)."""
+    return {
+        "course_id": e.course_id, "section_id": e.section_id,
+        "lab_group_id": e.lab_group_id, "faculty_id": e.faculty_id,
+        "room_id": e.room_id, "day": e.day, "slot": e.slot,
+        "is_lab": e.is_lab, "locked": e.locked, "source": e.source,
+    }
+
+
+def _plan_pin_groups(
+    data: SolverData, base: list[EntryD], pinned_entry: EntryD, pinned_change: EntryEdit,
+) -> tuple[list[list[OfferingSlot]], list[EntryD]]:
+    """Pin fast path: solve only the pinned entry's batch; carry the rest.
+
+    If the pin's target (teacher, day, slot) is currently held by an entry in
+    another batch, that batch joins the solve group (the monolith could resolve
+    such ripples; a pure single-batch solve would report pin_impossible).
+    """
+    pin_batch = data.batch_id_by_section.get(pinned_entry.section_id)
+    group_batches = {pin_batch}
+
+    tgt_day = pinned_change.new_day if pinned_change.new_day is not None else pinned_entry.day
+    tgt_slot = pinned_change.new_slot if pinned_change.new_slot is not None else pinned_entry.slot
+    tgt_fac = pinned_change.new_faculty_id or pinned_entry.faculty_id
+    for e in base:
+        if e.faculty_id == tgt_fac and e.day == tgt_day and e.slot == tgt_slot:
+            b = data.batch_id_by_section.get(e.section_id)
+            if b is not None:
+                group_batches.add(b)
+
+    carried = [
+        e for e in base
+        if data.batch_id_by_section.get(e.section_id) not in group_batches
+    ]
+    group = [o for o in data.offerings if o.section.batch_id in group_batches]
+    return [group], carried
+
+
+# ── Executor isolation ────────────────────────────────────────────────────────
+
+def _solve_worker(data: SolverData, kwargs: dict) -> dict:
+    """Top-level entry point for the solver subprocess (spawn-picklable)."""
+    return solve(data, **kwargs)
+
+
+async def _solve_async(pool: ProcessPoolExecutor | None, data: SolverData, kwargs: dict) -> dict:
+    loop = asyncio.get_event_loop()
+    if pool is None:
+        # Thread mode — call through the module global so tests can monkeypatch.
+        return await loop.run_in_executor(None, lambda: solve(data, **kwargs))
+    return await loop.run_in_executor(pool, _solve_worker, data, kwargs)
+
+
 # ── Background job runner ─────────────────────────────────────────────────────
 
 async def run_solve_job(
@@ -665,9 +969,15 @@ async def run_solve_job(
     request: SolveRequest,
     pinned_change: EntryEdit | None = None,
     locked_entry_ids: set[uuid.UUID] | None = None,
-    base_entries: list[TimetableEntry] | None = None,
+    base_entries: list | None = None,
 ) -> None:
-    """Background task — opens its own DB session. Never raises."""
+    """Background task — opens its own DB session. Never raises.
+
+    Drives the per-batch decomposition: plan groups → solve sequentially with
+    reservations → write real progress per group → escalate on infeasibility
+    (pair-merge, then one monolith over the remainder) → insert all entries as
+    one new result version.
+    """
     try:
         async with db_factory() as db:
             job = await timetable_svc.get_solve_job(db, job_id)
@@ -683,6 +993,8 @@ async def run_solve_job(
         logger.warning(f"Solve job {job_id} could not start (DB unavailable?): {exc}")
         return
 
+    settings = get_settings()
+    pool: ProcessPoolExecutor | None = None
     try:
         async with db_factory() as db:
             data = await load_solver_data(
@@ -690,59 +1002,173 @@ async def run_solve_job(
                 seed_version=request.seed_from_version,
             )
 
-        # Run solver in thread pool (CPU-bound)
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: solve(
-                data,
-                time_limit_s=request.time_limit_s,
-                pinned_change=pinned_change,
+        base: list[EntryD] = [to_entry_d(e) for e in (base_entries or [])]
+        if pinned_change is not None and not pinned_change.entry_id:
+            pinned_change = None  # empty change ⇒ plain perturbation re-solve
+
+        # Structural data problems mean sessions would silently vanish from the
+        # timetable — fail fast with actionable cores instead.
+        blocking = [d for d in data.diagnostics if d.startswith(_BLOCKING_DIAGNOSTIC_PREFIXES)]
+        if blocking:
+            await _finish_job(db_factory, job_id, status="infeasible", progress=100,
+                              solver_status="infeasible", infeasible_core=blocking)
+            return
+
+        pinned_entry: EntryD | None = None
+        if pinned_change is not None:
+            pinned_entry = next((e for e in base if e.id == pinned_change.entry_id), None)
+            if pinned_entry is None:
+                await _finish_job(
+                    db_factory, job_id, status="infeasible", progress=100,
+                    solver_status="infeasible",
+                    infeasible_core=["pin_impossible: entry not found in the base version"],
+                )
+                return
+
+        strategy = getattr(request, "strategy", None) or "auto"
+        if pinned_entry is not None:
+            groups, carried = _plan_pin_groups(data, base, pinned_entry, pinned_change)
+        else:
+            groups = plan_groups(data, strategy, settings.solver_decompose_threshold)
+            carried = []
+
+        base_by_batch: dict[uuid.UUID | None, list[EntryD]] = {}
+        for e in base:
+            base_by_batch.setdefault(data.batch_id_by_section.get(e.section_id), []).append(e)
+
+        if settings.solver_isolation == "process":
+            pool = ProcessPoolExecutor(
+                max_workers=1, mp_context=multiprocessing.get_context("spawn")
+            )
+
+        total_sessions = sum(len(g) for g in groups) or 1
+        committed: list[list[dict]] = []      # per solved group, parallel to groups[:i]
+        statuses: list[str] = []
+        tried_pair: set[frozenset] = set()
+        final_merged = False
+        failure: tuple[str, list[str]] | None = None
+        deadline = time.monotonic() + request.time_limit_s * 1.5
+        i = 0
+
+        while i < len(groups):
+            grp = groups[i]
+            multi = len(groups) > 1
+            if multi:
+                # Heartbeat + real progress before each group solve — the row's
+                # updated_at doubles as the orphan-reaper's liveness signal.
+                await _write_job(
+                    db_factory, job_id,
+                    progress=10 + int(85 * i / len(groups)),
+                    solver_status=f"batch {i + 1}/{len(groups)}"[:30],
+                )
+            slice_data = replace(data, offerings=grp)
+
+            # Reservations = carried entries + already-solved groups + (in a
+            # no-pin perturbation) the still-standing base of unsolved groups.
+            res_entries: list = list(carried)
+            for c in committed:
+                res_entries.extend(c)
+            if base and pinned_entry is None:
+                for g in groups[i + 1:]:
+                    for b in _batches_of(g):
+                        res_entries.extend(base_by_batch.get(b, []))
+            reservations = build_reservations(res_entries) if res_entries else None
+
+            budget = max(5, int(request.time_limit_s * len(grp) / total_sessions)) if multi \
+                else request.time_limit_s
+            budget = max(5, min(budget, int(deadline - time.monotonic())))
+
+            kwargs = dict(
+                time_limit_s=budget,
+                pinned_change=pinned_change if pinned_entry is not None else None,
                 locked_entry_ids=locked_entry_ids,
-                base_entries=base_entries,
-            ),
-        )
+                base_entries=base or None,
+                reservations=reservations,
+                num_workers=settings.solver_num_workers,
+            )
+            result = await _solve_async(pool, slice_data, kwargs)
+            st = result["status"]
+
+            if st in ("optimal", "feasible"):
+                committed.append(result["entries"])
+                statuses.append(st)
+                i += 1
+                continue
+
+            cores = result.get("infeasible_core") or []
+            if st == "infeasible" and multi:
+                key = frozenset(_batches_of(grp))
+                if i > 0 and key not in tried_pair and not final_merged:
+                    # The previous group may have greedily taken this group's
+                    # resources — merge the pair and re-solve them together.
+                    tried_pair.add(key)
+                    groups[i - 1:i + 1] = [groups[i - 1] + grp]
+                    committed.pop()
+                    statuses.pop()
+                    i -= 1
+                    continue
+                if not final_merged and len(groups) - i > 1:
+                    # Last resort inside the budget: one model over everything
+                    # not yet committed.
+                    groups[i:] = [[o for g in groups[i:] for o in g]]
+                    final_merged = True
+                    continue
+                failure = (st, [f"batch {_group_label(data, grp)}: {c}" for c in cores])
+                break
+
+            failure = (st, cores)
+            break
+
+        if failure is not None:
+            st, cores = failure
+            job_status = st if st == "infeasible" else "failed"
+            await _finish_job(
+                db_factory, job_id, status=job_status, progress=100,
+                solver_status=st[:30], infeasible_core=cores,
+            )
+            return
+
+        # Persist: carried-verbatim entries (pin fast path) + all solved groups.
+        entry_rows = [_entry_to_row(e) for e in carried]
+        for c in committed:
+            entry_rows.extend(c)
+        objective = 0  # objectives are per-group; report their sum
 
         async with db_factory() as db:
             job = await timetable_svc.get_solve_job(db, job_id)
             if not job:
                 return
-
-            if result["status"] in ("optimal", "feasible"):
-                next_version = await timetable_svc.get_next_version(db, request.term_id)
-                entries = [
-                    TimetableEntry(
-                        tenant_id=job.tenant_id,
-                        term_id=request.term_id,
-                        result_version=next_version,
-                        **e,
-                    )
-                    for e in result["entries"]
-                ]
-                await timetable_svc.bulk_insert_entries(db, entries)
-                await timetable_svc.update_solve_job(
-                    db, job,
-                    status=result["status"],
-                    progress=100,
-                    solver_status=result["status"],
-                    objective_value=result.get("objective"),
+            next_version = await timetable_svc.get_next_version(db, request.term_id)
+            entries = [
+                TimetableEntry(
+                    tenant_id=job.tenant_id,
+                    term_id=request.term_id,
                     result_version=next_version,
-                    finished_at=datetime.now(timezone.utc),
-                    infeasible_core=result.get("infeasible_core") or [],
+                    **e,
                 )
-            else:
-                # CP-SAT can also end UNKNOWN (time limit, no solution yet) or
-                # MODEL_INVALID; clients only understand infeasible/failed, so
-                # collapse everything else to failed and keep the raw status.
-                job_status = result["status"] if result["status"] == "infeasible" else "failed"
-                await timetable_svc.update_solve_job(
-                    db, job,
-                    status=job_status,
-                    progress=100,
-                    solver_status=result["status"],
-                    finished_at=datetime.now(timezone.utc),
-                    infeasible_core=result.get("infeasible_core") or [],
-                )
+                for e in entry_rows
+            ]
+            await timetable_svc.bulk_insert_entries(db, entries)
+            final_status = "optimal" if all(s == "optimal" for s in statuses) else "feasible"
+            await timetable_svc.update_solve_job(
+                db, job,
+                status=final_status,
+                progress=100,
+                solver_status=final_status,
+                objective_value=objective,
+                result_version=next_version,
+                finished_at=datetime.now(timezone.utc),
+                infeasible_core=[],
+            )
+    except BrokenProcessPool:
+        # The solver child was killed (almost always the OOM killer). Without
+        # process isolation this took down the API and orphaned the job at 10%.
+        logger.error(f"Solve job {job_id}: solver subprocess died (OOM-killed?)")
+        await _finish_job(
+            db_factory, job_id, status="failed", progress=100,
+            solver_status="solver_oom",
+            infeasible_core=["solver process was killed — likely out of memory"],
+        )
     except Exception as exc:
         logger.exception(f"Solve job {job_id} failed")
         try:
@@ -758,6 +1184,26 @@ async def run_solve_job(
                     )
         except Exception:
             logger.warning(f"Solve job {job_id} could not update failure status (DB unavailable?)")
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+
+async def _write_job(db_factory, job_id: uuid.UUID, **kwargs) -> None:
+    """Best-effort intermediate job update (progress heartbeat)."""
+    try:
+        async with db_factory() as db:
+            job = await timetable_svc.get_solve_job(db, job_id)
+            if job:
+                await timetable_svc.update_solve_job(db, job, **kwargs)
+    except Exception:
+        logger.warning(f"Solve job {job_id}: progress write failed", exc_info=True)
+
+
+async def _finish_job(db_factory, job_id: uuid.UUID, **kwargs) -> None:
+    """Terminal job update; adds finished_at."""
+    kwargs.setdefault("finished_at", datetime.now(timezone.utc))
+    await _write_job(db_factory, job_id, **kwargs)
 
 
 # ── NL → EntryEdit ────────────────────────────────────────────────────────────
@@ -766,7 +1212,6 @@ async def nl_to_entry_edit(text: str, entries_context: list[dict]) -> EntryEdit 
     """Parse a natural-language timetable command into an EntryEdit using Ollama."""
     try:
         import httpx
-        from app.config import get_settings
         from app.services import skill_loader
         settings = get_settings()
         ollama_url = getattr(settings, "ollama_base_url", "http://localhost:11434")

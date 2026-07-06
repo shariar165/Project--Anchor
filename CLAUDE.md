@@ -426,6 +426,19 @@ CP-SAT constraint solver (Google OR-Tools) that generates clash-free academic ti
 
 The solver honors `TimetableConstraint` rows with `enforcement=hard|soft` and `weight`. `solver_status` on `TimetableSolveJob` reflects OR-Tools outcome: `OPTIMAL`, `FEASIBLE`, or `INFEASIBLE` (with `infeasible_core` populated for debugging).
 
+### Scale architecture (per-batch decomposition)
+
+At real scale (9 batches × 8 sections ≈ 850 weekly sessions) a single monolithic CP-SAT model does not converge and OOM-kills small containers. `run_solve_job` therefore solves **per batch** (batches are course-disjoint): groups are solved sequentially, largest first, and resources consumed by earlier groups (faculty time slots, per-slot room capacity, concrete room ids, per-day/consecutive count budgets) are passed forward as `Reservations` constants. On a group infeasibility it escalates: pair-merge with the previous group → one model over the remainder → fail with batch-labelled cores. Progress and `solver_status` ("batch i/n") are written to the job row per group, so the admin UI shows real progress and the row's `updated_at` doubles as a liveness heartbeat.
+
+Key knobs (all in `app/config.py`, override via env):
+- `SOLVER_ISOLATION=process|thread` (default `process`) — solves run in a spawned subprocess; an OOM kill fails the job as `solver_oom` instead of taking down the API and orphaning the job at 10%. Tests use `thread`.
+- `SOLVER_NUM_WORKERS` (default 1) — CP-SAT search workers per solve.
+- `SOLVER_DECOMPOSE_THRESHOLD` (default 2) — terms with ≤N batches solve as a monolith; `SolveRequest.strategy` (`auto|monolith|per_batch`) overrides.
+
+Orphaned jobs are reaped twice: at startup (`timetable_svc.reap_stale_solve_jobs` in the `main.py` lifespan) and lazily on `GET /solve/{job_id}` via `updated_at` staleness.
+
+Data hygiene: CSV/XLSX import **upserts** (courses by normalized code, rooms/batches by normalized name, faculty by email; offerings/eligibility skip exact duplicates) and reports `created/updated/skipped`. `generate-structure` is idempotent (creates only missing sections/lab groups). All create endpoints return 409 on duplicates. Migration `c7d8e9f0a1b2` deduped the polluted production tables and added the unique constraints that prevent re-pollution. Structural data gaps fail solves fast with machine-readable cores (`no_offerings_for_term`, `no_sections_for_batch:<name>`, `no_eligibility_for_course:<code>`, …) which the admin UI maps to fix-it guidance (only true constraint conflicts get the "Make soft" treatment).
+
 ### Known production blockers
 
 - **`docs/specs/todo-registration-ghost-accounts.md`** — Registration ghost-account bug: **Fixed.** `POST /auth/register` now stores the payload in Redis (same TTL as the OTP) and creates no DB row. The `User` row is created as `active` only on successful OTP verification. Old `pending_verification` ghost rows are cleaned up on sight.

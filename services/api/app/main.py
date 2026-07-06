@@ -63,10 +63,20 @@ async def lifespan(app: FastAPI):
         from app.services.filing_svc import seed_templates
         from app.services.legal_rights_svc import seed_legal_rights
         from app.services.officer_scorecard_svc import seed_stations
+        from app.services.timetable_svc import reap_stale_solve_jobs
         async with AsyncSessionLocal() as _db:
             await seed_templates(_db)
             await seed_legal_rights(_db)
             await seed_stations(_db)
+            # Solve jobs from before a restart cannot still be running — their
+            # background task died with the old process. Without this they sit
+            # at running/10% forever unless someone happens to poll them.
+            reaped = await reap_stale_solve_jobs(_db)
+            if reaped:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Startup reaper: marked {reaped} orphaned timetable solve job(s) as failed"
+                )
     except Exception:
         pass
     yield

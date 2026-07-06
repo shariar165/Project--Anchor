@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid, JSON, func,
+    Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint,
+    Uuid, JSON, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin
@@ -28,6 +29,7 @@ class TimetableBatch(Base, TimestampMixin):
 
 class TimetableSection(Base):
     __tablename__ = "tt_sections"
+    __table_args__ = (UniqueConstraint("batch_id", "name", name="uq_tt_sections_batch_name"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     batch_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tt_batches.id"), nullable=False, index=True)
@@ -36,6 +38,7 @@ class TimetableSection(Base):
 
 class TimetableLabGroup(Base):
     __tablename__ = "tt_lab_groups"
+    __table_args__ = (UniqueConstraint("section_id", "name", name="uq_tt_lab_groups_section_name"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     section_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tt_sections.id"), nullable=False, index=True)
@@ -95,6 +98,9 @@ class TimetableStudentEnrollment(Base):
 
 class TimetableCourseOffering(Base):
     __tablename__ = "tt_course_offerings"
+    __table_args__ = (
+        UniqueConstraint("term_id", "course_id", "batch_id", name="uq_tt_offerings_term_course_batch"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     term_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tt_terms.id"), nullable=False, index=True)
@@ -104,6 +110,9 @@ class TimetableCourseOffering(Base):
 
 class TimetableTeacherEligibility(Base):
     __tablename__ = "tt_teacher_eligibility"
+    __table_args__ = (
+        UniqueConstraint("faculty_id", "course_id", name="uq_tt_eligibility_faculty_course"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     faculty_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tt_faculty_profiles.id"), nullable=False, index=True)

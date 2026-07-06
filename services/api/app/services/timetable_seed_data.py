@@ -166,7 +166,7 @@ async def seed_scenario(
         db.add(batch)
         await db.flush()
         secs = await timetable_svc.generate_sections(db, batch.id, count=8, lab_split=True)
-        section_count += len(secs)
+        section_count += len(secs["created"]) + secs["existing"]
         for code in BATCH_COURSES[batch_name]:
             db.add(TimetableCourseOffering(
                 term_id=term.id, course_id=courses_by_code[code].id, batch_id=batch.id,
