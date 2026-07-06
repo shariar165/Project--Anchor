@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -460,6 +461,26 @@ async def get_solve_job(
     job = await timetable_svc.get_solve_job(db, job_id)
     if not job:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Solve job not found")
+    # Orphan reaper — a background solve that outlives its time budget (e.g. the
+    # container was recycled mid-solve on Railway) leaves the row frozen at
+    # running/10% forever, so the UI polls it endlessly. The solver is hard-capped
+    # at time_limit_s (<=600s), so anything still "running" well past that is dead.
+    if job.status == "running" and job.started_at is not None:
+        try:
+            limit_s = int((job.params or {}).get("time_limit_s", 600))
+        except Exception:
+            limit_s = 600
+        started = job.started_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > started + timedelta(seconds=limit_s + 180):
+            job = await timetable_svc.update_solve_job(
+                db, job,
+                status="failed",
+                progress=100,
+                solver_status="orphaned",
+                finished_at=datetime.now(timezone.utc),
+            )
     return SolveJobOut.from_orm_job(job)
 
 

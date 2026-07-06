@@ -374,7 +374,10 @@ def solve(
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(time_limit_s)
-    solver.parameters.num_search_workers = 4
+    # Single worker: portfolio search (4 workers) gave no measurable speedup at
+    # real scale but multiplied CPU threads and peak memory — enough to get the
+    # solve OOM-killed on a small Railway container, orphaning the job at 10%.
+    solver.parameters.num_search_workers = 1
     status = solver.solve(model)
 
     status_name = solver.status_name(status)
