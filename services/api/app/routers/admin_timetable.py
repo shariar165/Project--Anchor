@@ -7,6 +7,7 @@ from app.database import get_db, AsyncSessionLocal
 from app.deps import require_role, TokenData
 from app.services import timetable_svc
 from app.services.timetable_solver import run_solve_job, nl_to_entry_edit, load_solver_data
+from app.services.timetable_solver_types import to_entry_d
 from app.schemas.timetable import (
     TermCreate, TermPatch, TermOut,
     BatchCreate, BatchPatch, BatchOut, SectionCreate,
@@ -48,7 +49,10 @@ async def create_term(
 ):
     if body.tenant_id is None:
         body = body.model_copy(update={"tenant_id": token.tenant_id})
-    return await timetable_svc.create_term(db, body)
+    try:
+        return await timetable_svc.create_term(db, body)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
 
 
 @router.patch("/terms/{term_id}", response_model=TermOut)
@@ -115,7 +119,10 @@ async def create_batch(
 ):
     if body.tenant_id is None:
         body = body.model_copy(update={"tenant_id": token.tenant_id})
-    batch = await timetable_svc.create_batch(db, body)
+    try:
+        batch = await timetable_svc.create_batch(db, body)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return BatchOut(
         id=batch.id, tenant_id=batch.tenant_id,
         name=batch.name, program=batch.program,
@@ -151,7 +158,10 @@ async def create_section(
     batch = await timetable_svc.get_batch(db, batch_id)
     if not batch:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Batch not found")
-    sec = await timetable_svc.create_section(db, batch_id, body)
+    try:
+        sec = await timetable_svc.create_section(db, batch_id, body)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return {"id": str(sec.id), "batch_id": str(sec.batch_id), "name": sec.name}
 
 
@@ -165,8 +175,12 @@ async def generate_structure(
     batch = await timetable_svc.get_batch(db, batch_id)
     if not batch:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Batch not found")
-    sections = await timetable_svc.generate_sections(db, batch_id, body.count, body.lab_split)
-    return {"created_sections": len(sections), "batch_id": str(batch_id)}
+    result = await timetable_svc.generate_sections(db, batch_id, body.count, body.lab_split)
+    return {
+        "created_sections": len(result["created"]),
+        "existing_sections": result["existing"],
+        "batch_id": str(batch_id),
+    }
 
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
@@ -187,7 +201,10 @@ async def create_room(
 ):
     if body.tenant_id is None:
         body = body.model_copy(update={"tenant_id": token.tenant_id})
-    return await timetable_svc.create_room(db, body)
+    try:
+        return await timetable_svc.create_room(db, body)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
 
 
 @router.patch("/rooms/{room_id}", response_model=RoomOut)
@@ -233,7 +250,10 @@ async def create_course(
 ):
     if body.tenant_id is None:
         body = body.model_copy(update={"tenant_id": token.tenant_id})
-    return await timetable_svc.create_course(db, body)
+    try:
+        return await timetable_svc.create_course(db, body)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
 
 
 @router.patch("/courses/{course_id}", response_model=CourseOut)
@@ -279,7 +299,10 @@ async def create_faculty(
 ):
     if body.tenant_id is None:
         body = body.model_copy(update={"tenant_id": token.tenant_id})
-    return await timetable_svc.create_faculty_profile(db, body)
+    try:
+        return await timetable_svc.create_faculty_profile(db, body)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
 
 
 @router.patch("/faculty/{faculty_id}", response_model=FacultyProfileOut)
@@ -324,7 +347,10 @@ async def create_offering(
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
-    return await timetable_svc.create_offering(db, body)
+    try:
+        return await timetable_svc.create_offering(db, body)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
 
 
 @router.delete("/offerings/{offering_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -354,7 +380,10 @@ async def create_eligibility(
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
-    return await timetable_svc.create_eligibility(db, body)
+    try:
+        return await timetable_svc.create_eligibility(db, body)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
 
 
 @router.delete("/eligibility/{elig_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -461,26 +490,30 @@ async def get_solve_job(
     job = await timetable_svc.get_solve_job(db, job_id)
     if not job:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Solve job not found")
-    # Orphan reaper — a background solve that outlives its time budget (e.g. the
-    # container was recycled mid-solve on Railway) leaves the row frozen at
-    # running/10% forever, so the UI polls it endlessly. The solver is hard-capped
-    # at time_limit_s (<=600s), so anything still "running" well past that is dead.
-    if job.status == "running" and job.started_at is not None:
+    # Orphan reaper — a background solve that died mid-run (container recycled
+    # on Railway, solver subprocess killed before the handler could catch it)
+    # leaves the row frozen at running/N% forever, so the UI polls it endlessly.
+    # The job row's updated_at is a heartbeat: the runner writes progress per
+    # batch group, and no single group gets more than time_limit_s of budget —
+    # a heartbeat older than that plus a grace margin means the task is dead.
+    # (Startup also reaps via timetable_svc.reap_stale_solve_jobs.)
+    if job.status in ("queued", "running"):
         try:
             limit_s = int((job.params or {}).get("time_limit_s", 600))
         except Exception:
             limit_s = 600
-        started = job.started_at
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) > started + timedelta(seconds=limit_s + 180):
-            job = await timetable_svc.update_solve_job(
-                db, job,
-                status="failed",
-                progress=100,
-                solver_status="orphaned",
-                finished_at=datetime.now(timezone.utc),
-            )
+        heartbeat = job.updated_at or job.started_at
+        if heartbeat is not None:
+            if heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > heartbeat + timedelta(seconds=limit_s + 120):
+                job = await timetable_svc.update_solve_job(
+                    db, job,
+                    status="failed",
+                    progress=100,
+                    solver_status="orphaned",
+                    finished_at=datetime.now(timezone.utc),
+                )
     return SolveJobOut.from_orm_job(job)
 
 
@@ -550,7 +583,10 @@ async def resolve(
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
-    base_entries = await timetable_svc.list_entries(db, body.term_id, body.base_version)
+    base_orm = await timetable_svc.list_entries(db, body.term_id, body.base_version)
+    # Detach from the ORM here: the background task outlives this session, and
+    # the solver may ship these across a process boundary (must be picklable).
+    base_entries = [to_entry_d(e) for e in base_orm]
     locked_ids = {e.id for e in base_entries if e.locked} if body.keep_locked else set()
 
     solve_req = SolveRequest(
@@ -562,7 +598,8 @@ async def resolve(
         db, term_id=body.term_id,
         requested_by=token.user_id,
         tenant_id=token.tenant_id,
-        params={"mode": "resolve", "base_version": body.base_version},
+        params={"mode": "resolve", "base_version": body.base_version,
+                "time_limit_s": body.time_limit_s},
     )
     background_tasks.add_task(
         run_solve_job, job.id, AsyncSessionLocal, solve_req,
@@ -580,10 +617,11 @@ async def nl_edit(
     db: AsyncSession = Depends(get_db),
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
-    base_entries = await timetable_svc.list_entries(db, body.term_id, body.base_version)
+    base_orm = await timetable_svc.list_entries(db, body.term_id, body.base_version)
+    base_entries = [to_entry_d(e) for e in base_orm]
     # The model must map phrases like "SE223 section A" to an entry_id, so the
     # context needs names — raw UUIDs alone are unresolvable.
-    names = await timetable_svc.resolve_entry_names(db, base_entries)
+    names = await timetable_svc.resolve_entry_names(db, base_orm)
     entries_context = []
     for e in base_entries:
         course = names["courses"].get(e.course_id)
@@ -613,7 +651,8 @@ async def nl_edit(
         db, term_id=body.term_id,
         requested_by=token.user_id,
         tenant_id=token.tenant_id,
-        params={"mode": "nl-edit", "text": body.text},
+        params={"mode": "nl-edit", "text": body.text,
+                "time_limit_s": solve_req.time_limit_s},
     )
     background_tasks.add_task(
         run_solve_job, job.id, AsyncSessionLocal, solve_req,

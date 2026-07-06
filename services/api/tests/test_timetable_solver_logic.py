@@ -205,7 +205,7 @@ async def test_empty_data_reports_infeasible_not_feasible(db_session):
     data = await load_solver_data(db_session, term.id)
     result = solve(data, time_limit_s=10)
     assert result["status"] == "infeasible"
-    assert "no_offerings" in result["infeasible_core"]
+    assert "no_offerings_for_term" in result["infeasible_core"]
 
 
 @pytest.mark.asyncio

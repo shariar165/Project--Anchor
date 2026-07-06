@@ -102,7 +102,7 @@ Always use the **venv** — all dependencies are isolated there:
 - `services/feed_attachment_svc.py` — validates MIME type, SHA-256 deduplicates, stores to `uploads/feed/`; limits configurable in `config.py` (`FEED_MAX_ATTACHMENTS`, `FEED_MAX_ATTACHMENT_MB`)
 - `services/feed_moderation_svc.py` — records `VerificationFeedModeration` rows; drives the false-alarm strike system and trust-tier promotions
 - `services/timetable_svc.py` — CRUD for all timetable entities (terms, batches, sections, rooms, courses, faculty, offerings, constraints)
-- `services/timetable_solver.py` — CP-SAT constraint solver (Google OR-Tools); `run_solve_job()` runs as a FastAPI `BackgroundTask`; `nl_to_entry_edit()` translates natural-language schedule edits via Ollama; solver supports warm-start from `prev_entries` for perturbation runs
+- `services/timetable_solver.py` — CP-SAT constraint solver (Google OR-Tools); `run_solve_job()` runs as a FastAPI `BackgroundTask` and decomposes the term **per batch** (sequential solves passing `Reservations` forward; pair-merge → remainder-monolith escalation on infeasibility; real per-group progress writes). Solves execute in a spawned subprocess by default (`SOLVER_ISOLATION=process`; OOM ⇒ job fails as `solver_oom`), thread mode for tests. All solver inputs are plain picklable dataclasses (`timetable_solver_types.py`) — never ORM rows. `nl_to_entry_edit()` translates natural-language schedule edits via Gemini/Ollama; pin edits re-solve only the pinned batch and carry every other batch's entries verbatim into the new version. Orphan reaping: `timetable_svc.reap_stale_solve_jobs()` at startup + `updated_at`-staleness check in `GET /solve/{job_id}`.
 
 ### Common patterns
 

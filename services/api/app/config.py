@@ -89,6 +89,14 @@ class Settings(BaseSettings):
     rag_service_url: str = "http://localhost:8001"
     rag_internal_secret: str = ""
 
+    # Timetable solver
+    # "process" runs each CP-SAT solve in a spawned subprocess so an OOM kill
+    # hits the child, not the API (job fails as solver_oom instead of orphaning).
+    # "thread" keeps the old in-process behavior (used by the test suite).
+    solver_isolation: str = "process"
+    solver_num_workers: int = 1        # CP-SAT search workers per solve
+    solver_decompose_threshold: int = 2  # >N batches → per-batch decomposition
+
     # HIBP
     hibp_check_enabled: bool = True
 

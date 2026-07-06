@@ -100,15 +100,76 @@ async def test_import_faculty_links_account_when_present(client, admin_headers, 
 
 
 @pytest.mark.asyncio
-async def test_import_faculty_skips_duplicate_email(client, admin_headers):
+async def test_import_faculty_duplicate_email_updates_not_appends(client, admin_headers):
+    # A repeated email upserts the existing profile instead of erroring or
+    # (worse) appending a second row.
     r = await client.post(
         "/v1/admin/timetable/import?entity=faculty", headers=admin_headers,
-        files=_csv("email,rank,max_per_day\ndup@diu.edu.bd,LECTURER,4\ndup@diu.edu.bd,LECTURER,4\n"),
+        files=_csv("email,rank,max_per_day\ndup@diu.edu.bd,LECTURER,4\ndup@diu.edu.bd,PROFESSOR,5\n"),
     )
     assert r.status_code == 200, r.json()
     body = r.json()
-    assert body["created"] == 1 and body["error_count"] == 1, body
-    assert "duplicate" in body["errors"][0].lower()
+    assert body["created"] == 1 and body["updated"] == 1 and body["error_count"] == 0, body
+    fac = (await client.get("/v1/admin/timetable/faculty", headers=admin_headers)).json()
+    assert len(fac) == 1, "duplicate email must not create a second faculty row"
+    assert fac[0]["rank"] == "PROFESSOR" and fac[0]["max_per_day"] == 5  # last row wins
+
+
+@pytest.mark.asyncio
+async def test_reimporting_same_file_is_idempotent(client, admin_headers):
+    """The H-1 regression test: importing the same file twice must not grow
+    any table — courses/rooms/batches/faculty update, offerings/eligibility skip."""
+    courses_csv = "code,name,credits,weekly_classes,is_lab\nSE900,Testing,3,2,false\nSE901,QA Lab,1,1,true\n"
+    rooms_csv = "name,room_type,capacity\nRE-901,THEORY,40\nRE-902,LAB,30\n"
+    batches_csv = "name,program\nBatch 90,SWE\n"
+    faculty_csv = "email,rank,max_per_day\nrepeat@diu.edu.bd,LECTURER,4\n"
+
+    for entity, csv_text in [
+        ("courses", courses_csv), ("rooms", rooms_csv),
+        ("batches", batches_csv), ("faculty", faculty_csv),
+    ]:
+        first = await client.post(
+            f"/v1/admin/timetable/import?entity={entity}", headers=admin_headers,
+            files=_csv(csv_text),
+        )
+        assert first.json()["error_count"] == 0, (entity, first.json())
+        n_created = first.json()["created"]
+        second = await client.post(
+            f"/v1/admin/timetable/import?entity={entity}", headers=admin_headers,
+            files=_csv(csv_text),
+        )
+        body = second.json()
+        assert body["created"] == 0, (entity, body)
+        assert body["updated"] == n_created, (entity, body)
+        assert body["error_count"] == 0, (entity, body)
+
+    # Row counts stayed stable
+    assert len((await client.get("/v1/admin/timetable/courses", headers=admin_headers)).json()) == 2
+    assert len((await client.get("/v1/admin/timetable/rooms", headers=admin_headers)).json()) == 2
+    assert len((await client.get("/v1/admin/timetable/batches", headers=admin_headers)).json()) == 1
+    assert len((await client.get("/v1/admin/timetable/faculty", headers=admin_headers)).json()) == 1
+
+    # Relational entities: re-import skips instead of duplicating
+    term = (await client.post("/v1/admin/timetable/terms", json={"name": "Idem"}, headers=admin_headers)).json()["id"]
+    off_csv = "course_code,batch_name\nSE900,Batch 90\n"
+    first = await client.post(
+        f"/v1/admin/timetable/import?entity=offerings&term_id={term}", headers=admin_headers, files=_csv(off_csv),
+    )
+    assert first.json()["created"] == 1, first.json()
+    second = await client.post(
+        f"/v1/admin/timetable/import?entity=offerings&term_id={term}", headers=admin_headers, files=_csv(off_csv),
+    )
+    assert second.json()["created"] == 0 and second.json()["skipped"] == 1, second.json()
+
+    elig_csv = "faculty_email,course_code\nrepeat@diu.edu.bd,SE900\n"
+    first = await client.post(
+        "/v1/admin/timetable/import?entity=eligibility", headers=admin_headers, files=_csv(elig_csv),
+    )
+    assert first.json()["created"] == 1, first.json()
+    second = await client.post(
+        "/v1/admin/timetable/import?entity=eligibility", headers=admin_headers, files=_csv(elig_csv),
+    )
+    assert second.json()["created"] == 0 and second.json()["skipped"] == 1, second.json()
 
 
 @pytest.mark.asyncio

@@ -58,6 +58,44 @@ const TEMPLATE_ROWS = {
   eligibility: [["jc@diu.edu.bd", "CSE101"]],
 };
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Translate the solver's symbolic infeasibility codes into human guidance.
+// Returns null when the id is not symbolic (i.e. it's a constraint UUID that
+// should get the "Make soft" treatment instead). Codes may carry a
+// "batch <name>: " prefix from the per-batch solver.
+function describeCore(id) {
+  const m = /^batch ([^:]+): (.*)$/.exec(id);
+  const batch = m ? m[1] : null;
+  const code = m ? m[2] : id;
+  const arg = code.includes(":") ? code.slice(code.indexOf(":") + 1).trim() : "";
+  let msg = null, hint = null;
+  if (code === "no_offerings_for_term") {
+    msg = "This term has no course offerings."; hint = "Add them in Data → Offerings.";
+  } else if (code.startsWith("no_sections_for_batch:")) {
+    msg = `Batch ${arg} has offerings but no sections.`; hint = "Use “Generate sections” in Data → Batches.";
+  } else if (code.startsWith("no_lab_groups_for_section:")) {
+    msg = `Section ${arg} takes a lab course but has no lab groups.`; hint = "Use “Generate sections” (with lab split) in Data → Batches.";
+  } else if (code === "no_faculty") {
+    msg = "No active faculty profiles exist."; hint = "Add or import teachers in Data → Faculty.";
+  } else if (code === "no_theory_rooms") {
+    msg = "No THEORY or ONLINE rooms exist."; hint = "Add rooms in Data → Rooms.";
+  } else if (code === "no_lab_rooms") {
+    msg = "No LAB rooms exist but lab courses are offered."; hint = "Add lab rooms in Data → Rooms.";
+  } else if (code.startsWith("no_eligibility_for_course:")) {
+    msg = `No teacher is eligible to teach ${arg}.`; hint = "Add rows in Data → Eligibility (or import the eligibility CSV).";
+  } else if (code.startsWith("no_assignment:")) {
+    msg = `${arg} has no legal slot — its eligible teachers are too constrained (off-days / already fully booked).`;
+    hint = "Add more eligible teachers or relax their off-days in Data → Faculty.";
+  } else if (code.startsWith("pin_impossible") || code.startsWith("pin_conflict")) {
+    msg = code.replace(/^pin_(impossible|conflict):?\s*/, "Requested move not possible: ");
+  } else if (code.startsWith("solver process was killed")) {
+    msg = "The solver ran out of memory mid-run."; hint = "Try again with a shorter time limit; the job is safe to retry.";
+  }
+  if (!msg) return null;
+  return { batch, msg, hint };
+}
+
 // ── SectionLabel helper ───────────────────────────────────────────────────────
 function SectionLabel({ children, right }) {
   return (
@@ -92,9 +130,17 @@ function TermStatusBar({ terms, termId, onTermChange, version, onVersionChange, 
       <select className="hair border rounded-sm bg-white px-2 py-1 text-[13px]"
         value={termId} onChange={e => onTermChange(e.target.value)}>
         <option value="">— select term —</option>
-        {terms.map(t => (
-          <option key={t.id} value={t.id}>{t.name}{t.is_active ? " ✓" : ""}</option>
-        ))}
+        {terms.map(t => {
+          // Legacy duplicates (same name) are indistinguishable without a
+          // discriminator; new duplicates are blocked server-side (409).
+          const dup = terms.some(o => o.id !== t.id && o.name === t.name);
+          const when = dup && t.created_at
+            ? ` — ${new Date(t.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`
+            : "";
+          return (
+            <option key={t.id} value={t.id}>{t.name}{when}{t.is_active ? " ✓" : ""}</option>
+          );
+        })}
       </select>
       {!adding ? (
         <GhostButton size="sm" icon="plus" onClick={() => setAdding(true)}>New term</GhostButton>
@@ -258,14 +304,19 @@ function TimetableData({ termId }) {
       // Show only a compact yes/no status — never the per-row list (a huge list
       // froze the browser on big files). On failure, keep one short reason line.
       const created = data.created || 0;
+      const updated = data.updated || 0;
+      const skipped = data.skipped || 0;
       const total = data.total ?? created;
       const errCount = data.error_count ?? (data.errors?.length || 0);
-      if (created > 0 && errCount === 0) {
-        setImportMsg(`✓ Imported ${created} row${created === 1 ? "" : "s"}`);
-        setImportOk(true);
-      } else if (created > 0) {
-        setImportMsg(`Imported ${created} of ${total} rows · ${errCount} skipped`);
-        setImportOk(true);
+      const applied = created + updated + skipped;
+      if (applied > 0) {
+        const parts = [];
+        if (created) parts.push(`${created} new`);
+        if (updated) parts.push(`${updated} updated`);
+        if (skipped) parts.push(`${skipped} already present`);
+        if (errCount) parts.push(`${errCount} failed`);
+        setImportMsg(`${errCount ? "" : "✓ "}${parts.join(" · ")}`);
+        setImportOk(errCount === 0);
       } else {
         const reason = data.errors && data.errors[0] ? ` — ${String(data.errors[0]).slice(0, 140)}` : "";
         setImportMsg(`✗ Not imported${reason}`);
@@ -470,23 +521,33 @@ function GenerateSectionsButton({ batchId }) {
   const [count, setCount] = useState(3);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
   async function gen() {
     setBusy(true);
     try {
-      await AnchorAPI.apiPostAuth(`${TT_BASE}/batches/${batchId}/generate-structure`, { count, lab_split: true });
-      setOpen(false);
-      window.location.reload();
+      // Server-side idempotent: only missing sections are created, so a
+      // double-click can no longer stack a second A, B, C… onto the batch.
+      const d = await AnchorAPI.apiPostAuth(`${TT_BASE}/batches/${batchId}/generate-structure`, { count, lab_split: true });
+      const created = d.created_sections ?? 0;
+      const existing = d.existing_sections ?? 0;
+      if (created > 0) {
+        setOpen(false);
+        window.location.reload();
+      } else {
+        setMsg(existing ? `All ${existing} section${existing === 1 ? "" : "s"} already exist` : "Nothing to create");
+      }
     } catch (e) { alert(e.message || "Failed"); }
     finally { setBusy(false); }
   }
   if (!open) return <GhostButton size="sm" icon="plus-circle" onClick={() => setOpen(true)}>Generate sections</GhostButton>;
   return (
     <div className="flex items-center gap-2">
-      <input type="number" min="1" max="26" value={count} onChange={e => setCount(+e.target.value)}
+      <input type="number" min="1" max="26" value={count} onChange={e => { setCount(+e.target.value); setMsg(""); }}
         className="w-14 px-2 py-1 hair border rounded-sm text-[12px] font-mono" />
       <span className="text-[11.5px] text-[var(--muted)]">sections + lab groups</span>
       <GhostButton size="sm" onClick={gen} disabled={busy}>{busy ? "…" : "Create"}</GhostButton>
-      <GhostButton size="sm" onClick={() => setOpen(false)}>Cancel</GhostButton>
+      <GhostButton size="sm" onClick={() => { setOpen(false); setMsg(""); }}>Cancel</GhostButton>
+      {msg && <span className="text-[11px] text-[var(--muted)]">{msg}</span>}
     </div>
   );
 }
@@ -1088,7 +1149,12 @@ function TimetableGenerate({ termId, onSolved }) {
 
   async function handleRelaxAll() {
     if (!job?.infeasible_core?.length) return;
-    for (const id of job.infeasible_core) { await makeSoft(id).catch(() => {}); }
+    // Only constraint UUIDs can be made soft; symbolic data-error codes
+    // (no_offerings_for_term, no_eligibility_for_course:… ) need data fixes.
+    const ids = job.infeasible_core
+      .map(id => (/^batch [^:]+: (.*)$/.exec(id) || [null, id])[1])
+      .filter(id => UUID_RE.test(id));
+    for (const id of ids) { await makeSoft(id).catch(() => {}); }
     handleSolve();
   }
 
@@ -1146,7 +1212,11 @@ function TimetableGenerate({ termId, onSolved }) {
         {isRunning && (
           <div>
             <div className="text-[11px] text-[var(--muted)] mb-1 flex justify-between">
-              <span>Solver progress</span>
+              <span>
+                {/^batch \d+\/\d+$/.test(job?.solver_status || "")
+                  ? `Solving batch ${job.solver_status.slice(6).replace("/", " of ")}`
+                  : "Solver progress"}
+              </span>
               <span className="font-mono">{job?.progress || 0}%</span>
             </div>
             <div className="h-1.5 bg-[var(--mist)] rounded-sm overflow-hidden">
@@ -1162,44 +1232,83 @@ function TimetableGenerate({ termId, onSolved }) {
           </div>
         )}
 
-        {job?.status === "infeasible" && (
-          <div className="rounded-sm p-4 space-y-3"
-            style={{ border:"1px solid rgba(232,49,42,0.3)", background:"rgba(232,49,42,0.04)" }}>
-            <div className="text-[var(--red)] font-medium text-[13px] flex items-center gap-2">
-              <Icon name="alert-triangle" size={14} /> Schedule is infeasible — conflicting rules
-            </div>
-            <div className="text-[12px] text-[var(--graphite)] mb-1">
-              These constraints cannot all be satisfied at once. Make them soft so the solver can trade them off:
-            </div>
-            <div className="space-y-1.5">
-              {(job.infeasible_core || []).map(id => {
-                const info = constraintMap[id];
-                return (
-                  <div key={id} className="flex items-center justify-between gap-2 py-1">
-                    <span className="text-[12.5px] text-[var(--ink)]">
-                      {info?.label || <span className="font-mono text-[11px]">{id.slice(0,12)}…</span>}
-                    </span>
-                    {info?.enforcement !== "soft" && (
-                      <GhostButton size="sm" onClick={() => makeSoft(id)}>Make soft</GhostButton>
-                    )}
-                    {info?.enforcement === "soft" && (
-                      <Tag tone="gold">already soft</Tag>
-                    )}
+        {job?.status === "infeasible" && (() => {
+          // Split the core: data problems get fix-it guidance; only genuine
+          // constraint conflicts get the "make soft" treatment. Showing
+          // "make constraints soft" for missing data sent admins down a
+          // dead end (softening rules cannot conjure up offerings).
+          const cores = job.infeasible_core || [];
+          const dataErrors = [];
+          const constraintCores = [];
+          cores.forEach(id => {
+            const d = describeCore(id);
+            if (d) dataErrors.push({ id, ...d });
+            else constraintCores.push(id);
+          });
+          return (
+            <div className="rounded-sm p-4 space-y-3"
+              style={{ border:"1px solid rgba(232,49,42,0.3)", background:"rgba(232,49,42,0.04)" }}>
+              <div className="text-[var(--red)] font-medium text-[13px] flex items-center gap-2">
+                <Icon name="alert-triangle" size={14} />
+                {dataErrors.length && !constraintCores.length
+                  ? "Cannot generate — data is incomplete"
+                  : "Schedule is infeasible"}
+              </div>
+
+              {dataErrors.length > 0 && (
+                <div className="space-y-2">
+                  {dataErrors.map(({ id, batch, msg, hint }) => (
+                    <div key={id} className="text-[12.5px] text-[var(--ink)]">
+                      {batch && <Tag tone="ember">batch {batch}</Tag>}{batch ? " " : ""}{msg}
+                      {hint && <div className="text-[11.5px] text-[var(--muted)] mt-0.5">{hint}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {constraintCores.length > 0 && (
+                <>
+                  <div className="text-[12px] text-[var(--graphite)] mb-1">
+                    These rules cannot all be satisfied at once. Make them soft so the solver can trade them off:
                   </div>
-                );
-              })}
+                  <div className="space-y-1.5">
+                    {constraintCores.map(rawId => {
+                      const m = /^batch ([^:]+): (.*)$/.exec(rawId);
+                      const batch = m ? m[1] : null;
+                      const id = m ? m[2] : rawId;
+                      const info = constraintMap[id];
+                      return (
+                        <div key={rawId} className="flex items-center justify-between gap-2 py-1">
+                          <span className="text-[12.5px] text-[var(--ink)]">
+                            {batch && <Tag tone="ember">batch {batch}</Tag>}{batch ? " " : ""}
+                            {info?.label || <span className="font-mono text-[11px]">{id.slice(0,12)}…</span>}
+                          </span>
+                          {info && info.enforcement !== "soft" && (
+                            <GhostButton size="sm" onClick={() => makeSoft(id)}>Make soft</GhostButton>
+                          )}
+                          {info?.enforcement === "soft" && (
+                            <Tag tone="gold">already soft</Tag>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <GhostButton icon="refresh-cw" onClick={handleRelaxAll}>
+                    Make all soft &amp; re-solve
+                  </GhostButton>
+                </>
+              )}
             </div>
-            <GhostButton icon="refresh-cw" onClick={handleRelaxAll}>
-              Make all soft &amp; re-solve
-            </GhostButton>
-          </div>
-        )}
+          );
+        })()}
 
         {job?.status === "failed" && (
           <div className="text-[var(--red)] text-[12.5px] flex items-center gap-2">
             <Icon name="x-circle" size={14} />
             {job.solver_status === "orphaned"
-              ? "Solve timed out or the server restarted mid-run. Click Re-generate to try again."
+              ? "The server restarted mid-run and the job was recovered as failed. Click Re-generate to try again."
+              : job.solver_status === "solver_oom"
+              ? "The solver ran out of memory. Try a shorter time limit — the job is safe to retry."
               : "Solver failed. Check that schedule config and data are set up correctly."}
           </div>
         )}
@@ -1281,9 +1390,13 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
             setPrevEntries(entries);
             onVersionChange(j.result_version);
           } else {
-            const core = (j.infeasible_core || []).join(", ");
+            const core = (j.infeasible_core || [])
+              .map(id => { const d = describeCore(id); return d ? d.msg : id; })
+              .join("; ");
             setResolveMsg(j.status === "infeasible"
               ? `Re-solve infeasible — the change conflicts with locked cells or rules${core ? ` (${core})` : ""}.`
+              : j.solver_status === "solver_oom"
+              ? "Re-solve failed — the solver ran out of memory. The previous version is unchanged; try again."
               : "Re-solve failed — the previous version is unchanged.");
           }
         }

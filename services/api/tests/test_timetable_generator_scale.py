@@ -14,13 +14,49 @@ Run the full 9-batch × 8-section case (heavy — opt in):
 """
 import os
 import time
+from contextlib import asynccontextmanager
 
 import pytest
 
+from app.schemas.timetable import SolveRequest
 from app.services.timetable_seed_data import seed_scenario
-from app.services.timetable_solver import load_solver_data, solve
+from app.services.timetable_solver import load_solver_data, solve, run_solve_job
 from app.services import timetable_svc
 from app.models.timetable import TimetableEntry
+
+
+def _session_factory(session):
+    """Factory yielding the test session, shaped like AsyncSessionLocal."""
+    @asynccontextmanager
+    async def _cm():
+        yield session
+    return _cm
+
+
+async def _run_job_and_validate(db, term_id, *, time_limit_s, n_sessions):
+    """Drive the real background-job path (per-batch decomposition) and
+    validate the merged result version globally — faculty/room/section clashes
+    across batch groups are exactly what this catches."""
+    job = await timetable_svc.create_solve_job(db, term_id=term_id)
+    t0 = time.perf_counter()
+    await run_solve_job(
+        job.id, _session_factory(db),
+        SolveRequest(term_id=term_id, time_limit_s=time_limit_s),
+    )
+    elapsed = time.perf_counter() - t0
+
+    job = await timetable_svc.get_solve_job(db, job.id)
+    print(f"\n[job] status={job.status} solver_status={job.solver_status} "
+          f"version={job.result_version} core={job.infeasible_core} wall={elapsed:.1f}s")
+    assert job.status in ("optimal", "feasible"), (job.solver_status, job.infeasible_core)
+    assert job.progress == 100
+    assert job.result_version == 1
+
+    entries = await timetable_svc.list_entries(db, term_id, 1)
+    assert len(entries) == n_sessions, (
+        f"expected {n_sessions} placed sessions, got {len(entries)}"
+    )
+    return await timetable_svc.validate_entries(db, term_id, 1)
 
 
 async def _run_and_validate(db, term_id, *, time_limit_s):
@@ -90,18 +126,39 @@ async def test_unplaceable_offering_reports_infeasible(db_session):
     assert any("ZZZ999" in str(c) for c in (result["infeasible_core"] or []))
 
 
+@pytest.mark.asyncio
+async def test_decomposed_solver_4_batches_no_overlaps(db_session):
+    """4 batches → per-batch decomposition (threshold is 2). This is the S-1
+    regression proof: the old monolith could no longer solve 4+ batches."""
+    info = await seed_scenario(db_session, n_batches=4, n_slots=8, eligible_per_course=4)
+
+    data = await load_solver_data(db_session, info["term_id"])
+    n_sessions = len(data.offerings)
+
+    conflicts = await _run_job_and_validate(
+        db_session, info["term_id"], time_limit_s=120, n_sessions=n_sessions,
+    )
+    assert conflicts == [], f"expected no conflicts, got: {[c.description for c in conflicts]}"
+
+
 @pytest.mark.skipif(
     os.environ.get("RUN_FULL_SCALE") != "1",
     reason="heavy full-scale solve; set RUN_FULL_SCALE=1 to run",
 )
 @pytest.mark.asyncio
 async def test_full_scale_solver_no_overlaps(db_session):
-    """Full 9 batches × 8 sections (72 sections, ~850 weekly sessions)."""
+    """Full 9 batches × 8 sections (72 sections, ~850 weekly sessions),
+    through the decomposed background-job driver."""
     info = await seed_scenario(db_session, n_batches=9, n_slots=8, eligible_per_course=4)
     assert info["n_sections"] == 72
     print(f"\n[seed] {info}")
 
-    _, conflicts = await _run_and_validate(db_session, info["term_id"], time_limit_s=180)
+    data = await load_solver_data(db_session, info["term_id"])
+    n_sessions = len(data.offerings)
+
+    conflicts = await _run_job_and_validate(
+        db_session, info["term_id"], time_limit_s=180, n_sessions=n_sessions,
+    )
 
     by_type: dict[str, int] = {}
     for c in conflicts:

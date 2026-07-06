@@ -1,8 +1,8 @@
 import csv
 import io
 import uuid
-from datetime import datetime, timezone
-from sqlalchemy import select, func
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.timetable import (
@@ -26,6 +26,11 @@ from app.schemas.timetable import (
     EntryEdit, ConflictOut,
 )
 
+def _tenant_clause(col, tenant_id):
+    """Same-tenant filter for duplicate checks; NULL tenant is its own scope."""
+    return col == tenant_id if tenant_id is not None else col.is_(None)
+
+
 # ── Terms ─────────────────────────────────────────────────────────────────────
 
 async def list_terms(db: AsyncSession, tenant_id: uuid.UUID | None = None) -> list[TimetableTerm]:
@@ -37,7 +42,18 @@ async def list_terms(db: AsyncSession, tenant_id: uuid.UUID | None = None) -> li
 
 
 async def create_term(db: AsyncSession, data: TermCreate) -> TimetableTerm:
-    term = TimetableTerm(name=data.name, tenant_id=data.tenant_id)
+    name = data.name.strip()
+    dup = await db.execute(
+        select(TimetableTerm)
+        .where(_tenant_clause(TimetableTerm.tenant_id, data.tenant_id),
+               func.lower(TimetableTerm.name) == name.lower())
+        .limit(1)
+    )
+    if dup.scalars().first():
+        # Duplicate term names made the term dropdown ambiguous and split
+        # offerings across identical-looking terms (audit finding U-1/D-1).
+        raise ValueError(f"A term named '{name}' already exists")
+    term = TimetableTerm(name=name, tenant_id=data.tenant_id)
     db.add(term)
     await db.commit()
     await db.refresh(term)
@@ -96,7 +112,13 @@ async def list_batches(db: AsyncSession, tenant_id: uuid.UUID | None = None) -> 
 
 
 async def create_batch(db: AsyncSession, data: BatchCreate) -> TimetableBatch:
-    batch = TimetableBatch(name=data.name, program=data.program, tenant_id=data.tenant_id)
+    name = data.name.strip()
+    rows = await db.execute(
+        select(TimetableBatch.name).where(_tenant_clause(TimetableBatch.tenant_id, data.tenant_id))
+    )
+    if any(_norm_batch(n) == _norm_batch(name) for (n,) in rows.all()):
+        raise ValueError(f"A batch named '{name}' already exists")
+    batch = TimetableBatch(name=name, program=data.program, tenant_id=data.tenant_id)
     db.add(batch)
     await db.commit()
     await db.refresh(batch)
@@ -121,7 +143,16 @@ async def patch_batch(db: AsyncSession, batch: TimetableBatch, data: BatchPatch)
 
 
 async def create_section(db: AsyncSession, batch_id: uuid.UUID, data: SectionCreate) -> TimetableSection:
-    section = TimetableSection(batch_id=batch_id, name=data.name)
+    name = data.name.strip()
+    dup = await db.execute(
+        select(TimetableSection)
+        .where(TimetableSection.batch_id == batch_id,
+               func.lower(TimetableSection.name) == name.lower())
+        .limit(1)
+    )
+    if dup.scalars().first():
+        raise ValueError(f"Section '{name}' already exists in this batch")
+    section = TimetableSection(batch_id=batch_id, name=name)
     db.add(section)
     await db.commit()
     await db.refresh(section)
@@ -138,19 +169,37 @@ async def create_lab_group(db: AsyncSession, section_id: uuid.UUID, name: str) -
 
 async def generate_sections(
     db: AsyncSession, batch_id: uuid.UUID, count: int, lab_split: bool = True
-) -> list[TimetableSection]:
-    sections = []
+) -> dict:
+    """Idempotently ensure the batch has sections A..count (with lab groups).
+
+    Only missing sections/lab groups are created — clicking "Generate" twice
+    used to stack a second A, B, C… onto the batch (audit finding H-2).
+    Returns {"created": [...names...], "existing": n}.
+    """
+    existing_r = await db.execute(
+        select(TimetableSection).where(TimetableSection.batch_id == batch_id)
+    )
+    existing = {s.name: s for s in existing_r.scalars().all()}
+
+    created: list[str] = []
     for i in range(count):
         name = chr(ord('A') + i)
-        sec = TimetableSection(batch_id=batch_id, name=name)
-        db.add(sec)
-        await db.flush()
+        sec = existing.get(name)
+        if sec is None:
+            sec = TimetableSection(batch_id=batch_id, name=name)
+            db.add(sec)
+            await db.flush()
+            created.append(name)
         if lab_split:
-            db.add(TimetableLabGroup(section_id=sec.id, name=f"{name}1"))
-            db.add(TimetableLabGroup(section_id=sec.id, name=f"{name}2"))
-        sections.append(sec)
+            lg_r = await db.execute(
+                select(TimetableLabGroup.name).where(TimetableLabGroup.section_id == sec.id)
+            )
+            have = {n for (n,) in lg_r.all()}
+            for lg_name in (f"{name}1", f"{name}2"):
+                if lg_name not in have:
+                    db.add(TimetableLabGroup(section_id=sec.id, name=lg_name))
     await db.commit()
-    return sections
+    return {"created": created, "existing": len(existing)}
 
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
@@ -164,8 +213,17 @@ async def list_rooms(db: AsyncSession, tenant_id: uuid.UUID | None = None) -> li
 
 
 async def create_room(db: AsyncSession, data: RoomCreate) -> TimetableRoom:
+    name = data.name.strip()
+    dup = await db.execute(
+        select(TimetableRoom)
+        .where(_tenant_clause(TimetableRoom.tenant_id, data.tenant_id),
+               func.lower(TimetableRoom.name) == name.lower())
+        .limit(1)
+    )
+    if dup.scalars().first():
+        raise ValueError(f"A room named '{name}' already exists")
     room = TimetableRoom(
-        name=data.name, room_type=data.room_type,
+        name=name, room_type=data.room_type,
         capacity=data.capacity, tenant_id=data.tenant_id,
     )
     db.add(room)
@@ -207,8 +265,14 @@ async def list_courses(db: AsyncSession, tenant_id: uuid.UUID | None = None) -> 
 
 
 async def create_course(db: AsyncSession, data: CourseCreate) -> TimetableCourse:
+    code = data.code.strip()
+    rows = await db.execute(
+        select(TimetableCourse.code).where(_tenant_clause(TimetableCourse.tenant_id, data.tenant_id))
+    )
+    if any(_norm_code(c) == _norm_code(code) for (c,) in rows.all()):
+        raise ValueError(f"A course with code '{code}' already exists")
     course = TimetableCourse(
-        code=data.code, name=data.name, credits=data.credits,
+        code=code, name=data.name, credits=data.credits,
         is_lab=data.is_lab, weekly_classes=data.weekly_classes,
         tenant_id=data.tenant_id,
     )
@@ -267,6 +331,15 @@ async def create_faculty_profile(
             email = email or (u.email or "").strip().lower() or None
             name = name or (u.full_name or "").strip() or None
     name = name or (email.split("@")[0] if email else None)  # fall back to email prefix
+    if email:
+        dup = await db.execute(
+            select(TimetableFacultyProfile)
+            .where(_tenant_clause(TimetableFacultyProfile.tenant_id, data.tenant_id),
+                   func.lower(TimetableFacultyProfile.email) == email)
+            .limit(1)
+        )
+        if dup.scalars().first():
+            raise ValueError(f"A faculty profile with email '{email}' already exists")
     fp = TimetableFacultyProfile(
         user_id=data.user_id, name=name, email=email, rank=data.rank,
         min_credits=data.min_credits, max_credits=data.max_credits,
@@ -335,6 +408,15 @@ async def list_offerings(
 
 
 async def create_offering(db: AsyncSession, data: OfferingCreate) -> TimetableCourseOffering:
+    dup = await db.execute(
+        select(TimetableCourseOffering)
+        .where(TimetableCourseOffering.term_id == data.term_id,
+               TimetableCourseOffering.course_id == data.course_id,
+               TimetableCourseOffering.batch_id == data.batch_id)
+        .limit(1)
+    )
+    if dup.scalars().first():
+        raise ValueError("This course is already offered to this batch in this term")
     offering = TimetableCourseOffering(
         term_id=data.term_id, course_id=data.course_id, batch_id=data.batch_id,
     )
@@ -379,6 +461,14 @@ async def list_eligibility(
 async def create_eligibility(
     db: AsyncSession, data: EligibilityCreate
 ) -> TimetableTeacherEligibility:
+    dup = await db.execute(
+        select(TimetableTeacherEligibility)
+        .where(TimetableTeacherEligibility.faculty_id == data.faculty_id,
+               TimetableTeacherEligibility.course_id == data.course_id)
+        .limit(1)
+    )
+    if dup.scalars().first():
+        raise ValueError("This teacher is already eligible for this course")
     elig = TimetableTeacherEligibility(faculty_id=data.faculty_id, course_id=data.course_id)
     db.add(elig)
     await db.commit()
@@ -522,6 +612,35 @@ async def update_solve_job(db: AsyncSession, job: TimetableSolveJob, **kwargs) -
     await db.commit()
     await db.refresh(job)
     return job
+
+
+async def reap_stale_solve_jobs(db: AsyncSession, older_than_s: int = 60) -> int:
+    """Mark queued/running jobs with no recent heartbeat as orphaned.
+
+    Called at startup: any job still 'running' from before a restart is dead —
+    its background task did not survive the process. `updated_at` doubles as
+    the heartbeat because the solver writes progress to the row per batch
+    group. The small grace window protects a job another worker just started.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=older_than_s)
+    result = await db.execute(
+        update(TimetableSolveJob)
+        .where(
+            TimetableSolveJob.status.in_(("queued", "running")),
+            TimetableSolveJob.updated_at < cutoff,
+        )
+        .values(
+            status="failed",
+            solver_status="orphaned",
+            progress=100,
+            finished_at=datetime.now(timezone.utc),
+        )
+        # Row-level operation: don't let the ORM "evaluate" the WHERE against
+        # in-session objects (its naive-vs-aware datetime compare misfires).
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    return result.rowcount or 0
 
 
 # ── Entries ───────────────────────────────────────────────────────────────────
@@ -991,36 +1110,36 @@ async def import_entities(
             ],
         }
 
-    # Pre-load reference lookups for relational entities (human-readable keys →
-    # UUIDs) so admins never have to paste IDs into a spreadsheet. We store the
-    # scalar IDs (not ORM objects) because the per-row rollback below expires all
-    # instances in the session — holding IDs keeps the lookups valid regardless.
+    # Pre-load reference lookups (human-readable keys → UUIDs) so admins never
+    # have to paste IDs into a spreadsheet, and so re-importing a file UPDATES
+    # matching rows instead of appending duplicates (audit finding H-1 — this
+    # append behavior is what doubled the production course table). We store
+    # scalar IDs (not ORM objects) because the per-row rollback below expires
+    # all instances in the session — holding IDs keeps the lookups valid.
     course_id_by_code: dict[str, uuid.UUID] = {}
     batch_id_by_name: dict[str, uuid.UUID] = {}
+    room_id_by_name: dict[str, uuid.UUID] = {}
     user_id_by_email: dict[str, uuid.UUID] = {}
     faculty_id_by_email: dict[str, uuid.UUID] = {}
-    seen_faculty_emails: set[str] = set()
+    existing_offerings: set[tuple] = set()
+    existing_eligibility: set[tuple] = set()
     course_codes_display: list[str] = []   # original codes, for error messages
     batch_names_display: list[str] = []     # original names, for error messages
 
-    if entity in ("offerings", "eligibility"):
+    if entity in ("courses", "offerings", "eligibility"):
         _courses = await list_courses(db, tenant_id)
         course_id_by_code = {_norm_code(c.code): c.id for c in _courses}
         course_codes_display = [c.code for c in _courses]
-    if entity == "offerings":
+    if entity in ("batches", "offerings"):
         _batches = await list_batches(db, tenant_id)
         batch_id_by_name = {_norm_batch(b.name): b.id for b in _batches}
         batch_names_display = [b.name for b in _batches]
+    if entity == "rooms":
+        room_id_by_name = {r.name.strip().lower(): r.id for r in await list_rooms(db, tenant_id)}
     if entity in ("faculty", "eligibility"):
         result = await db.execute(select(User))
         user_id_by_email = {u.email.strip().lower(): u.id for u in result.scalars().all() if u.email}
-    if entity == "faculty":
-        # Dedupe: don't re-create faculty that already exist for this tenant.
-        seen_faculty_emails = {
-            (fp.email or "").strip().lower()
-            for fp in await list_faculty(db, tenant_id) if fp.email
-        }
-    if entity == "eligibility":
+    if entity in ("faculty", "eligibility"):
         # Resolve faculty by their own email, falling back to a linked account's
         # email so eligibility CSVs work whether or not the teacher has a login.
         email_by_user_id = {uid: em for em, uid in user_id_by_email.items()}
@@ -1028,60 +1147,105 @@ async def import_entities(
             key = (fp.email or "").strip().lower() or email_by_user_id.get(fp.user_id)
             if key:
                 faculty_id_by_email[key] = fp.id
+    if entity == "offerings" and term_id:
+        result = await db.execute(
+            select(TimetableCourseOffering).where(TimetableCourseOffering.term_id == term_id)
+        )
+        existing_offerings = {(o.course_id, o.batch_id) for o in result.scalars().all()}
+    if entity == "eligibility":
+        result = await db.execute(select(TimetableTeacherEligibility))
+        existing_eligibility = {(e.faculty_id, e.course_id) for e in result.scalars().all()}
+
+    updated = 0
+    skipped = 0
 
     for i, row in enumerate(rows, start=2):  # row 1 = header
         try:
+            outcome = "created"
             # Keys are already stripped + lowercased by _parse_file.
             if entity == "courses":
                 code = (row.get("code") or "").strip()
                 name = (row.get("name") or "").strip()
                 if not code or not name:
                     raise ValueError("missing value for 'code' or 'name'")
-                await create_course(db, CourseCreate(
-                    code=code,
+                values = dict(
                     name=name,
                     credits=int(row.get("credits") or 3),
                     is_lab=str(row.get("is_lab") or "false").strip().lower() in ("true", "1", "yes", "y"),
                     weekly_classes=int(row.get("weekly_classes") or 2),
-                    tenant_id=tenant_id,
-                ))
+                )
+                existing_id = course_id_by_code.get(_norm_code(code))
+                if existing_id is not None:
+                    await db.execute(
+                        update(TimetableCourse).where(TimetableCourse.id == existing_id).values(**values)
+                    )
+                    await db.commit()
+                    outcome = "updated"
+                else:
+                    c = await create_course(db, CourseCreate(code=code, tenant_id=tenant_id, **values))
+                    course_id_by_code[_norm_code(code)] = c.id
             elif entity == "rooms":
                 name = (row.get("name") or "").strip()
                 if not name:
                     raise ValueError("missing value for 'name'")
-                await create_room(db, RoomCreate(
-                    name=name,
+                values = dict(
                     room_type=((row.get("room_type") or "THEORY").strip().upper() or "THEORY"),
                     capacity=int(row.get("capacity") or 30),
-                    tenant_id=tenant_id,
-                ))
+                )
+                existing_id = room_id_by_name.get(name.lower())
+                if existing_id is not None:
+                    await db.execute(
+                        update(TimetableRoom).where(TimetableRoom.id == existing_id).values(**values)
+                    )
+                    await db.commit()
+                    outcome = "updated"
+                else:
+                    r = await create_room(db, RoomCreate(name=name, tenant_id=tenant_id, **values))
+                    room_id_by_name[name.lower()] = r.id
             elif entity == "batches":
                 name = (row.get("name") or "").strip()
                 if not name:
                     raise ValueError("missing value for 'name'")
-                await create_batch(db, BatchCreate(
-                    name=name,
-                    program=(row.get("program") or "SWE").strip() or "SWE",
-                    tenant_id=tenant_id,
-                ))
+                program = (row.get("program") or "SWE").strip() or "SWE"
+                existing_id = batch_id_by_name.get(_norm_batch(name))
+                if existing_id is not None:
+                    await db.execute(
+                        update(TimetableBatch).where(TimetableBatch.id == existing_id).values(program=program)
+                    )
+                    await db.commit()
+                    outcome = "updated"
+                else:
+                    b = await create_batch(db, BatchCreate(name=name, program=program, tenant_id=tenant_id))
+                    batch_id_by_name[_norm_batch(name)] = b.id
             elif entity == "faculty":
                 email = str(row.get("email") or "").strip().lower()
                 if not email:
                     raise ValueError("missing value for 'email'")
-                if email in seen_faculty_emails:
-                    raise ValueError(f"duplicate faculty email '{email}'")
-                await create_faculty_profile(db, FacultyProfileCreate(
-                    user_id=user_id_by_email.get(email),  # link a login account if one exists, else None
-                    name=str(row.get("name") or "").strip() or None,
-                    email=email,
+                values = dict(
                     rank=str(row.get("rank") or "").strip().upper() or "LECTURER",
                     max_per_day=int(row.get("max_per_day") or 4),
                     min_credits=_int_or_none(row.get("min_credits")),
                     max_credits=_int_or_none(row.get("max_credits")),
                     pref_slot=_int_or_none(row.get("pref_slot")),
-                    tenant_id=tenant_id,
-                ))
-                seen_faculty_emails.add(email)
+                )
+                name = str(row.get("name") or "").strip() or None
+                existing_id = faculty_id_by_email.get(email)
+                if existing_id is not None:
+                    if name:
+                        values["name"] = name
+                    await db.execute(
+                        update(TimetableFacultyProfile)
+                        .where(TimetableFacultyProfile.id == existing_id)
+                        .values(**values)
+                    )
+                    await db.commit()
+                    outcome = "updated"
+                else:
+                    fp = await create_faculty_profile(db, FacultyProfileCreate(
+                        user_id=user_id_by_email.get(email),  # link a login account if one exists, else None
+                        name=name, email=email, tenant_id=tenant_id, **values,
+                    ))
+                    faculty_id_by_email[email] = fp.id
             elif entity == "offerings":
                 if not term_id:
                     raise ValueError("no term selected — pick a term before importing offerings")
@@ -1101,9 +1265,13 @@ async def import_entities(
                         f"no batch named '{raw_batch}' — {len(batch_id_by_name)} batch(es) "
                         f"visible to this account: {avail}. Import Batches first (under the same login)."
                     )
-                await create_offering(db, OfferingCreate(
-                    term_id=term_id, course_id=course_id, batch_id=batch_id,
-                ))
+                if (course_id, batch_id) in existing_offerings:
+                    outcome = "skipped"
+                else:
+                    await create_offering(db, OfferingCreate(
+                        term_id=term_id, course_id=course_id, batch_id=batch_id,
+                    ))
+                    existing_offerings.add((course_id, batch_id))
             elif entity == "eligibility":
                 email = str(row.get("faculty_email") or "").strip().lower()
                 if not email:
@@ -1123,10 +1291,20 @@ async def import_entities(
                         f"no course with code '{raw_code}' — {len(course_id_by_code)} course(s) "
                         f"visible to this account: {avail}. Import Courses first (under the same login)."
                     )
-                await create_eligibility(db, EligibilityCreate(
-                    faculty_id=fp_id, course_id=course_id,
-                ))
-            created += 1
+                if (fp_id, course_id) in existing_eligibility:
+                    outcome = "skipped"
+                else:
+                    await create_eligibility(db, EligibilityCreate(
+                        faculty_id=fp_id, course_id=course_id,
+                    ))
+                    existing_eligibility.add((fp_id, course_id))
+
+            if outcome == "created":
+                created += 1
+            elif outcome == "updated":
+                updated += 1
+            else:
+                skipped += 1
         except Exception as exc:
             try:
                 await db.rollback()  # clear any failed txn so one bad row can't cascade
@@ -1136,7 +1314,10 @@ async def import_entities(
             if len(errors) < MAX_ERRORS:
                 errors.append(f"Row {i}: {exc}")
 
-    return {"created": created, "total": len(rows), "error_count": error_count, "errors": errors}
+    return {
+        "created": created, "updated": updated, "skipped": skipped,
+        "total": len(rows), "error_count": error_count, "errors": errors,
+    }
 
 
 def _parse_file(file_bytes: bytes, content_type: str) -> tuple[list[str], list[dict]]:
