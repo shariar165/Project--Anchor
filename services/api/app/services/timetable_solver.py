@@ -18,6 +18,7 @@ import logging
 import multiprocessing
 import time
 import uuid
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
@@ -52,6 +53,7 @@ _BLOCKING_DIAGNOSTIC_PREFIXES = (
     "no_lab_groups_for_section:",
     "insufficient_teacher_capacity:",
     "sole_teacher_overload:",
+    "insufficient_group_capacity:",
 )
 
 # ── Data containers ───────────────────────────────────────────────────────────
@@ -85,6 +87,107 @@ class SolverData:
     batch_id_by_section: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
     # Machine-readable data problems detected at load time (see diagnose notes)
     diagnostics: list[str] = field(default_factory=list)
+
+
+def _teacher_capacity(f: FacultyD, n_days: int) -> int:
+    """Weekly sessions a teacher can physically hold: available days × max/day."""
+    avail = n_days - sum(1 for d in f.off_days if 0 <= d < n_days)
+    return max(avail, 0) * max(f.max_per_day, 0)
+
+
+def _find_capacity_gap(
+    demand: dict[uuid.UUID, int],
+    pools: dict[uuid.UUID, list[uuid.UUID]],
+    caps: dict[uuid.UUID, int],
+) -> tuple[list[uuid.UUID], list[uuid.UUID], int, int] | None:
+    """Decide the counting relaxation of teacher capacity exactly, by max-flow.
+
+    Network: source → course (cap = weekly sessions) → eligible teacher →
+    sink (cap = available days × max/day). If max-flow < total demand then no
+    assignment of sessions to teachers exists even before considering the
+    time grid, and the min-cut names the tight group: returns
+    (courses, teachers, required, capacity) for a Hall-violating set — a
+    group of courses whose combined demand exceeds what the union of their
+    eligible teachers can teach. Returns None when the relaxation is
+    satisfiable. Sizes here are tiny (tens of nodes), Dinic is instant.
+    """
+    course_ids = sorted(demand, key=str)
+    teacher_ids = sorted({t for c in course_ids for t in pools.get(c, [])}, key=str)
+    n = 2 + len(course_ids) + len(teacher_ids)
+    src, snk = 0, n - 1
+    c_node = {c: 1 + i for i, c in enumerate(course_ids)}
+    t_node = {t: 1 + len(course_ids) + i for i, t in enumerate(teacher_ids)}
+
+    adj: list[list[int]] = [[] for _ in range(n)]
+    edges: list[list[int]] = []  # [to, residual_cap]; edge i^1 is the reverse
+
+    def _add(u: int, v: int, cap: int) -> None:
+        adj[u].append(len(edges)); edges.append([v, cap])
+        adj[v].append(len(edges)); edges.append([u, 0])
+
+    total = 0
+    for c in course_ids:
+        _add(src, c_node[c], demand[c])
+        total += demand[c]
+        for t in pools.get(c, []):
+            _add(c_node[c], t_node[t], demand[c])
+    for t in teacher_ids:
+        _add(t_node[t], snk, caps.get(t, 0))
+
+    flow = 0
+    while True:  # Dinic: BFS levels, then blocking DFS augmentation
+        level = [-1] * n
+        level[src] = 0
+        dq = deque([src])
+        while dq:
+            u = dq.popleft()
+            for eid in adj[u]:
+                v, cap = edges[eid]
+                if cap > 0 and level[v] < 0:
+                    level[v] = level[u] + 1
+                    dq.append(v)
+        if level[snk] < 0:
+            break
+        it = [0] * n
+
+        def _dfs(u: int, pushed: int) -> int:
+            if u == snk:
+                return pushed
+            while it[u] < len(adj[u]):
+                eid = adj[u][it[u]]
+                v, cap = edges[eid]
+                if cap > 0 and level[v] == level[u] + 1:
+                    got = _dfs(v, min(pushed, cap))
+                    if got:
+                        edges[eid][1] -= got
+                        edges[eid ^ 1][1] += got
+                        return got
+                it[u] += 1
+            return 0
+
+        while (pushed := _dfs(src, 1 << 60)):
+            flow += pushed
+
+    if flow >= total:
+        return None
+
+    # Min-cut certificate: courses reachable from the source in the residual
+    # graph form the violating set W, the reachable teachers are N(W).
+    seen = [False] * n
+    seen[src] = True
+    dq = deque([src])
+    while dq:
+        u = dq.popleft()
+        for eid in adj[u]:
+            v, cap = edges[eid]
+            if cap > 0 and not seen[v]:
+                seen[v] = True
+                dq.append(v)
+    w_courses = [c for c in course_ids if seen[c_node[c]]]
+    w_teachers = [t for t in teacher_ids if seen[t_node[t]]]
+    required = sum(demand[c] for c in w_courses)
+    capacity = sum(caps.get(t, 0) for t in w_teachers)
+    return w_courses, w_teachers, required, capacity
 
 
 async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: int | None = None) -> SolverData:
@@ -254,8 +357,7 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
     fac_by_id = {f.id: f for f in faculty}
 
     def _teach_cap(f) -> int:
-        avail = n_days - sum(1 for d in f.off_days if 0 <= d < n_days)
-        return max(avail, 0) * max(f.max_per_day, 0)
+        return _teacher_capacity(f, n_days)
 
     sessions_by_course: dict[uuid.UUID, int] = {}
     for slot in offering_slots:
@@ -286,6 +388,26 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
             codes = "+".join(sorted(courses_by_id[c].code for c in c_ids))
             diagnostics.append(
                 f"sole_teacher_overload:{f.name or fid}:{codes}:{required}:{cap}"
+            )
+
+    # Exact group check (counting relaxation, decided by max-flow): the two
+    # bounds above only see one course or one sole teacher at a time and miss
+    # shortages spread across courses that share a pool — real data passed
+    # both while the term as a whole demanded 780 sessions from teachers who
+    # can physically hold 768, so CP-SAT burned the whole budget failing to
+    # prove the inevitable and the UI said "increase the time limit". The
+    # min-cut names exactly the tight course group and its teacher pool.
+    if not any(d.startswith(("insufficient_teacher_capacity:", "sole_teacher_overload:"))
+               for d in diagnostics):
+        flow_demand = {c: s for c, s in sessions_by_course.items() if eligible.get(c)}
+        caps = {fid: _teach_cap(f) for fid, f in fac_by_id.items()}
+        gap = _find_capacity_gap(flow_demand, eligible, caps)
+        if gap is not None:
+            w_courses, w_teachers, required, capacity = gap
+            codes = "+".join(sorted(courses_by_id[c].code for c in w_courses))
+            diagnostics.append(
+                f"insufficient_group_capacity:{required}:{capacity}"
+                f":{len(w_teachers)}:{codes}"
             )
 
     # Load constraints
@@ -1261,10 +1383,35 @@ async def run_solve_job(
                     # group the remaining budget before declaring defeat.
                     extended.add(key)
                     continue
-                failure = ("unknown", [
+                timeout_cores = [
                     "solver_timeout: no timetable found within the time limit"
                     " — increase the time limit and solve again",
-                ])
+                ]
+                # A course group keeping its teacher pool >90% booked is the
+                # usual reason a not-provably-infeasible instance still times
+                # out — rerun the load-time flow check with capacities scaled
+                # to 90% so the min-cut names the squeezed courses, instead of
+                # only telling the admin to add time.
+                demand: dict[uuid.UUID, int] = {}
+                code_of: dict[uuid.UUID, str] = {}
+                for off in data.offerings:
+                    demand[off.course.id] = demand.get(off.course.id, 0) + 1
+                    code_of[off.course.id] = off.course.code
+                caps = {f.id: _teacher_capacity(f, data.n_days) for f in data.faculty}
+                gap = _find_capacity_gap(
+                    {c: s for c, s in demand.items() if data.eligible.get(c)},
+                    data.eligible,
+                    {fid: int(c * 0.9) for fid, c in caps.items()},
+                )
+                if gap is not None:
+                    w_courses, w_teachers, required, _ = gap
+                    capacity = sum(caps.get(t, 0) for t in w_teachers)
+                    codes = "+".join(sorted(code_of[c] for c in w_courses))
+                    timeout_cores.append(
+                        f"high_utilization:{required}:{capacity}"
+                        f":{len(w_teachers)}:{codes}"
+                    )
+                failure = ("unknown", timeout_cores)
                 break
 
             if st == "infeasible" and multi:
