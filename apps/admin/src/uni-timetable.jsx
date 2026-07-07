@@ -58,6 +58,17 @@ const TEMPLATE_ROWS = {
   eligibility: [["jc@diu.edu.bd", "CSE101"]],
 };
 
+// Cascade summary shown in the "Remove import" confirm dialog — spells out the
+// dependent rows the backend deletes along with the entity itself.
+const CLEAR_WARNINGS = {
+  courses:     "every course — plus its offerings, teacher-eligibility rows and any timetable entries that reference them",
+  rooms:       "every room — plus any timetable entries scheduled in them",
+  faculty:     "every faculty profile — plus their eligibility rows and any timetable entries assigned to them",
+  batches:     "every batch — plus its sections, lab groups, student enrollments, offerings and timetable entries",
+  offerings:   "every offering",
+  eligibility: "every teacher-eligibility row",
+};
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Translate the solver's symbolic infeasibility codes into human guidance.
@@ -265,6 +276,7 @@ function TimetableData({ termId }) {
   const [showAdd, setShowAdd] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [importOk, setImportOk] = useState(null); // null | true | false — colors the status line
+  const [showClear, setShowClear] = useState(false);
   const fileRef = useRef();
 
   const subTabs = ["courses", "rooms", "faculty", "batches", "offerings", "eligibility"];
@@ -279,7 +291,7 @@ function TimetableData({ termId }) {
     finally { setLoading(false); }
   }
 
-  useEffect(() => { load(); setShowAdd(false); setImportMsg(""); setImportOk(null); }, [sub]);
+  useEffect(() => { load(); setShowAdd(false); setShowClear(false); setImportMsg(""); setImportOk(null); }, [sub]);
 
   function downloadTemplate() {
     const header = (IMPORT_COLS[sub] || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -338,6 +350,20 @@ function TimetableData({ termId }) {
     finally { if (fileRef.current) fileRef.current.value = ""; }
   }
 
+  // "Remove import" — bulk-delete every row of this entity (and its dependents)
+  // via DELETE /import. Offerings clear only the selected term, matching import.
+  async function handleClearAll() {
+    setImportMsg("Removing…"); setImportOk(null);
+    const termQ = sub === "offerings" && termId ? `&term_id=${termId}` : "";
+    try {
+      const data = await AnchorAPI.apiDelete(`${TT_BASE}/import?entity=${sub}${termQ}`);
+      const n = data.total_deleted || 0;
+      setImportMsg(n ? `✓ Removed ${n} record${n === 1 ? "" : "s"}` : "Nothing to remove");
+      setImportOk(true);
+      load();
+    } catch (e) { setImportMsg(e.message || "Remove failed"); setImportOk(false); }
+  }
+
   return (
     <Card noPad>
       {/* Sub-tab strip */}
@@ -361,6 +387,9 @@ function TimetableData({ termId }) {
               title={`Download a ${sub} CSV template with the correct columns`}>Template</GhostButton>
             <GhostButton size="sm" icon="upload" onClick={() => fileRef.current.click()}
               title={`CSV columns: ${IMPORT_COLS[sub] || ""}`}>Import</GhostButton>
+            <GhostButton size="sm" icon="trash-2" danger disabled={items.length === 0}
+              onClick={() => setShowClear(true)}
+              title={`Delete all ${subLabels[sub].toLowerCase()} from the database`}>Remove import</GhostButton>
           </>
           <PrimaryButton size="sm" icon="plus" mode="sage" onClick={() => setShowAdd(true)}>Add</PrimaryButton>
         </div>
@@ -381,6 +410,18 @@ function TimetableData({ termId }) {
       ) : showAdd ? (
         <AddEntitySlideOver sub={sub} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load(); }} />
       ) : null}
+
+      <ConfirmModal
+        open={showClear}
+        onClose={() => setShowClear(false)}
+        onConfirm={handleClearAll}
+        title={`Remove all ${subLabels[sub].toLowerCase()}?`}
+        body={`This permanently deletes ${CLEAR_WARNINGS[sub] || "all rows"}${
+          sub === "offerings" ? (termId ? " in the selected term" : " in every term") : ""
+        } — both imported and manually added rows. This cannot be undone.`}
+        confirmWord="REMOVE"
+        confirmLabel="Remove all"
+      />
     </Card>
   );
 }
