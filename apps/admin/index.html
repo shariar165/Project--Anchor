@@ -10457,6 +10457,17 @@ function describeCore(id) {
     msg = code.replace(/^pin_(impossible|conflict):?\s*/, "Requested move not possible: ");
   } else if (code.startsWith("solver process was killed")) {
     msg = "The solver ran out of memory mid-run."; hint = "Try again with a shorter time limit; the job is safe to retry.";
+  } else if (code.startsWith("solver_timeout")) {
+    msg = "The solver ran out of time before finding a valid timetable.";
+    hint = "Increase the time limit and Generate again.";
+  } else if (code.startsWith("insufficient_teacher_capacity:")) {
+    const [c, req, cap, n] = arg.split(":");
+    msg = `${c} needs ${req} weekly sessions, but its ${n} eligible teacher${n === "1" ? "" : "s"} can teach at most ${cap} in total.`;
+    hint = "Add eligible teachers in Data → Eligibility, raise their max classes/day or off-days in Data → Faculty, or offer the course to fewer batches.";
+  } else if (code.startsWith("sole_teacher_overload:")) {
+    const parts = arg.split(":");
+    msg = `${parts[0]} is the only eligible teacher for ${(parts[1] || "").replace(/\+/g, ", ")} — that requires ${parts[2]} weekly sessions, but they can teach at most ${parts[3]}.`;
+    hint = "Add eligible teachers for those courses in Data → Eligibility.";
   }
   if (!msg) return null;
   return { batch, msg, hint };
@@ -11705,6 +11716,8 @@ function TimetableGenerate({ termId, onSolved }) {
               ? "The server restarted mid-run and the job was recovered as failed. Click Re-generate to try again."
               : job.solver_status === "solver_oom"
               ? "The solver ran out of memory. Try a shorter time limit — the job is safe to retry."
+              : job.solver_status === "unknown"
+              ? "The solver ran out of time before finding a valid timetable. Increase the time limit and Generate again."
               : "Solver failed. Check that schedule config and data are set up correctly."}
           </div>
         )}
@@ -11793,6 +11806,8 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
               ? `Re-solve infeasible — the change conflicts with locked cells or rules${core ? ` (${core})` : ""}.`
               : j.solver_status === "solver_oom"
               ? "Re-solve failed — the solver ran out of memory. The previous version is unchanged; try again."
+              : j.solver_status === "unknown"
+              ? "Re-solve ran out of time before finding a valid layout. The previous version is unchanged; try a longer time limit."
               : "Re-solve failed — the previous version is unchanged.");
           }
         }

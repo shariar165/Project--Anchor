@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     solver_isolation: str = "process"
     solver_num_workers: int = 1        # CP-SAT search workers per solve
     solver_decompose_threshold: int = 2  # >N batches → per-batch decomposition
+    # Real rosters mark 100+ teachers eligible per course; model size, peak
+    # memory, and CP-SAT search plateaus all scale with that fan-out. Each
+    # group solve keeps only the N least-reserved candidates per course
+    # (teachers already used by base entries / pin targets are always kept);
+    # a trimmed group that comes back infeasible/unknown retries with the full
+    # pool, so this is a performance cap, never a correctness one. 0 disables.
+    solver_max_candidates: int = 10
 
     # HIBP
     hibp_check_enabled: bool = True

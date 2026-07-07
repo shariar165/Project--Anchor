@@ -430,10 +430,13 @@ The solver honors `TimetableConstraint` rows with `enforcement=hard|soft` and `w
 
 At real scale (9 batches × 8 sections ≈ 850 weekly sessions) a single monolithic CP-SAT model does not converge and OOM-kills small containers. `run_solve_job` therefore solves **per batch** (batches are course-disjoint): groups are solved sequentially, largest first, and resources consumed by earlier groups (faculty time slots, per-slot room capacity, concrete room ids, per-day/consecutive count budgets) are passed forward as `Reservations` constants. On a group infeasibility it escalates: pair-merge with the previous group → one model over the remainder → fail with batch-labelled cores. Progress and `solver_status` ("batch i/n") are written to the job row per group, so the admin UI shows real progress and the row's `updated_at` doubles as a liveness heartbeat.
 
+Real rosters mark 100+ teachers eligible per course; model size, peak memory, and CP-SAT search plateaus all scale with that fan-out (the raw prod data OOM'd Railway at ~465 MB/child and returned UNKNOWN even with memory to spare). Each group solve therefore **trims the candidate pool** to the `SOLVER_MAX_CANDIDATES` least-reserved teachers per course (`trim_eligible`; teachers already used by base entries or a pin target are always kept). A trimmed group that returns infeasible/unknown retries once with the full pool; an UNKNOWN on the full pool retries once with the remaining wall-clock budget; a persistent UNKNOWN fails the job with a `solver_timeout` core (UI: "increase the time limit").
+
 Key knobs (all in `app/config.py`, override via env):
 - `SOLVER_ISOLATION=process|thread` (default `process`) — solves run in a spawned subprocess; an OOM kill fails the job as `solver_oom` instead of taking down the API and orphaning the job at 10%. Tests use `thread`.
 - `SOLVER_NUM_WORKERS` (default 1) — CP-SAT search workers per solve.
 - `SOLVER_DECOMPOSE_THRESHOLD` (default 2) — terms with ≤N batches solve as a monolith; `SolveRequest.strategy` (`auto|monolith|per_batch`) overrides.
+- `SOLVER_MAX_CANDIDATES` (default 10) — candidate teachers kept per course per group solve; 0 disables trimming.
 
 Orphaned jobs are reaped twice: at startup (`timetable_svc.reap_stale_solve_jobs` in the `main.py` lifespan) and lazily on `GET /solve/{job_id}` via `updated_at` staleness.
 

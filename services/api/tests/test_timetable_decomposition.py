@@ -413,3 +413,195 @@ async def test_duplicate_offering_and_eligibility_409(client, admin_headers, db_
     elig = {"faculty_id": str(fp.id), "course_id": course["id"]}
     assert (await client.post("/v1/admin/timetable/eligibility", json=elig, headers=admin_headers)).status_code == 201
     assert (await client.post("/v1/admin/timetable/eligibility", json=elig, headers=admin_headers)).status_code == 409
+
+
+# ── Candidate trimming (wide real-world eligibility fan-out) ──────────────────
+
+def _ns(**kw):
+    from types import SimpleNamespace
+    return SimpleNamespace(**kw)
+
+
+def _trim_fixture(pool_size, k):
+    """Synthetic (data, grp) pair with one course whose pool has pool_size ids."""
+    course_id = uuid.uuid4()
+    pool = [uuid.UUID(int=i + 1) for i in range(pool_size)]
+    grp = [_ns(course=_ns(id=course_id))]
+    data = _ns(eligible={course_id: pool}, offerings=grp)
+    return data, grp, course_id, pool
+
+
+def test_trim_eligible_returns_none_when_within_cap():
+    data, grp, _, _ = _trim_fixture(pool_size=5, k=10)
+    assert timetable_solver.trim_eligible(data, grp, None, 10) is None
+    assert timetable_solver.trim_eligible(data, grp, None, 0) is None  # disabled
+
+
+def test_trim_eligible_prefers_less_reserved_teachers():
+    data, grp, course_id, pool = _trim_fixture(pool_size=15, k=8)
+    # The first five teachers are heavily reserved by earlier groups.
+    busy = {(pool[i], d, s) for i in range(5) for d in range(3) for s in range(4)}
+    res = _ns(faculty_busy=busy)
+
+    out = timetable_solver.trim_eligible(data, grp, res, 8)
+    assert out is not None
+    kept = out[course_id]
+    assert len(kept) == 8
+    assert not (set(kept) & set(pool[:5])), "busiest teachers should be trimmed first"
+    # Stable roster order is preserved among the kept ids.
+    assert kept == [f for f in pool if f in set(kept)]
+
+
+def test_trim_eligible_always_keeps_base_entry_teacher():
+    data, grp, course_id, pool = _trim_fixture(pool_size=20, k=4)
+    anchor = pool[-1]  # last in roster order AND maximally reserved
+    busy = {(anchor, d, s) for d in range(6) for s in range(6)}
+    base = [_ns(course_id=course_id, faculty_id=anchor)]
+
+    out = timetable_solver.trim_eligible(
+        data, grp, _ns(faculty_busy=busy), 4, base_entries=base,
+    )
+    assert out is not None and anchor in out[course_id]
+    assert len(out[course_id]) == 4
+
+
+@pytest.mark.asyncio
+async def test_trimmed_group_retries_with_full_pool(db_session, monkeypatch):
+    """UNKNOWN on a trimmed pool → same group re-solves untrimmed, job succeeds."""
+    info = await seed_scenario(db_session, n_batches=3, n_slots=6, eligible_per_course=4)
+    monkeypatch.setattr(get_settings(), "solver_max_candidates", 2)
+
+    pool_sizes = []
+
+    def fake_solve(d, **kw):
+        pool_sizes.append(max(len(d.eligible[o.course.id]) for o in d.offerings))
+        if len(pool_sizes) == 1:  # first (trimmed) attempt of the first group
+            return {"status": "unknown", "objective": None, "entries": [],
+                    "infeasible_core": []}
+        return {"status": "optimal", "objective": 0,
+                "entries": _fake_entries(d), "infeasible_core": []}
+
+    monkeypatch.setattr(timetable_solver, "solve", fake_solve)
+
+    job = await timetable_svc.create_solve_job(db_session, term_id=info["term_id"])
+    await run_solve_job(job.id, _session_factory(db_session),
+                        SolveRequest(term_id=info["term_id"], time_limit_s=30))
+
+    job = await timetable_svc.get_solve_job(db_session, job.id)
+    assert job.status == "optimal", (job.solver_status, job.infeasible_core)
+    # g0 trimmed (2) → g0 full pool (4) → g1, g2 trimmed (2)
+    assert pool_sizes == [2, 4, 2, 2], pool_sizes
+
+
+@pytest.mark.asyncio
+async def test_unknown_retries_with_extended_budget(db_session, monkeypatch):
+    """UNKNOWN with nothing trimmed → one retry with the remaining budget."""
+    info = await seed_scenario(db_session, n_batches=3, n_slots=6, eligible_per_course=4)
+
+    budgets = []
+
+    def fake_solve(d, **kw):
+        budgets.append(kw["time_limit_s"])
+        if len(budgets) == 1:
+            return {"status": "unknown", "objective": None, "entries": [],
+                    "infeasible_core": []}
+        return {"status": "optimal", "objective": 0,
+                "entries": _fake_entries(d), "infeasible_core": []}
+
+    monkeypatch.setattr(timetable_solver, "solve", fake_solve)
+
+    job = await timetable_svc.create_solve_job(db_session, term_id=info["term_id"])
+    await run_solve_job(job.id, _session_factory(db_session),
+                        SolveRequest(term_id=info["term_id"], time_limit_s=60))
+
+    job = await timetable_svc.get_solve_job(db_session, job.id)
+    assert job.status == "optimal", (job.solver_status, job.infeasible_core)
+    assert budgets[1] > budgets[0], budgets
+
+
+@pytest.mark.asyncio
+async def test_unknown_twice_fails_with_solver_timeout_core(db_session, monkeypatch):
+    """Persistent UNKNOWN → failed job with an actionable solver_timeout core."""
+    info = await seed_scenario(db_session, n_batches=3, n_slots=6, eligible_per_course=4)
+
+    def fake_solve(d, **kw):
+        return {"status": "unknown", "objective": None, "entries": [],
+                "infeasible_core": []}
+
+    monkeypatch.setattr(timetable_solver, "solve", fake_solve)
+
+    job = await timetable_svc.create_solve_job(db_session, term_id=info["term_id"])
+    await run_solve_job(job.id, _session_factory(db_session),
+                        SolveRequest(term_id=info["term_id"], time_limit_s=30))
+
+    job = await timetable_svc.get_solve_job(db_session, job.id)
+    assert job.status == "failed"
+    assert job.solver_status == "unknown"
+    assert any(str(c).startswith("solver_timeout") for c in job.infeasible_core), job.infeasible_core
+
+
+# ── Capacity pre-check (provably-infeasible data fails fast) ──────────────────
+
+async def _capacity_fixture(db, *, weekly, n_sections, max_per_day, n_courses=1):
+    """Term where one teacher is the sole eligible for n_courses courses."""
+    term = await _term_with_config(db, name="Cap Term", days=3, slots=4)
+    batch = TimetableBatch(name="Batch 93", program="SWE")
+    fp = TimetableFacultyProfile(rank="LECTURER", off_days=[], max_per_day=max_per_day, active=True)
+    db.add_all([batch, fp])
+    await db.flush()
+    for i in range(n_sections):
+        db.add(TimetableSection(batch_id=batch.id, name=chr(ord("A") + i)))
+    courses = [
+        TimetableCourse(code=f"CAP10{i}", name=f"Cap {i}", credits=3,
+                        is_lab=False, weekly_classes=weekly)
+        for i in range(n_courses)
+    ]
+    db.add_all(courses)
+    await db.flush()
+    for c in courses:
+        db.add_all([
+            TimetableCourseOffering(term_id=term.id, course_id=c.id, batch_id=batch.id),
+            TimetableTeacherEligibility(faculty_id=fp.id, course_id=c.id),
+        ])
+    db.add(TimetableRoom(name="C-1", room_type="THEORY", capacity=30))
+    await db.commit()
+    return term
+
+
+@pytest.mark.asyncio
+async def test_insufficient_teacher_capacity_diagnostic(db_session):
+    """4 sections × 2/week = 8 sessions, sole teacher caps at 3 days × 2 = 6."""
+    term = await _capacity_fixture(db_session, weekly=2, n_sections=4, max_per_day=2)
+    data = await load_solver_data(db_session, term.id)
+    assert "insufficient_teacher_capacity:CAP100:8:6:1" in data.diagnostics
+
+    # The job must fail fast with the actionable core — no solve attempt.
+    job = await timetable_svc.create_solve_job(db_session, term_id=term.id)
+    await run_solve_job(job.id, _session_factory(db_session),
+                        SolveRequest(term_id=term.id, time_limit_s=30))
+    job = await timetable_svc.get_solve_job(db_session, job.id)
+    assert job.status == "infeasible"
+    assert any(str(c).startswith("insufficient_teacher_capacity:CAP100")
+               for c in job.infeasible_core), job.infeasible_core
+
+
+@pytest.mark.asyncio
+async def test_sole_teacher_overload_diagnostic(db_session):
+    """Two courses each fit alone (4 ≤ 6) but their sole shared teacher can't
+    cover both (8 > 6)."""
+    term = await _capacity_fixture(
+        db_session, weekly=1, n_sections=4, max_per_day=2, n_courses=2,
+    )
+    data = await load_solver_data(db_session, term.id)
+    assert not any(d.startswith("insufficient_teacher_capacity:") for d in data.diagnostics)
+    assert any(d.startswith("sole_teacher_overload:") and d.endswith(":8:6")
+               for d in data.diagnostics), data.diagnostics
+
+
+@pytest.mark.asyncio
+async def test_capacity_check_passes_on_feasible_data(db_session):
+    """Exactly at the bound (6 sessions vs cap 6) — no diagnostic, term solves."""
+    term = await _capacity_fixture(db_session, weekly=2, n_sections=3, max_per_day=2)
+    data = await load_solver_data(db_session, term.id)
+    assert not any(d.startswith(("insufficient_teacher_capacity:", "sole_teacher_overload:"))
+                   for d in data.diagnostics), data.diagnostics
