@@ -10468,6 +10468,18 @@ function describeCore(id) {
     const parts = arg.split(":");
     msg = `${parts[0]} is the only eligible teacher for ${(parts[1] || "").replace(/\+/g, ", ")} — that requires ${parts[2]} weekly sessions, but they can teach at most ${parts[3]}.`;
     hint = "Add eligible teachers for those courses in Data → Eligibility.";
+  } else if (code.startsWith("insufficient_group_capacity:")) {
+    const [req, cap, n, codes] = arg.split(":");
+    const list = (codes || "").split("+").filter(Boolean);
+    const shown = list.slice(0, 6).join(", ") + (list.length > 6 ? ` and ${list.length - 6} more` : "");
+    msg = `${list.length} courses (${shown}) share a pool of ${n} eligible teachers who can teach at most ${cap} weekly sessions in total — but those courses need ${req}. No timetable can exist until that gap (${Number(req) - Number(cap)} sessions) is closed.`;
+    hint = "Make more teachers eligible for these courses in Data → Eligibility, or raise those teachers' max classes/day (or reduce their off-days) in Data → Faculty.";
+  } else if (code.startsWith("high_utilization:")) {
+    const [req, cap, n, codes] = arg.split(":");
+    const list = (codes || "").split("+").filter(Boolean);
+    const shown = list.slice(0, 6).join(", ") + (list.length > 6 ? ` and ${list.length - 6} more` : "");
+    msg = `Likely cause: ${list.length} course${list.length === 1 ? "" : "s"} (${shown}) keep ${n} teachers ${Math.round((Number(req) / Number(cap)) * 100)}% booked (${req} of ${cap} teachable weekly sessions) — a squeeze that tight is very slow to solve.`;
+    hint = "Add more eligible teachers for these courses in Data → Eligibility, or raise max classes/day in Data → Faculty, then Generate again.";
   }
   if (!msg) return null;
   return { batch, msg, hint };

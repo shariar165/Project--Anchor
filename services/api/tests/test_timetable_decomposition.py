@@ -542,12 +542,16 @@ async def test_unknown_twice_fails_with_solver_timeout_core(db_session, monkeypa
 
 # ── Capacity pre-check (provably-infeasible data fails fast) ──────────────────
 
-async def _capacity_fixture(db, *, weekly, n_sections, max_per_day, n_courses=1):
-    """Term where one teacher is the sole eligible for n_courses courses."""
+async def _capacity_fixture(db, *, weekly, n_sections, max_per_day, n_courses=1,
+                            n_teachers=1):
+    """Term where n_teachers are each eligible for all n_courses courses."""
     term = await _term_with_config(db, name="Cap Term", days=3, slots=4)
     batch = TimetableBatch(name="Batch 93", program="SWE")
-    fp = TimetableFacultyProfile(rank="LECTURER", off_days=[], max_per_day=max_per_day, active=True)
-    db.add_all([batch, fp])
+    fps = [
+        TimetableFacultyProfile(rank="LECTURER", off_days=[], max_per_day=max_per_day, active=True)
+        for _ in range(n_teachers)
+    ]
+    db.add_all([batch, *fps])
     await db.flush()
     for i in range(n_sections):
         db.add(TimetableSection(batch_id=batch.id, name=chr(ord("A") + i)))
@@ -559,10 +563,9 @@ async def _capacity_fixture(db, *, weekly, n_sections, max_per_day, n_courses=1)
     db.add_all(courses)
     await db.flush()
     for c in courses:
-        db.add_all([
-            TimetableCourseOffering(term_id=term.id, course_id=c.id, batch_id=batch.id),
-            TimetableTeacherEligibility(faculty_id=fp.id, course_id=c.id),
-        ])
+        db.add(TimetableCourseOffering(term_id=term.id, course_id=c.id, batch_id=batch.id))
+        for fp in fps:
+            db.add(TimetableTeacherEligibility(faculty_id=fp.id, course_id=c.id))
     db.add(TimetableRoom(name="C-1", room_type="THEORY", capacity=30))
     await db.commit()
     return term
@@ -603,5 +606,79 @@ async def test_capacity_check_passes_on_feasible_data(db_session):
     """Exactly at the bound (6 sessions vs cap 6) — no diagnostic, term solves."""
     term = await _capacity_fixture(db_session, weekly=2, n_sections=3, max_per_day=2)
     data = await load_solver_data(db_session, term.id)
+    assert not any(d.startswith(("insufficient_teacher_capacity:", "sole_teacher_overload:",
+                                 "insufficient_group_capacity:"))
+                   for d in data.diagnostics), data.diagnostics
+
+
+@pytest.mark.asyncio
+async def test_insufficient_group_capacity_diagnostic(db_session):
+    """Each course alone fits its two shared teachers (8 ≤ 12) and neither
+    teacher is sole-eligible, but together the pair needs 16 > 12 — only the
+    max-flow group check can see it. Prod hit exactly this shape (780 vs 768)
+    and burned a 300s budget to a useless timeout."""
+    term = await _capacity_fixture(
+        db_session, weekly=2, n_sections=4, max_per_day=2, n_courses=2, n_teachers=2,
+    )
+    data = await load_solver_data(db_session, term.id)
     assert not any(d.startswith(("insufficient_teacher_capacity:", "sole_teacher_overload:"))
                    for d in data.diagnostics), data.diagnostics
+    assert "insufficient_group_capacity:16:12:2:CAP100+CAP101" in data.diagnostics
+
+    # Fails fast with the actionable core — no solve attempt.
+    job = await timetable_svc.create_solve_job(db_session, term_id=term.id)
+    await run_solve_job(job.id, _session_factory(db_session),
+                        SolveRequest(term_id=term.id, time_limit_s=30))
+    job = await timetable_svc.get_solve_job(db_session, job.id)
+    assert job.status == "infeasible"
+    assert any(str(c).startswith("insufficient_group_capacity:")
+               for c in job.infeasible_core), job.infeasible_core
+
+
+def test_find_capacity_gap_names_tight_subgroup():
+    """The min-cut certificate isolates the deficient courses/teachers and
+    leaves independent slack (c3/C) out of the reported group."""
+    A, B, C = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    c1, c2, c3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    gap = timetable_solver._find_capacity_gap(
+        demand={c1: 30, c2: 20, c3: 5},
+        pools={c1: [A, B], c2: [A, B], c3: [C]},
+        caps={A: 24, B: 24, C: 24},
+    )
+    assert gap is not None
+    w_courses, w_teachers, required, capacity = gap
+    assert set(w_courses) == {c1, c2}
+    assert set(w_teachers) == {A, B}
+    assert (required, capacity) == (50, 48)
+
+
+def test_find_capacity_gap_none_when_satisfiable():
+    A, B = uuid.uuid4(), uuid.uuid4()
+    c1, c2 = uuid.uuid4(), uuid.uuid4()
+    gap = timetable_solver._find_capacity_gap(
+        demand={c1: 30, c2: 18},
+        pools={c1: [A, B], c2: [A, B]},
+        caps={A: 24, B: 24},
+    )
+    assert gap is None
+
+
+@pytest.mark.asyncio
+async def test_timeout_core_notes_high_utilization(db_session, monkeypatch):
+    """A persistent UNKNOWN on a ~100%-booked roster should explain the
+    utilization, not just say 'add time'."""
+    term = await _capacity_fixture(db_session, weekly=2, n_sections=3, max_per_day=2)
+
+    def fake_solve(d, **kw):
+        return {"status": "unknown", "objective": None, "entries": [],
+                "infeasible_core": []}
+
+    monkeypatch.setattr(timetable_solver, "solve", fake_solve)
+
+    job = await timetable_svc.create_solve_job(db_session, term_id=term.id)
+    await run_solve_job(job.id, _session_factory(db_session),
+                        SolveRequest(term_id=term.id, time_limit_s=30))
+    job = await timetable_svc.get_solve_job(db_session, job.id)
+    assert job.status == "failed"
+    assert any(str(c).startswith("solver_timeout") for c in job.infeasible_core)
+    assert "high_utilization:6:6:1:CAP100" in job.infeasible_core, job.infeasible_core
