@@ -24,7 +24,7 @@ from app.schemas.timetable import (
     ResolveRequest, NLEditRequest,
     PublishRequest, PublishOut,
     ValidateOut, ConflictOut,
-    ImportResult,
+    ImportResult, ClearResult,
 )
 from app.models.timetable import TimetableEntry
 
@@ -719,3 +719,21 @@ async def import_data(
         db, entity, content, content_type, tenant_id=token.tenant_id, term_id=term_id
     )
     return ImportResult(entity=entity, **result)
+
+
+@router.delete("/import", response_model=ClearResult)
+async def clear_imported_data(
+    entity: str = Query(..., description="courses | rooms | batches | faculty | offerings | eligibility"),
+    term_id: uuid.UUID | None = Query(default=None, description="Offerings only: clear just this term"),
+    db: AsyncSession = Depends(get_db),
+    token: TokenData = Depends(require_role("admin", "moderator")),
+):
+    """Remove everything previously imported (or manually added) for one entity
+    type, cascading to dependent rows. Scoped to the admin's tenant."""
+    try:
+        deleted = await timetable_svc.clear_entities(
+            db, entity, tenant_id=token.tenant_id, term_id=term_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return ClearResult(entity=entity, deleted=deleted, total_deleted=sum(deleted.values()))

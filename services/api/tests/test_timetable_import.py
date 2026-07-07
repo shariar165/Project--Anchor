@@ -198,6 +198,157 @@ async def test_import_offerings_requires_term(client, admin_headers):
     assert no_term.json()["created"] == 0 and len(no_term.json()["errors"]) == 1
 
 
+# ── DELETE /import — the "Remove import" button ───────────────────────────────
+
+async def _seed_full_dataset(client, admin_headers):
+    """Import one of everything and return the term id."""
+    await client.post(
+        "/v1/admin/timetable/import?entity=courses", headers=admin_headers,
+        files=_csv("code,name,credits,weekly_classes,is_lab\nSE800,Clearing,3,2,false\n"),
+    )
+    await client.post(
+        "/v1/admin/timetable/import?entity=rooms", headers=admin_headers,
+        files=_csv("name,room_type,capacity\nCL-101,THEORY,40\n"),
+    )
+    await client.post(
+        "/v1/admin/timetable/import?entity=batches", headers=admin_headers,
+        files=_csv("name,program\nBatch 80,SWE\n"),
+    )
+    await client.post(
+        "/v1/admin/timetable/import?entity=faculty", headers=admin_headers,
+        files=_csv("email,rank,max_per_day\nclear@diu.edu.bd,LECTURER,4\n"),
+    )
+    term = (await client.post(
+        "/v1/admin/timetable/terms", json={"name": "ClearTerm"}, headers=admin_headers,
+    )).json()["id"]
+    r = await client.post(
+        f"/v1/admin/timetable/import?entity=offerings&term_id={term}", headers=admin_headers,
+        files=_csv("course_code,batch_name\nSE800,Batch 80\n"),
+    )
+    assert r.json()["created"] == 1, r.json()
+    r = await client.post(
+        "/v1/admin/timetable/import?entity=eligibility", headers=admin_headers,
+        files=_csv("faculty_email,course_code\nclear@diu.edu.bd,SE800\n"),
+    )
+    assert r.json()["created"] == 1, r.json()
+    return term
+
+
+async def _count(client, admin_headers, entity, query=""):
+    return len((await client.get(f"/v1/admin/timetable/{entity}{query}", headers=admin_headers)).json())
+
+
+@pytest.mark.asyncio
+async def test_clear_eligibility_only_removes_eligibility(client, admin_headers):
+    await _seed_full_dataset(client, admin_headers)
+    r = await client.delete("/v1/admin/timetable/import?entity=eligibility", headers=admin_headers)
+    assert r.status_code == 200, r.json()
+    assert r.json()["deleted"] == {"eligibility": 1}
+    assert await _count(client, admin_headers, "eligibility") == 0
+    # neighbours untouched
+    assert await _count(client, admin_headers, "courses") == 1
+    assert await _count(client, admin_headers, "faculty") == 1
+    assert await _count(client, admin_headers, "offerings") == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_offerings_scopes_to_term(client, admin_headers):
+    term_a = await _seed_full_dataset(client, admin_headers)
+    term_b = (await client.post(
+        "/v1/admin/timetable/terms", json={"name": "OtherTerm"}, headers=admin_headers,
+    )).json()["id"]
+    r = await client.post(
+        f"/v1/admin/timetable/import?entity=offerings&term_id={term_b}", headers=admin_headers,
+        files=_csv("course_code,batch_name\nSE800,Batch 80\n"),
+    )
+    assert r.json()["created"] == 1, r.json()
+
+    r = await client.delete(
+        f"/v1/admin/timetable/import?entity=offerings&term_id={term_a}", headers=admin_headers,
+    )
+    assert r.status_code == 200 and r.json()["total_deleted"] == 1, r.json()
+    assert await _count(client, admin_headers, "offerings", f"?term_id={term_a}") == 0
+    assert await _count(client, admin_headers, "offerings", f"?term_id={term_b}") == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_courses_cascades_offerings_and_eligibility(client, admin_headers):
+    await _seed_full_dataset(client, admin_headers)
+    r = await client.delete("/v1/admin/timetable/import?entity=courses", headers=admin_headers)
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["deleted"]["courses"] == 1
+    assert body["deleted"]["offerings"] == 1
+    assert body["deleted"]["eligibility"] == 1
+    assert await _count(client, admin_headers, "courses") == 0
+    assert await _count(client, admin_headers, "offerings") == 0
+    assert await _count(client, admin_headers, "eligibility") == 0
+    # unrelated entities survive
+    assert await _count(client, admin_headers, "rooms") == 1
+    assert await _count(client, admin_headers, "faculty") == 1
+    assert await _count(client, admin_headers, "batches") == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_batches_cascades_sections_and_offerings(client, admin_headers):
+    await _seed_full_dataset(client, admin_headers)
+    batch_id = (await client.get("/v1/admin/timetable/batches", headers=admin_headers)).json()[0]["id"]
+    await client.post(
+        f"/v1/admin/timetable/batches/{batch_id}/generate-structure",
+        json={"count": 2, "lab_split": True}, headers=admin_headers,
+    )
+    r = await client.delete("/v1/admin/timetable/import?entity=batches", headers=admin_headers)
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["deleted"]["batches"] == 1
+    assert body["deleted"]["sections"] == 2
+    assert body["deleted"]["lab_groups"] == 4
+    assert body["deleted"]["offerings"] == 1
+    assert await _count(client, admin_headers, "batches") == 0
+    assert await _count(client, admin_headers, "offerings") == 0
+    assert await _count(client, admin_headers, "courses") == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_faculty_cascades_eligibility_and_entries(client, admin_headers, db_session):
+    import uuid as _uuid
+    from app.models.timetable import TimetableEntry
+    await _seed_full_dataset(client, admin_headers)
+    batch_id = (await client.get("/v1/admin/timetable/batches", headers=admin_headers)).json()[0]["id"]
+    await client.post(
+        f"/v1/admin/timetable/batches/{batch_id}/generate-structure",
+        json={"count": 1, "lab_split": False}, headers=admin_headers,
+    )
+    # Wire a solver-style entry straight into the DB so the cascade path is real.
+    batches = (await client.get("/v1/admin/timetable/batches", headers=admin_headers)).json()
+    section_id = batches[0]["sections"][0]["id"]
+    course_id = (await client.get("/v1/admin/timetable/courses", headers=admin_headers)).json()[0]["id"]
+    room_id = (await client.get("/v1/admin/timetable/rooms", headers=admin_headers)).json()[0]["id"]
+    faculty_id = (await client.get("/v1/admin/timetable/faculty", headers=admin_headers)).json()[0]["id"]
+    term_id = (await client.get("/v1/admin/timetable/terms", headers=admin_headers)).json()[0]["id"]
+    db_session.add(TimetableEntry(
+        term_id=_uuid.UUID(term_id), result_version=1,
+        course_id=_uuid.UUID(course_id), section_id=_uuid.UUID(section_id),
+        faculty_id=_uuid.UUID(faculty_id), room_id=_uuid.UUID(room_id),
+        day=0, slot=0, is_lab=False,
+    ))
+    await db_session.commit()
+
+    r = await client.delete("/v1/admin/timetable/import?entity=faculty", headers=admin_headers)
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["deleted"]["faculty"] == 1
+    assert body["deleted"]["eligibility"] == 1
+    assert body["deleted"]["entries"] == 1
+    assert await _count(client, admin_headers, "faculty") == 0
+
+
+@pytest.mark.asyncio
+async def test_clear_unknown_entity_is_400(client, admin_headers):
+    r = await client.delete("/v1/admin/timetable/import?entity=nonsense", headers=admin_headers)
+    assert r.status_code == 400
+
+
 @pytest.mark.asyncio
 async def test_import_eligibility(client, admin_headers, registered_user):
     email = registered_user["email"]
