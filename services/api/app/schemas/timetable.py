@@ -384,3 +384,9 @@ class ImportResult(BaseModel):
     total: int = 0           # rows parsed (excluding header + blank rows)
     error_count: int = 0     # true number of errors (errors[] below may be capped)
     errors: list[str]
+
+
+class ClearResult(BaseModel):
+    entity: str
+    deleted: dict[str, int]  # per-table counts, incl. cascaded dependent rows
+    total_deleted: int

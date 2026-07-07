@@ -2,7 +2,7 @@ import csv
 import io
 import uuid
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.timetable import (
@@ -1318,6 +1318,101 @@ async def import_entities(
         "created": created, "updated": updated, "skipped": skipped,
         "total": len(rows), "error_count": error_count, "errors": errors,
     }
+
+
+async def clear_entities(
+    db: AsyncSession,
+    entity: str,
+    tenant_id: uuid.UUID | None = None,
+    term_id: uuid.UUID | None = None,
+) -> dict[str, int]:
+    """Bulk-delete every row of ``entity`` visible to this admin (the "Remove
+    import" button). Dependent rows are deleted first in FK order — the tables
+    have no ON DELETE CASCADE, and leaving e.g. timetable entries pointing at a
+    deleted course would 500 every subsequent solve/list anyway.
+
+    Scoping mirrors the list_* helpers: a tenant admin only clears rows with
+    their tenant_id; a tenant-less account clears everything it can see.
+    Offerings additionally scope to ``term_id`` when given (imports are
+    per-term, so removal is too).
+
+    Returns per-table deleted counts, e.g. {"courses": 12, "tt_entries": 96}.
+    """
+    deleted: dict[str, int] = {}
+
+    async def _del(label: str, stmt) -> None:
+        res = await db.execute(stmt)
+        n = res.rowcount or 0
+        if n:
+            deleted[label] = deleted.get(label, 0) + n
+
+    def _scoped_ids(model):
+        q = select(model.id)
+        if tenant_id:
+            q = q.where(model.tenant_id == tenant_id)
+        return q
+
+    course_ids = _scoped_ids(TimetableCourse)
+    batch_ids = _scoped_ids(TimetableBatch)
+    room_ids = _scoped_ids(TimetableRoom)
+    faculty_ids = _scoped_ids(TimetableFacultyProfile)
+    term_ids = _scoped_ids(TimetableTerm)
+    section_ids = select(TimetableSection.id).where(TimetableSection.batch_id.in_(batch_ids))
+
+    if entity == "courses":
+        await _del("eligibility", delete(TimetableTeacherEligibility)
+                   .where(TimetableTeacherEligibility.course_id.in_(course_ids)))
+        await _del("offerings", delete(TimetableCourseOffering)
+                   .where(TimetableCourseOffering.course_id.in_(course_ids)))
+        await _del("entries", delete(TimetableEntry)
+                   .where(TimetableEntry.course_id.in_(course_ids)))
+        await _del("courses", delete(TimetableCourse)
+                   .where(TimetableCourse.id.in_(course_ids)))
+    elif entity == "rooms":
+        await _del("entries", delete(TimetableEntry)
+                   .where(TimetableEntry.room_id.in_(room_ids)))
+        await _del("rooms", delete(TimetableRoom)
+                   .where(TimetableRoom.id.in_(room_ids)))
+    elif entity == "faculty":
+        await _del("eligibility", delete(TimetableTeacherEligibility)
+                   .where(TimetableTeacherEligibility.faculty_id.in_(faculty_ids)))
+        await _del("entries", delete(TimetableEntry)
+                   .where(TimetableEntry.faculty_id.in_(faculty_ids)))
+        await _del("faculty", delete(TimetableFacultyProfile)
+                   .where(TimetableFacultyProfile.id.in_(faculty_ids)))
+    elif entity == "batches":
+        await _del("entries", delete(TimetableEntry)
+                   .where(TimetableEntry.section_id.in_(section_ids)))
+        await _del("enrollments", delete(TimetableStudentEnrollment)
+                   .where(TimetableStudentEnrollment.section_id.in_(section_ids)))
+        await _del("lab_groups", delete(TimetableLabGroup)
+                   .where(TimetableLabGroup.section_id.in_(section_ids)))
+        await _del("offerings", delete(TimetableCourseOffering)
+                   .where(TimetableCourseOffering.batch_id.in_(batch_ids)))
+        await _del("sections", delete(TimetableSection)
+                   .where(TimetableSection.batch_id.in_(batch_ids)))
+        await _del("batches", delete(TimetableBatch)
+                   .where(TimetableBatch.id.in_(batch_ids)))
+    elif entity == "offerings":
+        stmt = delete(TimetableCourseOffering)
+        if term_id is not None:
+            stmt = stmt.where(TimetableCourseOffering.term_id == term_id)
+        elif tenant_id:
+            stmt = stmt.where(TimetableCourseOffering.term_id.in_(term_ids))
+        await _del("offerings", stmt)
+    elif entity == "eligibility":
+        stmt = delete(TimetableTeacherEligibility)
+        if tenant_id:
+            stmt = stmt.where(or_(
+                TimetableTeacherEligibility.faculty_id.in_(faculty_ids),
+                TimetableTeacherEligibility.course_id.in_(course_ids),
+            ))
+        await _del("eligibility", stmt)
+    else:
+        raise ValueError(f"unsupported entity '{entity}'")
+
+    await db.commit()
+    return deleted
 
 
 def _parse_file(file_bytes: bytes, content_type: str) -> tuple[list[str], list[dict]]:
