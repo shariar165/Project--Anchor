@@ -10598,10 +10598,19 @@ function UniTimetable({ onGo }) {
       .then(d => {
         const list = Array.isArray(d) ? d : [];
         setTerms(list);
-        const active = list.find(t => t.is_active);
-        if (active) setTermId(active.id);
+        // No term marked active is the common case in real data — falling
+        // through to "— select term —" leaves Generate/Schedule silently
+        // dead after every page reload. Restore the last-used term, else
+        // the active one, else the first.
+        const saved = localStorage.getItem("anchor:tt_term");
+        const pick = list.find(t => t.id === saved) || list.find(t => t.is_active) || list[0];
+        if (pick) setTermId(pick.id);
       }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (termId) try { localStorage.setItem("anchor:tt_term", termId); } catch {}
+  }, [termId]);
 
   async function addTerm(name) {
     const t = await AnchorAPI.apiPostAuth(`${TT_BASE}/terms`, { name });
