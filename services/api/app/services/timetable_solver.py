@@ -15,6 +15,7 @@ an OOM kill takes down the child, not the API — the job then fails with
 import asyncio
 import json
 import logging
+import math
 import multiprocessing
 import time
 import uuid
@@ -453,6 +454,10 @@ def solve(
     base_entries: list | None = None,
     reservations: Reservations | None = None,
     num_workers: int = 1,
+    section_max_per_day: int = 0,
+    section_consecutive_limit: int = 0,
+    section_course_spread: bool = False,
+    section_rule_weight: int = 1000,
 ) -> dict:
     """
     Run CP-SAT over ``data.offerings``. Returns:
@@ -692,6 +697,15 @@ def solve(
             except Exception as exc:
                 logger.warning(f"Soft constraint {con.constraint_type} build failed: {exc}")
 
+    # Built-in section-centric spacing rules (student view). High-weight soft so
+    # a timetable is always produced; relaxed (and flagged by validate) only when
+    # a grid is too tight to space perfectly.
+    _add_section_rules(
+        model, x, data, by_section_slot, penalty_terms,
+        section_max_per_day, section_consecutive_limit,
+        section_course_spread, section_rule_weight,
+    )
+
     if penalty_terms:
         model.minimize(sum(penalty_terms))
 
@@ -822,6 +836,86 @@ def _add_symmetry_breaking(model, x, data: SolverData, n_s: int) -> None:
             if prev_t is not None:
                 model.add(prev_t < t)
             prev_t = t
+
+
+def _add_section_rules(
+    model, x, data: SolverData, by_section_slot: dict, penalty_terms: list,
+    max_per_day: int, consecutive_limit: int, course_spread: bool, weight: int,
+) -> None:
+    """Section-centric spacing penalties — what a *student* experiences.
+
+    A student's day = the section's theory classes + their own lab group's labs
+    (two lab groups of one section may run concurrently). So we build one
+    "attendance stream" per (section, lab_group): the section's theory vars plus
+    that group's lab vars; a section with no labs gets a single theory-only
+    stream. Every class a section attends lives in one batch group, so these are
+    self-contained — no cross-group reservations needed.
+
+    All three are high-weight soft penalties (``weight`` dominates the small
+    preference penalties): the solver honours them whenever a spacing exists and
+    relaxes them minimally otherwise, so a timetable is always produced. Each
+    rule is skipped when its knob is 0 / False, or when ``weight`` <= 0.
+    """
+    if weight <= 0:
+        return
+
+    # (section_id) -> {lg_id -> {(day, slot) -> [vars]}}
+    by_section: dict[uuid.UUID, dict] = {}
+    for (sec_id, d, s, lg_id), vars_list in by_section_slot.items():
+        by_section.setdefault(sec_id, {}).setdefault(lg_id, {}) \
+            .setdefault((d, s), []).extend(vars_list)
+
+    for sec_id, by_lg in by_section.items():
+        theory = by_lg.get(None, {})           # {(d,s): [vars]}
+        lab_lgs = [lg for lg in by_lg if lg is not None]
+        streams = lab_lgs if lab_lgs else [None]
+        for lg in streams:
+            # Merge theory + this stream's lab cells into one day -> {slot:[vars]}
+            by_day: dict[int, dict] = {}
+            for (d, s), v in theory.items():
+                by_day.setdefault(d, {}).setdefault(s, []).extend(v)
+            if lg is not None:
+                for (d, s), v in by_lg[lg].items():
+                    by_day.setdefault(d, {}).setdefault(s, []).extend(v)
+
+            for d, slot_map in by_day.items():
+                # (a) max classes per day for this student stream
+                if max_per_day:
+                    day_vars = [v for vs in slot_map.values() for v in vs]
+                    if len(day_vars) > max_per_day:
+                        excess = model.new_int_var(0, len(day_vars), f"sec_mpd_{sec_id}_{lg}_{d}")
+                        model.add(sum(day_vars) - max_per_day <= excess)
+                        penalty_terms.append(weight * excess)
+                # (b) no more than `limit` back-to-back before a gap
+                if consecutive_limit:
+                    for s_start in range(data.n_slots - consecutive_limit):
+                        window = range(s_start, s_start + consecutive_limit + 1)
+                        window_vars = [v for s in window for v in slot_map.get(s, [])]
+                        if len(window_vars) > consecutive_limit:
+                            over = model.new_int_var(
+                                0, len(window_vars), f"sec_cons_{sec_id}_{lg}_{d}_{s_start}")
+                            model.add(sum(window_vars) - consecutive_limit <= over)
+                            penalty_terms.append(weight * over)
+
+    # (c) same course must not repeat within a day for a section. Uses offering
+    # identity (lost by by_section_slot), grouped by (section, course, lg, day).
+    if course_spread:
+        by_scld: dict[tuple, list] = {}
+        weekly: dict[uuid.UUID, int] = {}
+        for o_idx, offering in enumerate(data.offerings):
+            lg_id = offering.lab_group.id if offering.lab_group else None
+            weekly[offering.course.id] = offering.course.weekly_classes
+            for (_f, d, _s), var in x[o_idx].items():
+                by_scld.setdefault((offering.section.id, offering.course.id, lg_id, d), []).append(var)
+        n_days = max(data.n_days, 1)
+        for (sec_id, course_id, lg_id, d), vars_list in by_scld.items():
+            # ceil(weekly / days): normally 1; only >1 when a course meets more
+            # times than there are days, so it isn't penalised for the unavoidable.
+            cap = max(1, math.ceil(weekly.get(course_id, 1) / n_days))
+            if len(vars_list) > cap:
+                over = model.new_int_var(0, len(vars_list), f"sec_rep_{sec_id}_{course_id}_{lg_id}_{d}")
+                model.add(sum(vars_list) - cap <= over)
+                penalty_terms.append(weight * over)
 
 
 def _add_perturbation(
@@ -1360,6 +1454,10 @@ async def run_solve_job(
                 base_entries=base or None,
                 reservations=reservations,
                 num_workers=settings.solver_num_workers,
+                section_max_per_day=settings.solver_section_max_per_day,
+                section_consecutive_limit=settings.solver_section_consecutive_limit,
+                section_course_spread=settings.solver_section_course_spread,
+                section_rule_weight=settings.solver_section_rule_weight,
             )
             result = await _solve_async(pool, slice_data, kwargs)
             st = result["status"]

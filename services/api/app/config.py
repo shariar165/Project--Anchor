@@ -103,6 +103,16 @@ class Settings(BaseSettings):
     # a trimmed group that comes back infeasible/unknown retries with the full
     # pool, so this is a performance cap, never a correctness one. 0 disables.
     solver_max_candidates: int = 10
+    # Section-centric spacing rules (what a STUDENT experiences), distinct from
+    # the teacher-centric registry `max_classes_per_day`/`consecutive_limit`.
+    # Enforced as high-weight soft penalties so a timetable is ALWAYS produced —
+    # the solver satisfies them whenever possible and only relaxes them (flagged
+    # by `validate`) on grids too tight to space perfectly. Set a limit to 0 (or
+    # the spread flag to False) to disable that rule.
+    solver_section_max_per_day: int = 4          # max classes a section has in one day
+    solver_section_consecutive_limit: int = 2    # max back-to-back classes before a gap
+    solver_section_course_spread: bool = True    # a course must not repeat within a day
+    solver_section_rule_weight: int = 1000       # penalty weight (dominates pref penalties)
 
     # HIBP
     hibp_check_enabled: bool = True
