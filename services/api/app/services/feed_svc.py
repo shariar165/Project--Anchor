@@ -214,6 +214,7 @@ async def list_posts(
     page: int = 1,
     page_size: int = 20,
     tenant_id: uuid.UUID | None = None,
+    confirmed_only: bool = False,
 ) -> list[VerificationFeedPost]:
     q = (
         select(VerificationFeedPost)
@@ -224,6 +225,10 @@ async def list_posts(
     q = q.where(VerificationFeedPost.scope == PostScope(scope))
     if scope == "campus" and tenant_id:
         q = q.where(VerificationFeedPost.tenant_id == tenant_id)
+
+    # Verified-only editions: normal readers only see admin-confirmed stories.
+    if confirmed_only:
+        q = q.where(VerificationFeedPost.admin_confirmed == True)  # noqa: E712
 
     if category:
         q = q.where(VerificationFeedPost.category == PostCategory(category))

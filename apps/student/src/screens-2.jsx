@@ -1302,7 +1302,7 @@ function FeedScreen() {
       kicker: edition + ' · ' + catLabel,
       headline: p.title,
       byline: { author: 'Community Reporter', source: 'Anchor Verified Feed', when: timeAgo(p.created_at) },
-      lead: '',
+      lead: p.excerpt || '',
       corr: p.signal_counts?.corroborate ?? 0,
       chal: p.signal_counts?.challenge ?? 0,
       trusted: p.admin_confirmed,
