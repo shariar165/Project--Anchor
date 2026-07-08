@@ -50,6 +50,7 @@
     home_campus_verified: 'Campus verified',
     home_verified_news:   'Verified news',
     home_newspaper:       'Newspaper →',
+    home_feed_empty:      'No verified stories yet — check back soon.',
 
     // ── Home tiles · Campus ───────────────────────────────────
     tile_file:           'File',
@@ -159,6 +160,7 @@
     home_campus_verified: 'ক্যাম্পাস যাচাইকৃত',
     home_verified_news:   'যাচাইকৃত সংবাদ',
     home_newspaper:       'সংবাদপত্র →',
+    home_feed_empty:      'এখনও কোনো যাচাইকৃত সংবাদ নেই — কিছুক্ষণ পর আবার দেখুন।',
 
     // ── Home tiles · Campus ───────────────────────────────────
     tile_file:           'দাখিল করুন',

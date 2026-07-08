@@ -83,6 +83,7 @@ class PostListItem(BaseModel):
     scope: str
     category: str
     title: str
+    excerpt: str | None = None
     state: str
     admin_confirmed: bool
     created_at: datetime

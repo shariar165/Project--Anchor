@@ -193,6 +193,12 @@ async def list_feed(
     settings = get_settings()
     page_size = min(page_size, 50)
 
+    # Verified-only national edition: normal readers only ever see admin-confirmed
+    # stories, so unverified community posts stay hidden until a moderator confirms
+    # them. Admins/moderators still see everything so they can moderate the queue.
+    is_moderator = token.role in ("admin", "moderator", "super_admin")
+    confirmed_only = scope == "national" and not is_moderator
+
     # Campus scope works even when the account has no tenant association (single-tenant
     # deployment): list_posts only narrows by tenant_id when one is present, so a null
     # tenant_id returns the shared campus edition.
@@ -204,6 +210,7 @@ async def list_feed(
         page=page,
         page_size=page_size,
         tenant_id=token.tenant_id if scope == "campus" else None,
+        confirmed_only=confirmed_only,
     )
 
     items = []
@@ -216,12 +223,16 @@ async def list_feed(
             flags=counts["flags"],
             user_signal=user_sig,
         )
+        excerpt = (post.body or "").strip()
+        if len(excerpt) > 200:
+            excerpt = excerpt[:200].rstrip() + "…"
         items.append(PostListItem(
             id=post.id,
             post_number=post.post_number,
             scope=post.scope.value,
             category=post.category.value,
             title=post.title,
+            excerpt=excerpt,
             state=post.state.value,
             admin_confirmed=post.admin_confirmed,
             created_at=post.created_at,

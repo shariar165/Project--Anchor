@@ -290,16 +290,22 @@ function HomeScreen() {
             color: 'var(--muted)', fontSize: 11.5, fontFamily: 'var(--font-serif)', fontStyle: 'italic',
           }}>{tr('home_newspaper')}</button>
         </div>
-        {(feedPosts.length
-          ? feedPosts
-          : FEED.filter(f => f.scope === mode)
-        ).slice(0, 2).map(f => (
-          <FeedRowMini
-            key={f.id}
-            item={f}
-            onOpen={f.post_number ? () => go('feed-post', { id: f.id }) : undefined}
-          />
-        ))}
+        {feedPosts.length ? (
+          feedPosts.slice(0, 2).map(f => (
+            <FeedRowMini
+              key={f.id}
+              item={f}
+              onOpen={() => go('feed-post', { id: f.id })}
+            />
+          ))
+        ) : (
+          <div style={{
+            borderTop: '1px solid var(--mist)', padding: '18px 0 4px',
+            color: 'var(--muted)', fontSize: 12.5, fontFamily: 'var(--font-sans)',
+          }}>
+            {tr('home_feed_empty')}
+          </div>
+        )}
       </div>
     </>
   );
@@ -2138,64 +2144,10 @@ const ACTIVE_CASES = [
   },
 ];
 
-const FEED = [
-  // CAMPUS-SCOPED items
-  { id: 'c1', scope: 'campus', art: 'protest',
-    kicker: 'Campus · Top story',
-    headline: 'Hostel notice circulating online — confirmed authentic by DSA',
-    byline: { author: 'Tasnia Rahman', source: 'Anchor Verifiers', when: '4h ago' },
-    lead: 'A notice attributed to the Dean of Students Affairs about updated curfew rules began circulating in batch group-chats yesterday afternoon. After cross-checking with three sources inside DSA, Anchor verifiers confirm the document is genuine and was issued May 23.',
-    corr: 217, chal: 2, trusted: true },
-  { id: 'c2', scope: 'campus', art: 'building',
-    kicker: 'Department · SWE',
-    headline: 'SWE industrial visit registration cap raised to 80 students',
-    byline: { author: 'Rifat Chowdhury', source: 'SWE Office', when: '1d ago' },
-    lead: 'Following high demand, the department has increased the cap on the upcoming industrial visit from 60 to 80 students. Anchor verifiers have a signed copy of the revision from the head of department.',
-    corr: 64, chal: 0, trusted: true },
-  { id: 'c3', scope: 'campus', art: 'mess',
-    kicker: 'Rumour · Disputed',
-    headline: 'Mess food cost hike — not confirmed, Hostel Office responds',
-    byline: { author: 'Tanvir Hossain', source: 'Hostel Office (DIU)', when: '2d ago' },
-    lead: 'Rumours of a Tk 1,200 hike in monthly mess fees are circulating in Block C. The Hostel Office tells Anchor that no rate change has been approved for this semester and the rumour likely stems from a vendor quotation page.',
-    corr: 32, chal: 41, trusted: false },
-  { id: 'c4', scope: 'campus', art: 'library',
-    kicker: 'Campus · Notice',
-    headline: 'Library sections A & B closed for renovation May 25 – June 12',
-    byline: { author: 'Anchor Editorial', source: 'University Notices', when: '4d ago' },
-    lead: 'The university library will close two of its three reading sections for scheduled renovation. Digital library access and reading room C remain open as usual.',
-    corr: 88, chal: 1, trusted: true },
-
-  // COUNTRY-SCOPED items
-  { id: 'n1', scope: 'country', art: 'protest',
-    kicker: 'National · Top story',
-    headline: 'Dhanmondi cordon: official statement contradicts video evidence',
-    byline: { author: 'Sumaiya Ahmed', source: 'Anchor Verifiers', when: '6h ago' },
-    lead: 'Three independent verifiers cross-checked publicly available footage from May 22 against the briefing held by the Home Ministry that evening. Discrepancies were found in the stated timing of the police cordon and the exact location of two reported injuries.',
-    corr: 142, chal: 11, trusted: true },
-  { id: 'n2', scope: 'country', art: 'traffic',
-    kicker: 'Misinformation · Debunked',
-    headline: 'Mirpur traffic disruption was a power-feeder fault, not protest',
-    byline: { author: 'Imran Sarker', source: 'Anchor Verifiers · DPDC', when: '11h ago' },
-    lead: 'Traffic disruption near Mirpur-10 today was due to a power-feeder fault confirmed by Dhaka Power Distribution Company. Earlier social-media posts wrongly attributed it to student protest.',
-    corr: 89, chal: 4, trusted: false },
-  { id: 'n3', scope: 'country', art: 'court',
-    kicker: 'Legal · Update',
-    headline: 'New cyber-harassment fast-track bench begins hearings this week',
-    byline: { author: 'Adv. F. Kabir', source: 'Cyber Tribunal Dhaka', when: '1d ago' },
-    lead: 'A new fast-track bench at the Cyber Tribunal of Dhaka begins hearings on Wednesday. Citizens with pending complaints have been notified by SMS. Anchor will track resolution timelines.',
-    corr: 173, chal: 3, trusted: true },
-  { id: 'n4', scope: 'country', art: 'road',
-    kicker: 'Public Safety',
-    headline: 'Hazaribagh murder case suspect convicted — case closed',
-    byline: { author: 'Anchor Editorial', source: 'Court records', when: '2d ago' },
-    lead: 'After a fourteen-month trial, the Hazaribagh murder case from February 2026 concluded with a guilty verdict. The red-zone marker on the Anchor map has been moved to "Resolved".',
-    corr: 209, chal: 0, trusted: true },
-];
-
 Object.assign(window, {
   HomeScreen, ChatScreen, AlertScreen,
   StatusPill, Stepper,
-  ACTIVE_CASES, FEED,
+  ACTIVE_CASES,
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -2378,23 +2330,20 @@ function NewsArt({ variant }) {
 //  FeedRowMini — compact preview for Home
 // ═══════════════════════════════════════════════════════════════
 function FeedRowMini({ item, onOpen }) {
-  const isApi = !!item.post_number;
   const hasToken = !!localStorage.getItem('anchor_access_token');
-  const kicker   = isApi ? (item.category || '').replace(/_/g, ' ').toUpperCase() : item.kicker;
-  const headline = isApi ? item.title : item.headline;
-  const when     = isApi
-    ? new Date(item.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
-    : item.byline?.when;
+  const kicker   = (item.category || '').replace(/_/g, ' ').toUpperCase();
+  const headline = item.title;
+  const when     = new Date(item.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 
   const [counts, setCounts] = React.useState({
-    corroborate: isApi ? (item.signal_counts?.corroborate || 0) : (item.corr || 0),
-    challenge:   isApi ? (item.signal_counts?.challenge   || 0) : (item.chal || 0),
-    user_signal: isApi ? (item.signal_counts?.user_signal || null) : null,
+    corroborate: item.signal_counts?.corroborate || 0,
+    challenge:   item.signal_counts?.challenge   || 0,
+    user_signal: item.signal_counts?.user_signal || null,
   });
   const [busy, setBusy] = React.useState(false);
 
   async function signal(type) {
-    if (!isApi || busy || !localStorage.getItem('anchor_access_token')) return;
+    if (busy || !localStorage.getItem('anchor_access_token')) return;
     setBusy(true);
     try {
       const data = await apiFetch(`/v1/feed/${item.id}/${type}`, {
@@ -2424,24 +2373,24 @@ function FeedRowMini({ item, onOpen }) {
         <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', fontSize: 10.5, color: 'var(--muted)' }}>
           <button
             onClick={e => { e.stopPropagation(); signal('corroborate'); }}
-            disabled={!isApi || !hasToken || busy}
+            disabled={!hasToken || busy}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 3,
               background: userSig === 'corroborate' ? 'var(--sage)' : 'rgba(74,107,92,0.1)',
               color: userSig === 'corroborate' ? 'white' : 'var(--sage-2)',
               border: 'none', borderRadius: 999, padding: '2px 8px',
-              fontSize: 10.5, fontWeight: 600, cursor: isApi && hasToken ? 'pointer' : 'default',
+              fontSize: 10.5, fontWeight: 600, cursor: hasToken ? 'pointer' : 'default',
             }}
           ><IconCheck size={9} sw={2.4}/> {counts.corroborate}</button>
           <button
             onClick={e => { e.stopPropagation(); signal('challenge'); }}
-            disabled={!isApi || !hasToken || busy}
+            disabled={!hasToken || busy}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 3,
               background: userSig === 'challenge' ? 'var(--ember)' : 'rgba(196,69,54,0.08)',
               color: userSig === 'challenge' ? 'white' : 'var(--ember)',
               border: 'none', borderRadius: 999, padding: '2px 8px',
-              fontSize: 10.5, fontWeight: 600, cursor: isApi && hasToken ? 'pointer' : 'default',
+              fontSize: 10.5, fontWeight: 600, cursor: hasToken ? 'pointer' : 'default',
             }}
           ><IconX size={9} sw={2.4}/> {counts.challenge}</button>
           <span style={{ marginLeft: 'auto' }}>{when}</span>

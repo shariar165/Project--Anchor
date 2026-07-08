@@ -180,11 +180,90 @@ async def test_publish_ai_block(client: AsyncClient, registered_user, mock_stepu
 
 
 @pytest.mark.asyncio
-async def test_list_national_feed(client: AsyncClient, registered_user, live_post):
-    resp = await client.get("/v1/feed?scope=national", headers=_auth(registered_user["tokens"]))
+async def test_national_feed_hides_unconfirmed_from_normal_user(
+    client: AsyncClient, second_user, live_post
+):
+    """Verified-only national edition: a normal reader never sees an unconfirmed
+    (not admin-confirmed) live post."""
+    resp = await client.get("/v1/feed?scope=national", headers=_auth(second_user["tokens"]))
     assert resp.status_code == 200
     posts = resp.json()
-    assert any(p["id"] == live_post["id"] for p in posts)
+    assert not any(p["id"] == live_post["id"] for p in posts)
+
+
+@pytest.mark.asyncio
+async def test_national_feed_author_cannot_see_own_unconfirmed_but_can_open_detail(
+    client: AsyncClient, registered_user, live_post
+):
+    """The author's own unconfirmed post stays out of the national list, but the
+    detail view remains reachable (e.g. right after publishing)."""
+    listing = await client.get("/v1/feed?scope=national", headers=_auth(registered_user["tokens"]))
+    assert listing.status_code == 200
+    assert not any(p["id"] == live_post["id"] for p in listing.json())
+
+    detail = await client.get(f"/v1/feed/{live_post['id']}", headers=_auth(registered_user["tokens"]))
+    assert detail.status_code == 200
+    assert detail.json()["id"] == live_post["id"]
+
+
+@pytest.mark.asyncio
+async def test_national_feed_admin_sees_unconfirmed(
+    client: AsyncClient, admin_user, live_post
+):
+    """Admins/moderators see the full national queue, confirmed or not, to moderate."""
+    resp = await client.get("/v1/feed?scope=national", headers=_auth(admin_user["tokens"]))
+    assert resp.status_code == 200
+    assert any(p["id"] == live_post["id"] for p in resp.json())
+
+
+@pytest.mark.asyncio
+async def test_national_feed_shows_post_after_confirm(
+    client: AsyncClient, admin_user, second_user, live_post, mock_stepup
+):
+    """Once an admin confirms a post, it surfaces in a normal reader's national
+    edition — and carries a body excerpt for the newspaper card."""
+    post_id = live_post["id"]
+
+    # Not visible before confirmation
+    before = await client.get("/v1/feed?scope=national", headers=_auth(second_user["tokens"]))
+    assert not any(p["id"] == post_id for p in before.json())
+
+    confirm = await client.post(
+        f"/v1/feed/admin/{post_id}/confirm",
+        json={"internal_note": "Verified accurate"},
+        headers=_auth(admin_user["tokens"]),
+    )
+    assert confirm.status_code == 200, confirm.text
+
+    after = await client.get("/v1/feed?scope=national", headers=_auth(second_user["tokens"]))
+    item = next((p for p in after.json() if p["id"] == post_id), None)
+    assert item is not None
+    assert item["admin_confirmed"] is True
+    assert item["excerpt"] and item["excerpt"] in _POST_BODY["body"]
+
+
+@pytest.mark.asyncio
+async def test_campus_feed_not_confirmation_gated(
+    client: AsyncClient, registered_user, second_user, db_session, mock_stepup
+):
+    """The campus edition is scoped by tenant, not by admin-confirmation, so a live
+    unconfirmed campus post is visible to campus readers (verified-only applies to
+    the national/public edition only)."""
+    body = {**_POST_BODY, "scope": "campus", "title": "Campus notice about library hours change"}
+    resp = await client.post("/v1/feed", json=body, headers=_auth(registered_user["tokens"]))
+    assert resp.status_code == 200, resp.text
+    post_id = resp.json()["post_id"]
+
+    result = await db_session.execute(
+        select(VerificationFeedPost).where(VerificationFeedPost.id == uuid.UUID(post_id))
+    )
+    post = result.scalars().first()
+    post.state = PostState.live
+    await db_session.commit()
+
+    listing = await client.get("/v1/feed?scope=campus", headers=_auth(second_user["tokens"]))
+    assert listing.status_code == 200
+    assert any(p["id"] == post_id for p in listing.json())
 
 
 @pytest.mark.asyncio
