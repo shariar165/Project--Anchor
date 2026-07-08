@@ -373,8 +373,8 @@ pip install -r requirements.txt
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /chat` | Run full 7-stage RAG pipeline; body passed through from Core API |
-| `GET /health` | Check embedder, ChromaDB, and Ollama availability |
-| `POST /ingest` | Load built-in sample corpus into ChromaDB (dev/demo only) |
+| `GET /health` | Check embedder, vector store, and Ollama availability |
+| `POST /ingest` | Load built-in sample corpus into the vector store (dev/demo only) |
 
 ### AI Pipeline (`services/rag/app/pipeline/`)
 
@@ -383,7 +383,7 @@ pip install -r requirements.txt
 ```
 Stage 0  stage0_safety.py       — emergency / injection pre-flight
 Stage 1  stage1_query.py        — intent classification + entity extraction (Qwen3 via Ollama)
-Stage 2  stage2_retrieval.py    — hybrid dense (ChromaDB) + BM25, RRF merge
+Stage 2  stage2_retrieval.py    — hybrid dense (numpy store) + BM25, RRF merge
 Stage 3  stage3_corrective.py   — confidence gate; falls back to web search if below threshold
 Stage 3b                        — exit ramp + lawyer referral if confidence < ABSOLUTE_FLOOR
 Stage 4  stage4_generation.py   — legal reasoning scaffold with citation grounding
@@ -392,11 +392,13 @@ Stage 6  stage6_output.py       — language adaptation, citations, disclaimer
 Stage 7  (inline)               — anonymised audit log
 ```
 
-LLM: **Ollama** (local) with `qwen3:8b` / `qwen3:1.7b` (fast). Falls back to a deterministic stub when Ollama is offline. Vector store: **ChromaDB** at `services/rag/data/chromadb`. Namespaces: `national` and `diu`.
+LLM: **Ollama** (local) with `qwen3:8b` / `qwen3:1.7b` (fast). Falls back to a deterministic stub when Ollama is offline.
+
+**Embedding + vector stack** — chosen to fit Railway's free-tier RAM budget (no torch, no ChromaDB): the embedder is **fastembed** (ONNX) running `paraphrase-multilingual-MiniLM-L12-v2` (~0.22 GB, Bangla + English), and dense vectors live in a **hand-rolled in-memory numpy store** (`vector_store.py`) — one L2-normalised `(N, D)` float32 matrix per namespace; dense search is a single matmul. Persisted to `{vector_store_path}/{namespace}.npy` + `.json` so a restart / BM25 rebuild keeps text + metadata. The cross-encoder reranker was dropped for the same RAM reason (`rerank()` is now a deterministic score-ordering fallback). Namespaces: `national` (shared) and `diu` (campus-scoped).
 
 **Skill grounding** — `skill_loader.py` loads the packed `*.skill` bundles from the repo-root `skills/` directory and injects their `grounding.md` content into pipeline prompts (e.g. FIR/GD drafting, feed moderation). After editing a skill source under `skills/src/`, re-run `skills/pack-skills.ps1` to regenerate the `*.skill` bundles the loader reads.
 
-To ingest new legal documents into ChromaDB: use `services/rag/app/pipeline/ingestion.py` → `ingest_document()`. Chunks get contextual prefixes from the LLM before embedding (Anthropic-style contextual retrieval). Warm-up at startup auto-loads `sample_corpus.py` into the `national` namespace if empty; set `DISABLE_AI_WARMUP=true` in `services/rag/.env` to skip this on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer causes OOM otherwise).
+To ingest new legal documents: use `services/rag/app/pipeline/ingestion.py` → `ingest_document()`. Chunks get contextual prefixes from the LLM before embedding (Anthropic-style contextual retrieval). Warm-up at startup auto-loads `sample_corpus.py` into the `national` namespace if empty; set `DISABLE_AI_WARMUP=true` in `services/rag/.env` to skip this on memory-constrained deployments (e.g. Railway without a persistent volume — even the fastembed model download can OOM an ephemeral container).
 
 ### RAG ↔ API wiring
 

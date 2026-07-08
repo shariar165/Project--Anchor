@@ -1019,6 +1019,22 @@ function TimetableRules({ termId, onNext }) {
         </div>
       </Card>
 
+      {termId && (
+        <Card className="bg-[var(--sage)]/5">
+          <div className="flex items-start gap-2.5">
+            <Icon name="shield-check" size={15} className="text-[var(--sage)] mt-0.5 shrink-0" />
+            <div className="text-[12px] text-[var(--graphite)] leading-relaxed">
+              <span className="font-medium">Built-in student-spacing rules are always on.</span> Every
+              section is automatically kept to <b>≤4 classes/day</b>, <b>≤2 back-to-back</b> before a
+              gap, and <b>no repeated course</b> in a day. These are enforced solver-side, so you don't
+              need to add them here — the “Max classes per day” rule below is the separate per-<b>teacher</b>
+              control. On very tight terms the solver may relax a spacing rule to still produce a
+              timetable; any relaxation is listed as a warning on the results screen.
+            </div>
+          </div>
+        </Card>
+      )}
+
       {loading && <div className="text-center text-[var(--muted)] text-[13px] py-8">Loading…</div>}
 
       {!loading && termId && constraints.length === 0 && (
@@ -1441,7 +1457,14 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
   async function loadValidation() {
     try {
       const v = await AnchorAPI.apiGet(`${TT_BASE}/validate?term_id=${termId}&version=${version}`);
-      setConflictIds(new Set((v.conflicts || []).flatMap(c => c.entry_ids || [])));
+      // Advisory section-spacing rules are acceptable relaxations, not errors —
+      // don't flag their cells red in the grid.
+      const advisory = ["section_max_per_day", "section_consecutive", "section_course_repeat"];
+      setConflictIds(new Set(
+        (v.conflicts || [])
+          .filter(c => !advisory.includes(c.conflict_type))
+          .flatMap(c => c.entry_ids || [])
+      ));
     } catch {}
   }
 
@@ -1704,8 +1727,9 @@ function RoutineCell({ entry, moved, conflict, onLockToggle, onClick }) {
       <div className="font-mono text-[11.5px] font-semibold leading-tight" style={{ color:"var(--ink)" }}>
         {entry.course_code}
       </div>
-      <div className="text-[10.5px] leading-tight mt-0.5 truncate" style={{ color:"var(--graphite)" }}>
-        {entry.section_name}{entry.lab_group_name ? `·${entry.lab_group_name}` : ""}
+      <div className="text-[10.5px] leading-tight mt-0.5 truncate" style={{ color:"var(--graphite)" }}
+        title={`${entry.batch_name ? entry.batch_name + " · " : ""}${entry.section_name}${entry.lab_group_name ? " · " + entry.lab_group_name : ""}`}>
+        {entry.batch_name ? `${entry.batch_name} · ` : ""}{entry.section_name}{entry.lab_group_name ? `·${entry.lab_group_name}` : ""}
       </div>
       <div className="text-[10px] leading-tight mt-0.5 truncate" style={{ color:"var(--muted)" }}>
         {entry.faculty_name}
@@ -1736,7 +1760,7 @@ function CellEditModal({ entry, days = DAY_NAMES, slots = [], onClose, onLock, o
           <div>
             <div className="smallcaps text-[var(--muted)]">Edit slot</div>
             <h3 className="font-serif text-[20px] text-[var(--navy)]" style={{ fontWeight:500 }}>
-              {entry.course_code} · {entry.section_name}
+              {entry.course_code} · {entry.batch_name ? `${entry.batch_name} ` : ""}{entry.section_name}
             </h3>
             <div className="text-[11.5px] text-[var(--muted)] mt-0.5">{entry.faculty_name} · {entry.room_name}</div>
           </div>
@@ -2036,34 +2060,54 @@ function TimetablePublish({ termId, version, onGo }) {
 
       {err && <div className="text-[var(--red)] text-[12.5px] px-1">{err}</div>}
 
-      {validation && (
-        <Card>
-          <SectionLabel>Validation — version {validation.version}</SectionLabel>
-          {validation.hard_count === 0 ? (
-            <div className="flex items-center gap-2 text-[13px]" style={{ color:"var(--sage)" }}>
-              <Icon name="check-circle" size={14} /> All hard constraints satisfied — ready to publish.
-            </div>
-          ) : (
+      {validation && (() => {
+        // Advisory = section spacing rules the solver may relax on tight terms;
+        // they never block publishing. Everything else is a hard conflict.
+        const advisoryTypes = ["section_max_per_day", "section_consecutive", "section_course_repeat"];
+        const all = validation.conflicts || [];
+        const hard = all.filter(c => !advisoryTypes.includes(c.conflict_type));
+        const advisory = all.filter(c => advisoryTypes.includes(c.conflict_type));
+        return (
+          <Card>
+            <SectionLabel>Validation — version {validation.version}</SectionLabel>
             <div className="space-y-2">
-              <div className="flex items-center gap-1.5 text-[13px]" style={{ color:"var(--red)" }}>
-                <Icon name="alert-triangle" size={14} /> {validation.hard_count} conflict(s) — resolve before publishing.
-              </div>
-              {(validation.conflicts || []).map((c, i) => (
-                <div key={i} className="hair border rounded-sm p-2.5 text-[12.5px]"
-                  style={{ borderColor:"rgba(232,49,42,0.3)", background:"rgba(232,49,42,0.03)" }}>
-                  <div className="font-medium">{c.conflict_type.replace(/_/g," ")}</div>
-                  <div className="text-[var(--muted)]">{c.description}</div>
+              {validation.hard_count === 0 ? (
+                <div className="flex items-center gap-2 text-[13px]" style={{ color:"var(--sage)" }}>
+                  <Icon name="check-circle" size={14} /> All hard constraints satisfied — ready to publish.
                 </div>
-              ))}
-              {validation.soft_count > 0 && (
-                <div className="text-[11.5px] text-[var(--muted)]">
-                  + {validation.soft_count} soft violation(s) — these are acceptable and won't block publish.
+              ) : (
+                <>
+                  <div className="flex items-center gap-1.5 text-[13px]" style={{ color:"var(--red)" }}>
+                    <Icon name="alert-triangle" size={14} /> {validation.hard_count} conflict(s) — resolve before publishing.
+                  </div>
+                  {hard.map((c, i) => (
+                    <div key={i} className="hair border rounded-sm p-2.5 text-[12.5px]"
+                      style={{ borderColor:"rgba(232,49,42,0.3)", background:"rgba(232,49,42,0.03)" }}>
+                      <div className="font-medium">{c.conflict_type.replace(/_/g," ")}</div>
+                      <div className="text-[var(--muted)]">{c.description}</div>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {advisory.length > 0 && (
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center gap-1.5 text-[12.5px]" style={{ color:"var(--gold)" }}>
+                    <Icon name="info" size={13} /> {advisory.length} student-spacing rule(s) relaxed — acceptable, won't block publish.
+                  </div>
+                  {advisory.map((c, i) => (
+                    <div key={i} className="hair border rounded-sm p-2.5 text-[12.5px]"
+                      style={{ borderColor:"rgba(184,137,58,0.3)", background:"rgba(184,137,58,0.05)" }}>
+                      <div className="font-medium">{c.conflict_type.replace(/_/g," ")}</div>
+                      <div className="text-[var(--muted)]">{c.description}</div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
-          )}
-        </Card>
-      )}
+          </Card>
+        );
+      })()}
 
       {canPublish && !publishResult && (
         <div className="flex items-center gap-3">

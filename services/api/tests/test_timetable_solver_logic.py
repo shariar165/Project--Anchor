@@ -17,6 +17,7 @@ from app.models.timetable import (
     TimetableTerm, TimetableScheduleConfig, TimetableCourse, TimetableBatch,
     TimetableSection, TimetableLabGroup, TimetableFacultyProfile, TimetableRoom,
     TimetableEntry, TimetableConstraint,
+    TimetableTeacherEligibility, TimetableCourseOffering,
 )
 from app.schemas.timetable import EntryEdit, SolveRequest
 from app.services import timetable_svc, timetable_solver
@@ -130,6 +131,144 @@ async def test_hard_constraint_still_enforced(db_session):
     result = solve(data, time_limit_s=30)
     assert result["status"] == "infeasible"
     assert str(con.id) in (result["infeasible_core"] or [])
+
+
+# ── Section-centric spacing rules (student view) ──────────────────────────────
+
+async def _seed_solo_section(db, *, days, slots, courses):
+    """One batch / one section (no labs). `courses` = [(code, weekly_classes)],
+    each given its own dedicated teacher so only section rules bind. Returns
+    term_id."""
+    term = TimetableTerm(name="Solo Term", is_active=True)
+    db.add(term)
+    await db.flush()
+    db.add(TimetableScheduleConfig(term_id=term.id, days=list(days), slots=list(slots), off_days=[]))
+    batch = TimetableBatch(name="Batch X", program="SWE")
+    db.add(batch)
+    await db.flush()
+    db.add(TimetableSection(batch_id=batch.id, name="A"))
+    for i in range(max(4, len(slots))):
+        db.add(TimetableRoom(name=f"T{i}", room_type="THEORY", capacity=40))
+    course_objs = []
+    for code, weekly in courses:
+        c = TimetableCourse(code=code, name=code, credits=3, is_lab=False, weekly_classes=weekly)
+        db.add(c)
+        course_objs.append(c)
+    await db.flush()
+    for c in course_objs:
+        fp = TimetableFacultyProfile(rank="LECTURER", max_per_day=8, off_days=[], active=True)
+        db.add(fp)
+        await db.flush()
+        db.add(TimetableTeacherEligibility(faculty_id=fp.id, course_id=c.id))
+        db.add(TimetableCourseOffering(term_id=term.id, course_id=c.id, batch_id=batch.id))
+    await db.commit()
+    return term.id
+
+
+@pytest.mark.asyncio
+async def test_section_same_course_spreads_across_days(db_session):
+    """The two weekly copies of one course must not share a day for a section."""
+    term_id = await _seed_solo_section(
+        db_session, days=["Sat", "Sun", "Mon"], slots=[f"s{i}" for i in range(4)],
+        courses=[("C1", 2)],
+    )
+    data = await load_solver_data(db_session, term_id)
+    result = solve(data, time_limit_s=30, section_course_spread=True, section_rule_weight=1000)
+    assert result["status"] in ("optimal", "feasible"), result.get("infeasible_core")
+    days = sorted(e["day"] for e in result["entries"])
+    assert len(days) == 2 and days[0] != days[1], f"copies shared a day: {days}"
+
+
+@pytest.mark.asyncio
+async def test_section_max_per_day_enforced(db_session):
+    """Six single-session courses could all stack on one day; a 4/day limit must
+    force the section to spread."""
+    term_id = await _seed_solo_section(
+        db_session, days=["Sat", "Sun"], slots=[f"s{i}" for i in range(6)],
+        courses=[(f"C{i}", 1) for i in range(6)],
+    )
+    data = await load_solver_data(db_session, term_id)
+    result = solve(data, time_limit_s=30, section_max_per_day=4, section_rule_weight=1000)
+    assert result["status"] in ("optimal", "feasible"), result.get("infeasible_core")
+    per_day: dict = {}
+    for e in result["entries"]:
+        per_day[e["day"]] = per_day.get(e["day"], 0) + 1
+    assert max(per_day.values()) <= 4, per_day
+
+
+@pytest.mark.asyncio
+async def test_section_consecutive_limit_enforced(db_session):
+    """With max/day disabled, a limit of 2 must prevent 3 back-to-back classes."""
+    term_id = await _seed_solo_section(
+        db_session, days=["Sat"], slots=[f"s{i}" for i in range(6)],
+        courses=[(f"C{i}", 1) for i in range(3)],
+    )
+    data = await load_solver_data(db_session, term_id)
+    result = solve(data, time_limit_s=30, section_max_per_day=0,
+                   section_consecutive_limit=2, section_rule_weight=1000)
+    assert result["status"] in ("optimal", "feasible"), result.get("infeasible_core")
+    slots = sorted(e["slot"] for e in result["entries"])
+    worst = run = 1
+    for i in range(1, len(slots)):
+        run = run + 1 if slots[i] == slots[i - 1] + 1 else 1
+        worst = max(worst, run)
+    assert worst <= 2, f"3+ back-to-back: {slots}"
+
+
+@pytest.mark.asyncio
+async def test_section_rules_never_block_solution(db_session):
+    """Six classes but only one day × six slots — the 4/day rule cannot hold, yet
+    a timetable must still be produced (rules relax, never INFEASIBLE)."""
+    term_id = await _seed_solo_section(
+        db_session, days=["Sat"], slots=[f"s{i}" for i in range(6)],
+        courses=[(f"C{i}", 1) for i in range(6)],
+    )
+    data = await load_solver_data(db_session, term_id)
+    result = solve(data, time_limit_s=30, section_max_per_day=4,
+                   section_consecutive_limit=2, section_course_spread=True,
+                   section_rule_weight=1000)
+    assert result["status"] in ("optimal", "feasible"), result.get("infeasible_core")
+    assert len(result["entries"]) == 6
+
+
+@pytest.mark.asyncio
+async def test_validate_flags_section_spacing(db_session):
+    """The validator reports section over-load and repeated-course-in-day so
+    hand-edited grids (and relaxed solves) surface the violation."""
+    term = TimetableTerm(name="V Term", is_active=True)
+    db_session.add(term)
+    await db_session.flush()
+    db_session.add(TimetableScheduleConfig(
+        term_id=term.id, days=["Sat", "Sun"], slots=[f"s{i}" for i in range(8)], off_days=[],
+    ))
+    batch = TimetableBatch(name="B", program="SWE")
+    db_session.add(batch)
+    await db_session.flush()
+    section = TimetableSection(batch_id=batch.id, name="A")
+    room = TimetableRoom(name="T1", room_type="THEORY", capacity=40)
+    fp = TimetableFacultyProfile(rank="LECTURER", max_per_day=8, off_days=[], active=True)
+    db_session.add_all([section, room, fp])
+    courses = [TimetableCourse(code=f"RC{i}", name="x", credits=3, is_lab=False, weekly_classes=1)
+               for i in range(5)]
+    rep = TimetableCourse(code="REP", name="x", credits=3, is_lab=False, weekly_classes=2)
+    db_session.add_all(courses + [rep])
+    await db_session.flush()
+
+    def _entry(course, day, slot):
+        return TimetableEntry(
+            term_id=term.id, result_version=1, course_id=course.id, section_id=section.id,
+            lab_group_id=None, faculty_id=fp.id, room_id=room.id, day=day, slot=slot,
+            is_lab=False, locked=False, source="solver",
+        )
+
+    entries = [_entry(c, 0, i) for i, c in enumerate(courses)]   # 5 on day 0 → max/day
+    entries += [_entry(rep, 1, 0), _entry(rep, 1, 1)]            # REP twice on day 1 → repeat
+    await timetable_svc.bulk_insert_entries(db_session, entries)
+
+    conflicts = await timetable_svc.validate_entries(db_session, term.id, 1)
+    types = {c.conflict_type for c in conflicts}
+    assert "section_max_per_day" in types, types
+    assert "section_course_repeat" in types, types
 
 
 # ── Lock carry-over & pin handling ────────────────────────────────────────────

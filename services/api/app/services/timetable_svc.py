@@ -1,7 +1,10 @@
 import csv
 import io
+import math
 import uuid
 from datetime import datetime, timedelta, timezone
+
+from app.config import get_settings
 from sqlalchemy import select, func, update, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -760,6 +763,14 @@ async def resolve_entry_names(db: AsyncSession, entries: list[TimetableEntry]) -
 
 # ── Validate entries ──────────────────────────────────────────────────────────
 
+# Advisory conflict types: the solver keeps section spacing rules as high-weight
+# soft rules, so a solved grid may legitimately relax them on a tight term. They
+# are surfaced as warnings and must NOT block publishing.
+ADVISORY_CONFLICT_TYPES = frozenset({
+    "section_max_per_day", "section_consecutive", "section_course_repeat",
+})
+
+
 async def validate_entries(
     db: AsyncSession, term_id: uuid.UUID, version: int
 ) -> list[ConflictOut]:
@@ -876,7 +887,93 @@ async def validate_entries(
                 description="Lab entry missing lab_group_id",
             ))
 
+    # Section-centric spacing rules (student view) — the solver keeps these as
+    # high-weight soft rules, so a solved grid may relax them on tight terms;
+    # surface any relaxation (and catch manual edits that break them). A
+    # student's day = section theory + their own lab group's labs, so we group
+    # per (section, lab_group) attendance stream, folding theory into each.
+    course_ids = [cid for cid in {e.course_id for e in entries} if cid]
+    course_weekly: dict = {}
+    if course_ids:
+        cr = await db.execute(
+            select(TimetableCourse.id, TimetableCourse.weekly_classes)
+            .where(TimetableCourse.id.in_(course_ids))
+        )
+        course_weekly = {cid: wk for cid, wk in cr.all()}
+    conflicts.extend(_section_spacing_conflicts(entries, course_weekly))
+
     return conflicts
+
+
+def _section_spacing_conflicts(entries: list, course_weekly: dict) -> list[ConflictOut]:
+    settings = get_settings()
+    max_per_day = settings.solver_section_max_per_day
+    consecutive_limit = settings.solver_section_consecutive_limit
+    course_spread = settings.solver_section_course_spread
+
+    # The solver caps a course at ceil(weekly / n_days) per day (normally 1);
+    # mirror that so a course that legitimately meets more times than there are
+    # days isn't falsely flagged.
+    n_days = len({e.day for e in entries}) or 1
+    # (section_id) -> {lg_id -> {day -> [entries]}}; theory (lg_id None) folds
+    # into every lab-group stream of the section.
+    streams: dict = {}
+    for e in entries:
+        streams.setdefault(e.section_id, {}).setdefault(
+            e.lab_group_id if e.is_lab else None, {}
+        ).setdefault(e.day, []).append(e)
+
+    out: list[ConflictOut] = []
+    for sec_id, by_lg in streams.items():
+        theory_by_day = by_lg.get(None, {})
+        lab_lgs = [lg for lg in by_lg if lg is not None]
+        for lg in (lab_lgs if lab_lgs else [None]):
+            by_day: dict = {}
+            for d, es in theory_by_day.items():
+                by_day.setdefault(d, []).extend(es)
+            if lg is not None:
+                for d, es in by_lg[lg].items():
+                    by_day.setdefault(d, []).extend(es)
+
+            for d, es in by_day.items():
+                # (a) too many classes in one day
+                if max_per_day and len(es) > max_per_day:
+                    out.append(ConflictOut(
+                        conflict_type="section_max_per_day",
+                        entry_ids=[e.id for e in es],
+                        description=f"Section has {len(es)} classes on day {d} (limit {max_per_day})",
+                    ))
+                # (b) too many back-to-back without a gap
+                if consecutive_limit:
+                    slots = sorted(e.slot for e in es)
+                    run = 1
+                    for i in range(1, len(slots)):
+                        run = run + 1 if slots[i] == slots[i - 1] + 1 else 1
+                        if run > consecutive_limit:
+                            out.append(ConflictOut(
+                                conflict_type="section_consecutive",
+                                entry_ids=[e.id for e in es],
+                                description=f"Section has {run} back-to-back classes on day {d} (limit {consecutive_limit})",
+                            ))
+                            break
+
+        # (c) same course twice in a day for the section
+        if course_spread:
+            seen: dict = {}
+            for e in entries:
+                if e.section_id != sec_id:
+                    continue
+                key = (e.course_id, e.lab_group_id if e.is_lab else None, e.day)
+                seen.setdefault(key, []).append(e)
+            for (course_id, _lg, d), es in seen.items():
+                cap = max(1, math.ceil(course_weekly.get(course_id, 1) / n_days))
+                if len(es) > cap:
+                    out.append(ConflictOut(
+                        conflict_type="section_course_repeat",
+                        entry_ids=[e.id for e in es],
+                        description=f"Course appears {len(es)} times on day {d} for the section (limit {cap})",
+                    ))
+    return out
 
 
 # ── Publish entries → AcademicRoutine ─────────────────────────────────────────

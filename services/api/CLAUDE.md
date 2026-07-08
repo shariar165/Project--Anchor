@@ -244,7 +244,7 @@ isn't present there); `fcm.py` prefers the inline content when set.
 
 **Known `.env` issue** — the pre-existing `CLAUDE MESSAGE=` line (space in key name) causes a python-dotenv warning on every startup. It is cosmetic and does not break config loading.
 
-**AI warmup** — the RAG service (`services/rag`) auto-loads `sample_corpus.py` into the `national` ChromaDB namespace at startup if empty. The Core API no longer runs warmup directly. Set `DISABLE_AI_WARMUP=true` in `services/rag/.env` to skip on memory-constrained deployments (e.g. Railway without a persistent volume — the 400 MB sentence-transformer models cause an OOM crash loop on ephemeral containers).
+**AI warmup** — the RAG service (`services/rag`) auto-loads `sample_corpus.py` into the `national` vector-store namespace at startup if empty. The Core API no longer runs warmup directly. Set `DISABLE_AI_WARMUP=true` in `services/rag/.env` to skip on memory-constrained deployments (e.g. Railway without a persistent volume — the RAG stack now uses fastembed (ONNX) + an in-memory numpy store rather than torch/ChromaDB, but the model download can still OOM an ephemeral container).
 
 **Registration flow** — `POST /auth/register` stores the payload as JSON in Redis (`reg_payload:{identifier}`, TTL = `otp_ttl`) and creates no DB row. The `User` row is created as `active` only when the OTP is successfully verified via `/auth/verify-email` or `/auth/verify-phone`. This prevents ghost accounts — if the OTP expires, both Redis keys vanish and the user can re-register cleanly. Old `pending_verification` rows (from before this fix) are deleted on sight when a new registration arrives for the same identifier.
 

@@ -3,7 +3,9 @@
 Seeds the scenario from app.services.timetable_seed_data, runs the CP-SAT solver
 directly (synchronous, no background job), persists the result, and asserts the
 produced routine has ZERO hard conflicts (room / teacher / section double-booking,
-room-type mismatch, and theory↔own-lab clashes).
+room-type mismatch, and theory↔own-lab clashes). Advisory section-spacing rules
+(max/day, consecutive, same-course-per-day) are high-weight *soft* rules — a tight
+or time-limited solve may relax them — so `_hard_conflicts` filters them out here.
 
 Run (fast subset, part of the default suite):
     .venv/Scripts/python.exe -m pytest -x -v tests/test_timetable_generator_scale.py
@@ -59,6 +61,13 @@ async def _run_job_and_validate(db, term_id, *, time_limit_s, n_sessions):
     return await timetable_svc.validate_entries(db, term_id, 1)
 
 
+def _hard_conflicts(conflicts):
+    """Drop advisory section-spacing conflicts — those are acceptable, high-weight
+    soft relaxations (a tight/time-limited solve may not space perfectly), not the
+    room/teacher/section overlaps these tests exist to catch."""
+    return [c for c in conflicts if c.conflict_type not in timetable_svc.ADVISORY_CONFLICT_TYPES]
+
+
 async def _run_and_validate(db, term_id, *, time_limit_s):
     """Load data → solve → persist entries → validate. Returns (result, conflicts)."""
     data = await load_solver_data(db, term_id)
@@ -99,7 +108,8 @@ async def test_subset_solver_no_overlaps(db_session):
 
     _, conflicts = await _run_and_validate(db_session, info["term_id"], time_limit_s=30)
 
-    assert conflicts == [], f"expected no conflicts, got: {[c.description for c in conflicts]}"
+    hard = _hard_conflicts(conflicts)
+    assert hard == [], f"expected no hard conflicts, got: {[c.description for c in hard]}"
 
 
 @pytest.mark.asyncio
@@ -138,7 +148,8 @@ async def test_decomposed_solver_4_batches_no_overlaps(db_session):
     conflicts = await _run_job_and_validate(
         db_session, info["term_id"], time_limit_s=120, n_sessions=n_sessions,
     )
-    assert conflicts == [], f"expected no conflicts, got: {[c.description for c in conflicts]}"
+    hard = _hard_conflicts(conflicts)
+    assert hard == [], f"expected no hard conflicts, got: {[c.description for c in hard]}"
 
 
 @pytest.mark.skipif(
@@ -163,4 +174,5 @@ async def test_full_scale_solver_no_overlaps(db_session):
     by_type: dict[str, int] = {}
     for c in conflicts:
         by_type[c.conflict_type] = by_type.get(c.conflict_type, 0) + 1
-    assert conflicts == [], f"conflicts by type: {by_type}"
+    hard = _hard_conflicts(conflicts)
+    assert hard == [], f"hard conflicts by type: {by_type}"

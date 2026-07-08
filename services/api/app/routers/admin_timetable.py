@@ -671,11 +671,13 @@ async def validate(
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
     conflicts = await timetable_svc.validate_entries(db, term_id, version)
+    advisory = timetable_svc.ADVISORY_CONFLICT_TYPES
+    soft_count = sum(1 for c in conflicts if c.conflict_type in advisory)
     return ValidateOut(
         version=version,
         conflicts=conflicts,
-        hard_count=len(conflicts),
-        soft_count=0,
+        hard_count=len(conflicts) - soft_count,
+        soft_count=soft_count,
     )
 
 
@@ -688,7 +690,11 @@ async def publish(
     token: TokenData = Depends(require_role("admin", "moderator")),
 ):
     conflicts = await timetable_svc.validate_entries(db, body.term_id, body.version)
-    hard_conflicts = [c for c in conflicts if c.conflict_type not in ("soft",)]
+    hard_conflicts = [
+        c for c in conflicts
+        if c.conflict_type not in ("soft",)
+        and c.conflict_type not in timetable_svc.ADVISORY_CONFLICT_TYPES
+    ]
     if hard_conflicts:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
