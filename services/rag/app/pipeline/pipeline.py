@@ -88,7 +88,7 @@ async def run(request: ChatRequest) -> ChatResponse:
     # Simple path: no retrieval needed
     if not analysis.needs_retrieval:
         from app.pipeline import llm_client
-        answer_raw = await llm_client.generate(
+        answer_raw, backend = await llm_client.generate_with_backend(
             f"Answer concisely in {output_lang}: {query}",
             model=llm_client.MAIN_MODEL,
         )
@@ -103,6 +103,8 @@ async def run(request: ChatRequest) -> ChatResponse:
             lawyer_referral=False,
             lang=lang_code,
             conversation_id=conv_id,
+            engine=backend,
+            degraded=(backend == "stub"),
         )
 
     # ── STAGE 2: CONTEXTUAL RETRIEVAL ────────────────────────────────────
@@ -153,14 +155,14 @@ async def run(request: ChatRequest) -> ChatResponse:
         )
 
     # ── STAGE 4: GENERATION ───────────────────────────────────────────────
-    answer, citations = await stage4_generation.generate_response(
+    answer, citations, backend = await stage4_generation.generate_response(
         query=query,
         chunks=final_chunks,
         analysis=analysis,
         mode=mode,
         output_lang=output_lang,
     )
-    stage_log["stage4"] = {"citations": len(citations)}
+    stage_log["stage4"] = {"citations": len(citations), "engine": backend}
     logger.debug("[S4] generated answer (%d chars, %d cites)", len(answer), len(citations))
 
     # ── STAGE 5: CLAIM-LEVEL VERIFICATION ────────────────────────────────
@@ -175,7 +177,7 @@ async def run(request: ChatRequest) -> ChatResponse:
     logger.debug("[S5] claims=%d decision=%s", len(claims), decision)
 
     if decision == "regenerate":
-        answer, citations = await stage4_generation.generate_strict(
+        answer, citations, backend = await stage4_generation.generate_strict(
             query=query, chunks=final_chunks, output_lang=output_lang
         )
         claims2 = await stage5_verify.decompose_claims(answer)
@@ -216,6 +218,8 @@ async def run(request: ChatRequest) -> ChatResponse:
         lawyer_referral=lawyer_referral,
         lang=lang_code,
         conversation_id=conv_id,
+        engine=backend,
+        degraded=(backend == "stub"),
     )
 
 

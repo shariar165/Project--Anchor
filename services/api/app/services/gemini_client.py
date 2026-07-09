@@ -52,6 +52,29 @@ async def generate(prompt: str, *, temperature: float = 0.2, timeout: float = 60
             parts = candidates[0].get("content", {}).get("parts", []) or []
             text = "".join(p.get("text", "") for p in parts).strip()
             return text or None
+    except httpx.HTTPStatusError as exc:
+        # An auth failure (expired/invalid/revoked key) is distinct from a transient
+        # outage — surface it clearly so it's actionable, not a generic warning.
+        # Google returns 400 API_KEY_INVALID (not just 401/403) for a bad key.
+        _body = ""
+        try:
+            _body = exc.response.text.lower()
+        except Exception:
+            pass
+        _key_error = exc.response.status_code in (401, 403) or (
+            exc.response.status_code == 400
+            and ("api_key_invalid" in _body or "api key not valid" in _body or "api key" in _body)
+        )
+        if _key_error:
+            logger.error(
+                "Gemini rejected the API key (HTTP %s — expired/invalid/revoked). "
+                "Check GEMINI_API_KEY (must be a permanent AIza… AI Studio key). "
+                "Falling back to Ollama.",
+                exc.response.status_code,
+            )
+        else:
+            logger.warning("Gemini generate failed (falling back): %s", exc)
+        return None
     except Exception as exc:
         logger.warning("Gemini generate failed (falling back): %s", exc)
         return None

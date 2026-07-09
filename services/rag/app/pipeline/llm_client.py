@@ -25,19 +25,49 @@ def _ollama_base() -> str:
 # When GEMINI_API_KEY is configured, Gemini is the primary generator. It degrades
 # to Ollama (then the stub) on any error, so the pipeline never hard-fails.
 _gemini_available: bool | None = None
+# Human-readable reason the last probe/call failed, surfaced by /health so an
+# expired key doesn't hide behind a silent stub fallback:
+#   "ok" | "invalid_key" | "unavailable" | "not configured"
+_gemini_status: str = "not configured"
 
 
 def _gemini_key() -> str:
     return get_settings().gemini_api_key
 
 
+def is_studio_key(key: str) -> bool:
+    """True when `key` looks like a permanent Google AI Studio API key (AIza…).
+    `AQ.`/ephemeral OAuth tokens pass a fresh probe but expire within hours — this
+    lets startup/health warn before the chatbot silently degrades to the stub."""
+    return key.startswith("AIza")
+
+
+def gemini_health_status() -> str:
+    """Last known Gemini status for /health (set by _check_gemini_availability)."""
+    return _gemini_status
+
+
+def _is_key_error(status_code: int, body: str = "") -> bool:
+    """True when an HTTP error is Gemini rejecting the key (expired/invalid/revoked)
+    rather than a transient outage. Google returns 401/403 for permission problems
+    and — notably — 400 `API_KEY_INVALID` for a bad/expired key, so inspect the body
+    for a 400 before blaming the network."""
+    if status_code in (401, 403):
+        return True
+    if status_code == 400:
+        b = body.lower()
+        return "api_key_invalid" in b or "api key not valid" in b or "api key" in b
+    return False
+
+
 async def _check_gemini_availability() -> bool:
-    global _gemini_available
+    global _gemini_available, _gemini_status
     if _gemini_available is not None:
         return _gemini_available
     key = _gemini_key()
     if not key:
         _gemini_available = False
+        _gemini_status = "not configured"
         return False
     try:
         s = get_settings()
@@ -47,15 +77,23 @@ async def _check_gemini_availability() -> bool:
                 headers={"x-goog-api-key": key},
             )
             _gemini_available = r.status_code == 200
+            # A rejected key (expired/invalid/revoked) is distinct from a network
+            # outage — surface it so the fix is obvious. Google returns 400
+            # API_KEY_INVALID (not just 401/403) for a bad key.
+            _gemini_status = "ok" if r.status_code == 200 else (
+                "invalid_key" if _is_key_error(r.status_code, r.text) else "unavailable"
+            )
     except Exception:
         _gemini_available = False
-    logger.info("Gemini available: %s", _gemini_available)
+        _gemini_status = "unavailable"
+    logger.info("Gemini available: %s (%s)", _gemini_available, _gemini_status)
     return _gemini_available
 
 
 async def _gemini_generate(prompt: str, temperature: float) -> str | None:
     """Call Gemini generateContent. Returns text, or None on any failure (so the
     caller falls through to Ollama)."""
+    global _gemini_status
     key = _gemini_key()
     if not key:
         return None
@@ -79,6 +117,25 @@ async def _gemini_generate(prompt: str, temperature: float) -> str | None:
             parts = candidates[0].get("content", {}).get("parts", []) or []
             text = "".join(p.get("text", "") for p in parts).strip()
             return text or None
+    except httpx.HTTPStatusError as e:
+        # Distinguish an auth failure (expired/invalid key) from everything else so
+        # "what happened to the gemini api" is unambiguous in the logs.
+        body = ""
+        try:
+            body = e.response.text
+        except Exception:
+            pass
+        if _is_key_error(e.response.status_code, body):
+            _gemini_status = "invalid_key"
+            logger.error(
+                "Gemini rejected the API key (HTTP %s — expired/invalid/revoked). "
+                "Check GEMINI_API_KEY (must be a permanent AIza… AI Studio key). "
+                "Falling back to Ollama/stub.",
+                e.response.status_code,
+            )
+        else:
+            logger.error("Gemini generate HTTP error: %s", e)
+        return None
     except Exception as e:
         logger.error("Gemini generate error: %s", e)
         return None
@@ -107,14 +164,19 @@ async def _check_availability() -> bool:
     return _available
 
 
-async def generate(prompt: str, model: str = MAIN_MODEL, temperature: float = 0.1) -> str:
+async def generate_with_backend(
+    prompt: str, model: str = MAIN_MODEL, temperature: float = 0.1
+) -> tuple[str, str]:
+    """Like generate(), but also returns which backend produced the text:
+    "gemini" | "ollama" | "stub". Lets callers surface a degraded (stub) answer
+    instead of silently serving templated boilerplate."""
     # 1. Prefer Gemini when an API key is configured.
     gemini_out = await _gemini_generate(prompt, temperature)
     if gemini_out is not None:
-        return gemini_out
+        return gemini_out, "gemini"
     # 2. Fall back to Ollama (local / ngrok).
     if not await _check_availability():
-        return _stub_response(prompt)
+        return _stub_response(prompt), "stub"
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
             resp = await client.post(
@@ -137,17 +199,23 @@ async def generate(prompt: str, model: str = MAIN_MODEL, temperature: float = 0.
                 },
             )
             resp.raise_for_status()
-            return resp.json().get("response", "")
+            return resp.json().get("response", ""), "ollama"
     except Exception as e:
         logger.error("Ollama generate error: %s", e)
-        return _stub_response(prompt)
+        return _stub_response(prompt), "stub"
+
+
+async def generate(prompt: str, model: str = MAIN_MODEL, temperature: float = 0.1) -> str:
+    text, _backend = await generate_with_backend(prompt, model, temperature)
+    return text
 
 
 def reset_availability_cache():
     """Call this to re-probe Gemini and Ollama (e.g. after a server restart)."""
-    global _available, _gemini_available
+    global _available, _gemini_available, _gemini_status
     _available = None
     _gemini_available = None
+    _gemini_status = "not configured"
 
 
 def _stub_response(prompt: str) -> str:

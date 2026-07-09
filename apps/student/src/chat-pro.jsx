@@ -426,6 +426,18 @@ function AIMessage({ msg, msgIndex, citationsOpen, onToggleCitations, mode, onGo
             This situation may require professional legal advice.
           </div>
         )}
+
+        {/* Degraded-engine note — the AI engine fell back to a generic template
+            (Gemini + Ollama both unavailable), so this answer may be unreliable. */}
+        {msg.degraded && (
+          <div style={{
+            marginTop: 10, padding: '7px 10px', borderRadius: 8,
+            background: 'rgba(196,69,54,0.06)', border: '1px solid rgba(196,69,54,0.20)',
+            fontSize: 12, color: 'var(--ember)', lineHeight: 1.5,
+          }}>
+            AI engine is degraded — this is a generic fallback answer and may be unreliable.
+          </div>
+        )}
       </div>
       <div className="cp-timestamp" style={{ marginTop: 4 }}>{fmtTimestamp(msg.timestamp)}</div>
     </div>
@@ -694,6 +706,7 @@ function ChatProScreen() {
         confidence: data.confidence ?? 0,
         exit_ramp: !!data.exit_ramp,
         lawyer_referral: !!data.lawyer_referral,
+        degraded: !!data.degraded,
         timestamp: Date.now(), error: false,
       };
       const withAI = [...nextMessages, aiMsg];

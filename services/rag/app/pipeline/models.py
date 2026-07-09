@@ -113,3 +113,8 @@ class ChatResponse(BaseModel):
     lawyer_referral: bool
     lang: str
     conversation_id: str
+    # Which generator produced the answer: "gemini" | "ollama" | "stub" | "".
+    # degraded=True means it fell to the deterministic stub (Gemini + Ollama both
+    # down) — the answer is generic boilerplate, so clients can flag it.
+    engine: str = ""
+    degraded: bool = False

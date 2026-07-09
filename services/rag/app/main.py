@@ -42,6 +42,20 @@ async def lifespan(app: FastAPI):
     from app.config import get_settings
     settings = get_settings()
 
+    # Guard against the #1 chatbot-death cause: a non-permanent Gemini credential.
+    # AI Studio keys start with "AIza" and never expire; an "AQ."/ephemeral OAuth
+    # token passes a fresh probe but expires within hours, after which the pipeline
+    # silently falls back to Ollama/stub and the bot "breaks" with no error.
+    if settings.gemini_api_key:
+        from app.pipeline.llm_client import is_studio_key
+        if not is_studio_key(settings.gemini_api_key):
+            logger.warning(
+                "GEMINI_API_KEY does not look like a permanent AI Studio key "
+                "(expected 'AIza…'). Ephemeral/OAuth tokens (e.g. 'AQ.…') expire "
+                "within hours and will silently break the chatbot — mint a real key "
+                "at https://aistudio.google.com/apikey."
+            )
+
     async def _startup():
         try:
             from app.pipeline.ingestion import rebuild_bm25_from_store
@@ -265,11 +279,10 @@ async def health() -> dict[str, Any]:
         # the process, so a transient failure (e.g. ngrok tunnel briefly down at
         # startup) would otherwise pin /health to "unavailable" until restart.
         llm_client.reset_availability_cache()
-        gemini_ok = await llm_client._check_gemini_availability()
-        # "not configured" distinguishes "no API key set" from a key that fails.
-        status["gemini"] = "ok" if gemini_ok else (
-            "unavailable" if llm_client._gemini_key() else "not configured"
-        )
+        await llm_client._check_gemini_availability()
+        # Real reason, set by the probe: "ok" | "invalid_key" (401/403 — expired/
+        # revoked key) | "unavailable" (network) | "not configured" (no key set).
+        status["gemini"] = llm_client.gemini_health_status()
         available = await llm_client._check_availability()
         status["ollama"] = "ok" if available else "unavailable"
     except Exception as e:

@@ -121,8 +121,9 @@ async def generate_response(
     analysis: QueryAnalysis,
     mode: str = "national",
     output_lang: str = "English",
-) -> tuple[str, list[dict]]:
-    """Primary generation: legal reasoning scaffold with citation grounding."""
+) -> tuple[str, list[dict], str]:
+    """Primary generation: legal reasoning scaffold with citation grounding.
+    Returns (answer, citations, backend) — backend is "gemini"|"ollama"|"stub"."""
     context = _format_context(chunks)
     prompt = _ground(_GENERATION_PROMPT.format(
         query=query,
@@ -130,21 +131,26 @@ async def generate_response(
         output_lang=output_lang,
         context=context,
     ))
-    raw = await llm_client.generate(prompt, model=llm_client.MAIN_MODEL, temperature=0.15)
+    raw, backend = await llm_client.generate_with_backend(
+        prompt, model=llm_client.MAIN_MODEL, temperature=0.15
+    )
     citations = _extract_citations(raw, chunks)
     answer = _clean_output(raw)
-    return answer, citations
+    return answer, citations, backend
 
 
 async def generate_strict(
     query: str,
     chunks: list[RetrievedChunk],
     output_lang: str = "English",
-) -> tuple[str, list[dict]]:
-    """Stricter re-generation after claim verification fails first attempt."""
+) -> tuple[str, list[dict], str]:
+    """Stricter re-generation after claim verification fails first attempt.
+    Returns (answer, citations, backend) — backend is "gemini"|"ollama"|"stub"."""
     context = _format_context(chunks)
     prompt = _ground(_STRICT_PROMPT.format(query=query, context=context, output_lang=output_lang))
-    raw = await llm_client.generate(prompt, model=llm_client.MAIN_MODEL, temperature=0.05)
+    raw, backend = await llm_client.generate_with_backend(
+        prompt, model=llm_client.MAIN_MODEL, temperature=0.05
+    )
     citations = _extract_citations(raw, chunks)
     answer = _clean_output(raw)
-    return answer, citations
+    return answer, citations, backend

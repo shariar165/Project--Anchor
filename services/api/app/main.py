@@ -58,6 +58,19 @@ async def lifespan(app: FastAPI):
     # without a persistent volume — loading 400 MB sentence-transformer models on
     # an ephemeral container causes an OOM crash loop).
     get_redis()
+    # Warn on a non-permanent Gemini credential. AI Studio keys start with "AIza"
+    # and never expire; an "AQ."/ephemeral OAuth token passes a fresh probe but
+    # expires within hours, after which the API's AI features (notice/routine/
+    # timetable NL edits) silently fall back to Ollama.
+    _gemini_key = get_settings().gemini_api_key
+    if _gemini_key and not _gemini_key.startswith("AIza"):
+        import logging
+        logging.getLogger(__name__).warning(
+            "GEMINI_API_KEY does not look like a permanent AI Studio key "
+            "(expected 'AIza…'). Ephemeral/OAuth tokens (e.g. 'AQ.…') expire within "
+            "hours and will silently disable Gemini — mint a real key at "
+            "https://aistudio.google.com/apikey."
+        )
     try:
         from app.database import AsyncSessionLocal
         from app.services.filing_svc import seed_templates
