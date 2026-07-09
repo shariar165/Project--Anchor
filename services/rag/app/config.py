@@ -9,6 +9,11 @@ class RAGSettings:
     gemini_api_key: str = os.environ.get("GEMINI_API_KEY", "")
     gemini_model: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     gemini_base_url: str = os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com")
+    # Groq (OpenAI-compatible API) — the reliable cloud fallback after Ollama/Gemini.
+    # Permanent gsk_ keys, so an expired Gemini token never takes the chatbot down.
+    groq_api_key: str = os.environ.get("GROQ_API_KEY", "")
+    groq_model: str = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    groq_base_url: str = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
     # Dense embedder (fastembed, ONNX — no torch). Must be a multilingual model
     # that covers Bangla; verified against TextEmbedding.list_supported_models()
     # at load time. paraphrase-multilingual-MiniLM-L12-v2 is the smallest such

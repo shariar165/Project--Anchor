@@ -173,10 +173,14 @@ async def test_ai_edit_returns_contract(client, db_session, mock_redis, register
 
 @pytest.mark.asyncio
 async def test_ai_edit_offline_returns_reason(client, db_session, mock_redis, registered_user, monkeypatch):
-    # Force the Ollama base URL to a dead port so the graceful-offline path runs.
+    # Force ALL LLM providers offline so the graceful-offline path runs. The provider
+    # chain is Ollama -> Gemini -> Groq, so each leg must be disabled (a live Groq key
+    # in the env would otherwise answer and the feature would succeed).
     from app.config import get_settings
     settings = get_settings()
     monkeypatch.setattr(settings, "ollama_base_url", "http://127.0.0.1:1", raising=False)
+    monkeypatch.setattr(settings, "gemini_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "groq_api_key", "", raising=False)
 
     admin = await _make_admin_tokens(client, db_session, registered_user["email"], registered_user["password"])
     routine = await _create_routine(client, admin, _SLOTS)

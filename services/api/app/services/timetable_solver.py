@@ -1626,10 +1626,7 @@ async def _finish_job(db_factory, job_id: uuid.UUID, **kwargs) -> None:
 async def nl_to_entry_edit(text: str, entries_context: list[dict]) -> EntryEdit | None:
     """Parse a natural-language timetable command into an EntryEdit using Ollama."""
     try:
-        import httpx
         from app.services import skill_loader
-        settings = get_settings()
-        ollama_url = getattr(settings, "ollama_base_url", "http://localhost:11434")
 
         # Skill grounding (day/slot indexing, reference resolution, examples); falls back to
         # the inline schema instructions below when the skill tree isn't shipped.
@@ -1650,17 +1647,11 @@ async def nl_to_entry_edit(text: str, entries_context: list[dict]) -> EntryEdit 
             "Return ONLY the JSON object, no explanation."
         )
 
-        # Prefer Gemini when configured; fall back to local Ollama.
-        from app.services import gemini_client
-        raw = await gemini_client.generate(prompt, temperature=0.1, timeout=15.0)
+        # Ollama (local) → Gemini → Groq; None when all providers are offline.
+        from app.services import llm_client
+        raw = await llm_client.generate(prompt, temperature=0.1, timeout=15.0)
         if raw is None:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    f"{ollama_url}/api/generate",
-                    json={"model": "qwen3:1.7b", "prompt": prompt, "stream": False},
-                )
-                resp.raise_for_status()
-                raw = resp.json().get("response", "")
+            return None
 
         # Extract JSON from response (strips <think> blocks, brace-balanced)
         from app.services.llm_json import extract_json_object

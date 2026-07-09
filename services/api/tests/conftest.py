@@ -10,10 +10,13 @@ import uuid
 # Must be set BEFORE importing app modules so get_settings() picks them up
 os.environ.setdefault("HIBP_CHECK_ENABLED", "false")
 os.environ.setdefault("ENVIRONMENT", "testing")
-# Tests must be hermetic — never hit the live Gemini API even when the developer's
-# .env carries a real GEMINI_API_KEY. An (empty) env var overrides the .env value,
-# so AI features deterministically fall back to Ollama/stub paths under test.
+# Tests must be hermetic — never hit a live cloud LLM even when the developer's .env
+# carries real GEMINI_API_KEY / GROQ_API_KEY values. The provider chain is
+# Ollama -> Gemini -> Groq, so every cloud leg must be blanked (an empty env var
+# overrides the .env value) for AI features to deterministically fall back to the
+# Ollama/stub/template paths under test.
 os.environ["GEMINI_API_KEY"] = ""
+os.environ["GROQ_API_KEY"] = ""
 # Solver runs in-thread under test: subprocess spawn (the prod default) costs
 # seconds per solve and breaks monkeypatching of timetable_solver.solve.
 os.environ.setdefault("SOLVER_ISOLATION", "thread")
