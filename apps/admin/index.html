@@ -11911,6 +11911,38 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
     } catch (e) { alert(e.message); }
   }
 
+  // Export the full generated timetable (all days/sections) as a CSV.
+  function downloadCsv() {
+    if (!entries.length) return;
+    const esc = v => /[",\n]/.test(v ?? "") ? `"${String(v).replace(/"/g, '""')}"` : String(v ?? "");
+    const header = ["Day", "Time", "Course", "Batch", "Section", "Lab Group", "Faculty", "Room", "Type", "Locked"];
+    const sorted = [...entries].sort((a, b) =>
+      a.day - b.day || a.slot - b.slot ||
+      `${a.batch_name || ""} ${a.section_name || ""}`.localeCompare(`${b.batch_name || ""} ${b.section_name || ""}`)
+    );
+    const rows = sorted.map(e => [
+      days[e.day] || `Day ${e.day + 1}`,
+      slots[e.slot] || `Slot ${e.slot + 1}`,
+      e.course_code || "",
+      e.batch_name || "",
+      e.section_name || "",
+      e.lab_group_name || "",
+      e.faculty_name || "",
+      e.room_name || "",
+      e.is_lab ? "Lab" : "Theory",
+      e.locked ? "Yes" : "No",
+    ]);
+    const lines = [header, ...rows].map(r => r.map(esc).join(","));
+    // Prepend a BOM so Excel renders UTF-8 (Bangla names) correctly.
+    const BOM = String.fromCharCode(0xFEFF);
+    const blob = new Blob([BOM + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `timetable_v${version}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   // Derive grid data for active day
   const dayEntries = entries.filter(e =>
     e.day === activeDay && (!filterSection || e.section_id === filterSection)
@@ -11964,6 +11996,8 @@ function TimetableGrid({ termId, version, onVersionChange, onPublish }) {
           )}
           <GhostButton size="sm" icon="refresh-cw" onClick={handleResolve} disabled={resolving}>Re-solve</GhostButton>
           <GhostButton size="sm" icon="shield-check" onClick={loadValidation}>Validate</GhostButton>
+          <GhostButton size="sm" icon="download" onClick={downloadCsv} disabled={!entries.length}
+            title="Download the full generated timetable as a CSV">Download CSV</GhostButton>
           <PrimaryButton size="sm" icon="send" mode="sage" onClick={onPublish}>Publish →</PrimaryButton>
         </div>
       </Card>
