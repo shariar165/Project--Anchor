@@ -45,9 +45,9 @@ const FILING_STATE_META = {
   moderation_queue:  { label: 'Under review',     color: 'var(--gold)',   bg: 'rgba(184,137,58,0.12)' },
   routed:            { label: 'Routed',            color: 'var(--gold)',   bg: 'rgba(184,137,58,0.12)' },
   subject_notified:  { label: 'Notified',          color: 'var(--gold)',   bg: 'rgba(184,137,58,0.12)' },
-  subject_responded: { label: 'Response received', color: 'var(--sage)',   bg: 'rgba(74,107,92,0.12)'  },
+  subject_responded: { label: 'Response received', color: 'var(--sage)',   bg: 'rgba(74,120,160,0.12)'  },
   under_review:      { label: 'In review',         color: 'var(--gold)',   bg: 'rgba(184,137,58,0.12)' },
-  resolved:          { label: 'Resolved',          color: 'var(--sage)',   bg: 'rgba(74,107,92,0.12)'  },
+  resolved:          { label: 'Resolved',          color: 'var(--sage)',   bg: 'rgba(74,120,160,0.12)'  },
   dismissed:         { label: 'Dismissed',         color: 'var(--muted)',  bg: 'rgba(107,102,96,0.10)' },
   withdrawn:         { label: 'Withdrawn',         color: 'var(--muted)',  bg: 'rgba(107,102,96,0.10)' },
   spam_rejected:     { label: 'Rejected',          color: 'var(--red)',    bg: 'rgba(232,49,42,0.10)'  },
@@ -174,7 +174,7 @@ function FInput({ value, onChange, placeholder }) {
         width: '100%', padding: '10px 12px', borderRadius: 10, boxSizing: 'border-box',
         border: `1px solid ${focused ? 'var(--sage)' : 'var(--mist)'}`,
         background: 'var(--surface)',
-        boxShadow: focused ? '0 0 0 3px rgba(74,107,92,0.15)' : 'none',
+        boxShadow: focused ? '0 0 0 3px rgba(74,120,160,0.15)' : 'none',
         fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)', outline: 'none',
         transition: 'border-color 0.15s, box-shadow 0.15s',
       }}
@@ -195,7 +195,7 @@ function FTextarea({ value, onChange, placeholder, minHeight = 110 }) {
         width: '100%', minHeight, padding: '10px 12px', borderRadius: 10, boxSizing: 'border-box',
         border: `1px solid ${focused ? 'var(--sage)' : 'var(--mist)'}`,
         background: 'var(--surface)',
-        boxShadow: focused ? '0 0 0 3px rgba(74,107,92,0.15)' : 'none',
+        boxShadow: focused ? '0 0 0 3px rgba(74,120,160,0.15)' : 'none',
         fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--navy)', resize: 'vertical', outline: 'none',
         transition: 'border-color 0.15s, box-shadow 0.15s',
       }}
@@ -208,7 +208,7 @@ function FTextarea({ value, onChange, placeholder, minHeight = 110 }) {
 function AnonymityBanner({ mode }) {
   if (mode === 'anonymous') return (
     <div style={{
-      background: 'rgba(74,107,92,0.10)', border: '1px solid rgba(74,107,92,0.28)',
+      background: 'rgba(74,120,160,0.10)', border: '1px solid rgba(74,120,160,0.28)',
       borderRadius: 12, padding: '11px 14px', marginBottom: 16,
       display: 'flex', alignItems: 'flex-start', gap: 10,
     }}>
@@ -256,7 +256,7 @@ function TrackingCodeCard({ code }) {
   };
   return (
     <div style={{
-      background: 'rgba(74,107,92,0.08)', border: '1px solid rgba(74,107,92,0.30)',
+      background: 'rgba(74,120,160,0.08)', border: '1px solid rgba(74,120,160,0.30)',
       borderRadius: 14, padding: '16px 18px', marginTop: 16,
     }}>
       <div style={{
@@ -606,7 +606,7 @@ function NewFilingScreen({ params = {} }) {
         <Header title="Serious academic concern" back={false}/>
         <div style={{ padding: '24px 20px 100px' }}>
           <div style={{
-            width: 52, height: 52, borderRadius: 14, background: 'rgba(74,107,92,0.12)',
+            width: 52, height: 52, borderRadius: 14, background: 'rgba(74,120,160,0.12)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'var(--sage)', marginBottom: 20,
           }}>
@@ -619,7 +619,7 @@ function NewFilingScreen({ params = {} }) {
             Use this option for situations where you feel unsafe, threatened, or harassed in an academic setting.
           </div>
           <div style={{
-            background: 'rgba(74,107,92,0.08)', border: '1px solid rgba(74,107,92,0.25)',
+            background: 'rgba(74,120,160,0.08)', border: '1px solid rgba(74,120,160,0.25)',
             borderRadius: 12, padding: '12px 16px', marginBottom: 14,
           }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--sage-2)', marginBottom: 6 }}>What happens next</div>
@@ -671,8 +671,8 @@ function NewFilingScreen({ params = {} }) {
                     {t.anonymity_mode === 'anonymous' && (
                       <span style={{
                         fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
-                        background: 'rgba(74,107,92,0.12)', color: 'var(--sage-2)',
-                        border: '1px solid rgba(74,107,92,0.2)', fontFamily: 'var(--font-sans)',
+                        background: 'rgba(74,120,160,0.12)', color: 'var(--sage-2)',
+                        border: '1px solid rgba(74,120,160,0.2)', fontFamily: 'var(--font-sans)',
                       }}>🔒 Anonymous</span>
                     )}
                     {t.anonymity_mode === 'aggregated' && (
@@ -822,7 +822,7 @@ function NewFilingScreen({ params = {} }) {
               {attachments.map(a => (
                 <div key={a.id} style={{
                   display: 'flex', alignItems: 'center', gap: 8,
-                  background: 'rgba(74,107,92,0.08)', borderRadius: 8, padding: '8px 12px', marginBottom: 6,
+                  background: 'rgba(74,120,160,0.08)', borderRadius: 8, padding: '8px 12px', marginBottom: 6,
                 }}>
                   <span style={{ fontSize: 13 }}>📎</span>
                   <span style={{ flex: 1, fontSize: 12, color: 'var(--navy)' }}>{a.original_filename}</span>
@@ -864,7 +864,7 @@ function NewFilingScreen({ params = {} }) {
       <div style={{ padding: '32px 20px 100px' }}>
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{
-            width: 64, height: 64, borderRadius: 18, background: 'rgba(74,107,92,0.12)',
+            width: 64, height: 64, borderRadius: 18, background: 'rgba(74,120,160,0.12)',
             display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px', color: 'var(--sage)',
           }}>
             <IconCheck size={30} sw={2.5}/>
@@ -881,7 +881,7 @@ function NewFilingScreen({ params = {} }) {
 
         {!trackingCode && (
           <div style={{
-            background: 'rgba(74,107,92,0.08)', borderRadius: 12, padding: '14px 16px',
+            background: 'rgba(74,120,160,0.08)', borderRadius: 12, padding: '14px 16px',
             textAlign: 'center', fontSize: 13, color: 'var(--ink-2)', marginTop: 8,
           }}>
             Track this filing in <strong>My Filings</strong> or the <strong>Cases</strong> tab.
@@ -934,7 +934,7 @@ function NewFilingScreen({ params = {} }) {
 
         {template?.anonymity_mode === 'anonymous' && (
           <div style={{
-            fontSize: 12.5, color: 'var(--sage-2)', background: 'rgba(74,107,92,0.08)',
+            fontSize: 12.5, color: 'var(--sage-2)', background: 'rgba(74,120,160,0.08)',
             borderRadius: 10, padding: '11px 14px', marginBottom: 16, lineHeight: 1.55,
           }}>
             🔒 After submitting you will receive a <strong>tracking code</strong>. Save it — it's the only way to check this anonymous filing's status.
@@ -1044,7 +1044,7 @@ function FilingDetailScreen({ params = {} }) {
         {/* Anonymous identity banner */}
         {isAnonymous && (
           <div style={{
-            background: 'rgba(74,107,92,0.10)', border: '1px solid rgba(74,107,92,0.28)',
+            background: 'rgba(74,120,160,0.10)', border: '1px solid rgba(74,120,160,0.28)',
             borderRadius: 12, padding: '11px 14px', marginBottom: 14,
             display: 'flex', alignItems: 'center', gap: 10,
           }}>
@@ -1181,7 +1181,7 @@ function FilingDetailScreen({ params = {} }) {
             {filing.attachments.map(a => (
               <div key={a.id} style={{
                 display: 'flex', alignItems: 'center', gap: 8,
-                background: 'rgba(74,107,92,0.08)', borderRadius: 8, padding: '8px 12px', marginBottom: 6,
+                background: 'rgba(74,120,160,0.08)', borderRadius: 8, padding: '8px 12px', marginBottom: 6,
               }}>
                 <span style={{ fontSize: 13 }}>📎</span>
                 <span style={{ fontSize: 12, color: 'var(--sage-2)', flex: 1 }}>{a.original_filename}</span>
@@ -1290,7 +1290,7 @@ function ClassroomReportScreen({ params = {} }) {
         <div style={{ padding: '40px 20px', textAlign: 'center' }}>
           <div style={{
             width: 64, height: 64, borderRadius: 18, margin: '0 auto 18px',
-            background: alreadyReported ? 'rgba(184,137,58,0.12)' : 'rgba(74,107,92,0.12)',
+            background: alreadyReported ? 'rgba(184,137,58,0.12)' : 'rgba(74,120,160,0.12)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: alreadyReported ? 'var(--gold)' : 'var(--sage)',
           }}>
@@ -1301,7 +1301,7 @@ function ClassroomReportScreen({ params = {} }) {
           </div>
           {count > 0 && (
             <div style={{
-              fontSize: 13, color: 'var(--ink-2)', background: 'rgba(74,107,92,0.08)',
+              fontSize: 13, color: 'var(--ink-2)', background: 'rgba(74,120,160,0.08)',
               borderRadius: 12, padding: '12px 18px', display: 'inline-block', marginTop: 8, lineHeight: 1.6,
             }}>
               <strong style={{ color: 'var(--navy)', fontSize: 20 }}>{count}</strong>{' '}
@@ -1336,7 +1336,7 @@ function ClassroomReportScreen({ params = {} }) {
               <button key={it.key} onClick={() => setIssueType(issueType === it.key ? null : it.key)} style={{
                 padding: '11px 4px', borderRadius: 12, textAlign: 'center', cursor: 'pointer',
                 border: issueType === it.key ? '2px solid var(--sage)' : '1px solid var(--mist)',
-                background: issueType === it.key ? 'rgba(74,107,92,0.10)' : 'var(--surface)',
+                background: issueType === it.key ? 'rgba(74,120,160,0.10)' : 'var(--surface)',
                 fontFamily: 'var(--font-sans)', transition: 'all 0.15s',
               }}>
                 <div style={{ fontSize: 20, marginBottom: 4 }}>{it.icon}</div>

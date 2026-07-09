@@ -618,9 +618,9 @@ function RegisterChoiceScreen() {
       desc: 'Verified via university email domain. Access campus complaints, academic grievances, hostel reports, and all national features.',
       pills: ['Campus access', 'National access'],
       accent: 'var(--sage)',
-      accentBg: 'rgba(74,107,92,0.09)',
-      accentBorder: 'rgba(74,107,92,0.2)',
-      pillStyle: { color: 'var(--sage)', borderColor: 'rgba(74,107,92,0.28)', background: 'rgba(74,107,92,0.07)' },
+      accentBg: 'rgba(74,120,160,0.09)',
+      accentBorder: 'rgba(74,120,160,0.2)',
+      pillStyle: { color: 'var(--sage)', borderColor: 'rgba(74,120,160,0.28)', background: 'rgba(74,120,160,0.07)' },
     },
     {
       key: 'user',
@@ -969,7 +969,7 @@ function VerifyEmailScreen({ params }) {
       <div style={{ padding: '0 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
         <div style={{
           width: 64, height: 64, borderRadius: 999,
-          background: 'rgba(74,107,92,0.1)', border: '1.5px solid rgba(74,107,92,0.22)',
+          background: 'rgba(74,120,160,0.1)', border: '1.5px solid rgba(74,120,160,0.22)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 14,
         }}>
           <IconBell size={28} stroke="var(--sage)" />
@@ -989,7 +989,7 @@ function VerifyEmailScreen({ params }) {
         {devCode && (
           <div style={{
             width: '100%', padding: '10px 14px', borderRadius: 10,
-            background: 'rgba(74,107,92,0.08)', border: '1px dashed rgba(74,107,92,0.35)',
+            background: 'rgba(74,120,160,0.08)', border: '1px dashed rgba(74,120,160,0.35)',
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
             <span style={{ fontSize: 11.5, color: 'var(--sage)', fontFamily: 'var(--font-sans)' }}>Dev code:</span>
@@ -1200,7 +1200,7 @@ function ForgotPasswordScreen() {
         <div style={{ padding: '40px 24px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 16 }}>
           <div style={{
             width: 64, height: 64, borderRadius: 999,
-            background: 'rgba(74,107,92,0.1)', border: '1.5px solid rgba(74,107,92,0.22)',
+            background: 'rgba(74,120,160,0.1)', border: '1.5px solid rgba(74,120,160,0.22)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             <IconCheck size={28} stroke="var(--sage)" sw={2.5} />
@@ -1575,7 +1575,7 @@ function MFASetupScreen() {
           <div style={{ textAlign: 'center', marginBottom: 20 }}>
             <div style={{
               width: 52, height: 52, borderRadius: 999,
-              background: 'rgba(74,107,92,0.1)', border: '1.5px solid rgba(74,107,92,0.22)',
+              background: 'rgba(74,120,160,0.1)', border: '1.5px solid rgba(74,120,160,0.22)',
               display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px',
             }}>
               <IconShield size={24} stroke="var(--sage)" />

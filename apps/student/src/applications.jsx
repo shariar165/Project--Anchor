@@ -146,7 +146,7 @@ const STATE_META = {
   submitted:          { label: 'Submitted',        color: 'var(--gold)',    bg: 'rgba(184,137,58,0.12)' },
   in_review:          { label: 'In Review',        color: 'var(--gold)',    bg: 'rgba(184,137,58,0.12)' },
   changes_requested:  { label: 'Changes Needed',  color: 'var(--ember)',   bg: 'rgba(196,69,54,0.12)' },
-  approved:           { label: 'Approved',         color: 'var(--sage)',    bg: 'rgba(74,107,92,0.12)'  },
+  approved:           { label: 'Approved',         color: 'var(--sage)',    bg: 'rgba(74,120,160,0.12)'  },
   rejected:           { label: 'Rejected',         color: 'var(--red)',     bg: 'rgba(232,49,42,0.12)'  },
   withdrawn:          { label: 'Withdrawn',        color: 'var(--muted)',   bg: 'rgba(107,102,96,0.10)' },
   escalated:          { label: 'Escalated',        color: 'var(--ember)',   bg: 'rgba(196,69,54,0.12)' },
@@ -953,8 +953,8 @@ function NewApplicationScreen({ params = {} }) {
 
             {/* Summary */}
             <div style={{
-              padding: '12px 14px', background: 'rgba(74,107,92,0.06)', borderRadius: 12,
-              border: '1px solid rgba(74,107,92,0.15)', marginBottom: 16,
+              padding: '12px 14px', background: 'rgba(74,120,160,0.06)', borderRadius: 12,
+              border: '1px solid rgba(74,120,160,0.15)', marginBottom: 16,
             }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--sage)', textTransform: 'uppercase',
                 letterSpacing: '0.1em', marginBottom: 8, fontFamily: 'var(--font-sans)' }}>Summary</div>
@@ -1450,8 +1450,8 @@ function CampusSettingsScreen() {
             </div>
 
             {/* Info */}
-            <div style={{ padding: '12px 14px', background: 'rgba(74,107,92,0.06)', borderRadius: 10,
-              border: '1px solid rgba(74,107,92,0.15)', fontSize: 12, color: 'var(--muted)', lineHeight: 1.6,
+            <div style={{ padding: '12px 14px', background: 'rgba(74,120,160,0.06)', borderRadius: 10,
+              border: '1px solid rgba(74,120,160,0.15)', fontSize: 12, color: 'var(--muted)', lineHeight: 1.6,
               fontFamily: 'var(--font-sans)' }}>
               Your mentor can be the first approver for applications. Changing your mentor only affects new applications — in-flight ones keep their original selection.
             </div>

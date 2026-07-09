@@ -19,7 +19,7 @@ const vfFetch = typeof apiFetch === 'function' ? apiFetch : async (path, opts = 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const FEED_STATE_META = {
-  live:              { label: 'Live',          color: 'var(--sage)',   bg: 'rgba(74,107,92,0.10)' },
+  live:              { label: 'Live',          color: 'var(--sage)',   bg: 'rgba(74,120,160,0.10)' },
   under_review:      { label: 'Under Review',  color: 'var(--gold)',   bg: 'rgba(184,137,58,0.12)' },
   pending_ai:        { label: 'Checking…',     color: 'var(--muted)',  bg: 'rgba(107,102,96,0.10)' },
   taken_down:        { label: 'Taken Down',    color: 'var(--red)',    bg: 'rgba(232,49,42,0.12)' },
@@ -781,9 +781,9 @@ function PostDetailScreen({ params = {} }) {
           <div style={{ padding: '0 20px', display: 'flex', gap: 10, marginBottom: 16 }}>
             <button onClick={() => signal('corroborate')} style={{
               flex: 1, padding: '10px', borderRadius: 10, fontWeight: 700, fontSize: 13,
-              background: userSig === 'corroborate' ? 'var(--sage)' : 'rgba(74,107,92,0.1)',
+              background: userSig === 'corroborate' ? 'var(--sage)' : 'rgba(74,120,160,0.1)',
               color: userSig === 'corroborate' ? 'white' : 'var(--sage)',
-              border: `1.5px solid ${userSig === 'corroborate' ? 'var(--sage)' : 'rgba(74,107,92,0.3)'}`,
+              border: `1.5px solid ${userSig === 'corroborate' ? 'var(--sage)' : 'rgba(74,120,160,0.3)'}`,
             }}>✓ Corroborate</button>
             <button onClick={() => signal('challenge')} style={{
               flex: 1, padding: '10px', borderRadius: 10, fontWeight: 700, fontSize: 13,
@@ -887,7 +887,7 @@ function FeedProfileScreen() {
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div style={{ textAlign: 'center', padding: '12px', borderRadius: 10, background: 'rgba(74,107,92,0.08)' }}>
+                <div style={{ textAlign: 'center', padding: '12px', borderRadius: 10, background: 'rgba(74,120,160,0.08)' }}>
                   <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--sage)' }}>{profile.confirmed_accurate_count}</div>
                   <div style={{ fontSize: 11, color: 'var(--muted)' }}>Confirmed accurate</div>
                 </div>
