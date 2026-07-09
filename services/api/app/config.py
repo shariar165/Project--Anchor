@@ -117,6 +117,19 @@ class Settings(BaseSettings):
     solver_section_consecutive_limit: int = 2    # max back-to-back classes before a gap
     solver_section_course_spread: bool = True    # a course must not repeat within a day
     solver_section_rule_weight: int = 1000       # penalty weight (dominates pref penalties)
+    # Weekly active-day cap (req 2): a section AND a teacher should have classes
+    # on at most this many days per week. High-weight soft (shares the section
+    # rule weight) so a timetable is always produced; 0 disables the rule.
+    solver_max_active_days: int = 5
+    # Online-room fallback (req 1): ONLINE rooms absorb overflow when physical
+    # rooms of the right type run out in a slot — heavily penalised so it stays a
+    # last resort. Weight is per online-placed class.
+    solver_online_penalty_weight: int = 200
+    # Teacher weekly credit load (req 5/6). max is enforced HARD (carried across
+    # batches via reservations); min is soft/advisory. Rank defaults apply when a
+    # faculty row leaves min/max_credits unset (PROFESSOR/HOD 3–6, else 12–15).
+    solver_credit_enforce: bool = True
+    solver_credit_under_weight: int = 20         # penalty per credit below a teacher's min
 
     # HIBP
     hibp_check_enabled: bool = True

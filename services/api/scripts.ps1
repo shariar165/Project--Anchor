@@ -30,6 +30,28 @@ print('Keys written to .keys/')
         & $venvAlembic downgrade -1
     }
     "test" {
+        # OR-Tools' CP-SAT (native) aborts nondeterministically when many solves
+        # run in one long-lived, heavily-loaded Python process on Windows (Fatal
+        # Python error: Aborted inside cp_model.solve). It is NOT a solver bug —
+        # prod sidesteps it with SOLVER_ISOLATION=process (a fresh subprocess per
+        # solve). Tests run in thread mode (conftest) for speed + monkeypatching,
+        # so we isolate at the FILE level instead: each solver-heavy timetable
+        # file gets its own pytest process, then everything else runs in one pass.
+        $failed = $false
+        Get-ChildItem "$PSScriptRoot\tests\test_timetable*.py" | ForEach-Object {
+            Write-Host "== $($_.Name) ==" -ForegroundColor Cyan
+            & $venvPytest -q $_.FullName
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+        }
+        Write-Host "== rest of suite ==" -ForegroundColor Cyan
+        & $venvPytest -q --ignore-glob="*test_timetable*.py"
+        if ($LASTEXITCODE -ne 0) { $failed = $true }
+        if ($failed) { Write-Host "TESTS FAILED" -ForegroundColor Red; exit 1 }
+        Write-Host "ALL TESTS PASSED" -ForegroundColor Green
+    }
+    "test-all-in-one" {
+        # The old single-process run. May abort on Windows (see "test" above);
+        # kept for CI on Linux / quick single-file runs: .\scripts.ps1 test-all-in-one
         & $venvPytest -x -v
     }
     "dev" {
@@ -40,7 +62,7 @@ print('Keys written to .keys/')
         & $venvRuff check app tests
     }
     default {
-        Write-Host "Available targets: gen-keys, migrate, downgrade, test, dev, lint"
+        Write-Host "Available targets: gen-keys, migrate, downgrade, test, test-all-in-one, dev, lint"
         Write-Host "Venv: $PSScriptRoot\.venv"
     }
 }

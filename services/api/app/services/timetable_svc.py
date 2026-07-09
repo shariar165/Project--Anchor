@@ -1,6 +1,7 @@
 import csv
 import io
 import math
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -768,6 +769,8 @@ async def resolve_entry_names(db: AsyncSession, entries: list[TimetableEntry]) -
 # are surfaced as warnings and must NOT block publishing.
 ADVISORY_CONFLICT_TYPES = frozenset({
     "section_max_per_day", "section_consecutive", "section_course_repeat",
+    "section_active_days", "teacher_active_days", "teacher_underloaded",
+    "online_fallback",
 })
 
 
@@ -894,15 +897,86 @@ async def validate_entries(
     # per (section, lab_group) attendance stream, folding theory into each.
     course_ids = [cid for cid in {e.course_id for e in entries} if cid]
     course_weekly: dict = {}
+    course_credits: dict = {}
     if course_ids:
         cr = await db.execute(
-            select(TimetableCourse.id, TimetableCourse.weekly_classes)
+            select(TimetableCourse.id, TimetableCourse.weekly_classes, TimetableCourse.credits)
             .where(TimetableCourse.id.in_(course_ids))
         )
-        course_weekly = {cid: wk for cid, wk in cr.all()}
+        for cid, wk, credits in cr.all():
+            course_weekly[cid] = wk
+            course_credits[cid] = credits or 0
     conflicts.extend(_section_spacing_conflicts(entries, course_weekly))
 
+    # Advisory: a class placed in an ONLINE room means the physical rooms ran out
+    # in that slot (req 1 fallback) — surfaced so an admin can add rooms.
+    for e in entries:
+        room = rooms.get(e.room_id)
+        if room is not None and room.room_type == "ONLINE":
+            conflicts.append(ConflictOut(
+                conflict_type="online_fallback",
+                entry_ids=[e.id],
+                description=f"Class moved online (no physical room free) on day {e.day} slot {e.slot}",
+            ))
+
+    conflicts.extend(await _teacher_load_conflicts(db, entries, course_credits))
+
     return conflicts
+
+
+async def _teacher_load_conflicts(
+    db: AsyncSession, entries: list, course_credits: dict
+) -> list[ConflictOut]:
+    """Advisory teacher-centric checks: weekly active days (req 2) and weekly
+    credit under-load (req 5/6 min bound). Both are soft in the solver (the min
+    is only softly enforced in monolith solves), so surface them as warnings."""
+    from app.services.timetable_solver import rank_credit_bounds  # lazy: avoid import cycle
+
+    settings = get_settings()
+    max_active_days = settings.solver_max_active_days
+    out: list[ConflictOut] = []
+
+    faculty_ids = [fid for fid in {e.faculty_id for e in entries} if fid]
+    if not faculty_ids:
+        return out
+    fr = await db.execute(
+        select(TimetableFacultyProfile).where(TimetableFacultyProfile.id.in_(faculty_ids))
+    )
+    profiles = {fp.id: fp for fp in fr.scalars().all()}
+
+    days_by_fac: dict = {}
+    entries_by_fac: dict = {}
+    credit_seen: dict = {}   # faculty_id -> set of (course, section, lab_group)
+    credits_by_fac: dict = {}
+    for e in entries:
+        days_by_fac.setdefault(e.faculty_id, set()).add(e.day)
+        entries_by_fac.setdefault(e.faculty_id, []).append(e.id)
+        ck = (e.course_id, e.section_id, e.lab_group_id)
+        seen = credit_seen.setdefault(e.faculty_id, set())
+        if ck not in seen:
+            seen.add(ck)
+            credits_by_fac[e.faculty_id] = (
+                credits_by_fac.get(e.faculty_id, 0) + course_credits.get(e.course_id, 0)
+            )
+
+    for fid, days in days_by_fac.items():
+        if max_active_days and len(days) > max_active_days:
+            out.append(ConflictOut(
+                conflict_type="teacher_active_days",
+                entry_ids=entries_by_fac.get(fid, []),
+                description=f"Teacher has classes on {len(days)} days this week (limit {max_active_days})",
+            ))
+        fp = profiles.get(fid)
+        if fp is not None:
+            lo, _hi = rank_credit_bounds(fp.rank, fp.min_credits, fp.max_credits)
+            load = credits_by_fac.get(fid, 0)
+            if lo and load < lo:
+                out.append(ConflictOut(
+                    conflict_type="teacher_underloaded",
+                    entry_ids=entries_by_fac.get(fid, []),
+                    description=f"Teacher carries {load} credits, below the {lo}-credit minimum for their rank",
+                ))
+    return out
 
 
 def _section_spacing_conflicts(entries: list, course_weekly: dict) -> list[ConflictOut]:
@@ -910,6 +984,7 @@ def _section_spacing_conflicts(entries: list, course_weekly: dict) -> list[Confl
     max_per_day = settings.solver_section_max_per_day
     consecutive_limit = settings.solver_section_consecutive_limit
     course_spread = settings.solver_section_course_spread
+    max_active_days = settings.solver_max_active_days
 
     # The solver caps a course at ceil(weekly / n_days) per day (normally 1);
     # mirror that so a course that legitimately meets more times than there are
@@ -934,6 +1009,14 @@ def _section_spacing_conflicts(entries: list, course_weekly: dict) -> list[Confl
             if lg is not None:
                 for d, es in by_lg[lg].items():
                     by_day.setdefault(d, []).extend(es)
+
+            # (d) too many distinct class-days in the week for this stream (req 2)
+            if max_active_days and len(by_day) > max_active_days:
+                out.append(ConflictOut(
+                    conflict_type="section_active_days",
+                    entry_ids=[e.id for es in by_day.values() for e in es],
+                    description=f"Section has classes on {len(by_day)} days this week (limit {max_active_days})",
+                ))
 
             for d, es in by_day.items():
                 # (a) too many classes in one day
@@ -1112,6 +1195,35 @@ def _int_or_none(val) -> int | None:
     return int(val) if val else None
 
 
+_DAY_NAME_IDX = {
+    "sat": 0, "saturday": 0, "sun": 1, "sunday": 1, "mon": 2, "monday": 2,
+    "tue": 3, "tuesday": 3, "wed": 4, "wednesday": 4, "thu": 5, "thursday": 5,
+    "fri": 6, "friday": 6,
+}
+
+
+def _parse_off_days(val) -> list[int] | None:
+    """Parse an off_days CSV cell → list of 0-based day indices (Sat=0..Fri=6).
+
+    Accepts day names ("Fri", "sat sun") or integer indices, separated by any of
+    ``, ; | /`` or whitespace. Returns None when the cell is blank/absent so an
+    import that omits the column leaves the existing value untouched.
+    """
+    s = str(val or "").strip()
+    if not s:
+        return None
+    out: list[int] = []
+    for tok in re.split(r"[,;|/\s]+", s):
+        tok = tok.strip().lower()
+        if not tok:
+            continue
+        if tok in _DAY_NAME_IDX:
+            out.append(_DAY_NAME_IDX[tok])
+        elif tok.lstrip("-").isdigit():
+            out.append(int(tok))
+    return sorted(set(out))
+
+
 # Minimum columns each entity import needs. Missing any of these is reported once
 # (a clear header error) instead of once per data row.
 _REQUIRED_COLS: dict[str, tuple[str, ...]] = {
@@ -1128,7 +1240,7 @@ _EXPECTED_HEADER: dict[str, str] = {
     "courses": "code, name, credits, weekly_classes, is_lab",
     "rooms": "name, room_type, capacity",
     "batches": "name, program",
-    "faculty": "email, rank, max_per_day",
+    "faculty": "email, rank, max_per_day, min_credits, max_credits, pref_slot, off_days",
     "offerings": "course_code, batch_name",
     "eligibility": "faculty_email, course_code",
 }
@@ -1325,6 +1437,9 @@ async def import_entities(
                     max_credits=_int_or_none(row.get("max_credits")),
                     pref_slot=_int_or_none(row.get("pref_slot")),
                 )
+                off_days = _parse_off_days(row.get("off_days"))
+                if off_days is not None:
+                    values["off_days"] = off_days
                 name = str(row.get("name") or "").strip() or None
                 existing_id = faculty_id_by_email.get(email)
                 if existing_id is not None:

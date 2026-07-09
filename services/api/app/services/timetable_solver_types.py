@@ -15,6 +15,7 @@ class CourseD:
     code: str
     is_lab: bool
     weekly_classes: int
+    credits: int = 0
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,9 @@ class FacultyD:
     off_days: tuple[int, ...]
     max_per_day: int
     pref_slot: int | None
+    rank: str = "LECTURER"
+    min_credits: int | None = None
+    max_credits: int | None = None
 
 
 @dataclass(frozen=True)
@@ -98,26 +102,51 @@ class Reservations:
     faculty_busy: set = field(default_factory=set)     # {(faculty_id, day, slot)}
     theory_used: dict = field(default_factory=dict)    # {(day, slot): count}
     lab_used: dict = field(default_factory=dict)       # {(day, slot): count}
+    online_used: dict = field(default_factory=dict)    # {(day, slot): count} in ONLINE rooms
     rooms_used: dict = field(default_factory=dict)     # {(day, slot): set[room_id]}
+    # Weekly credit load already committed per teacher, deduped per taught
+    # (course, section, lab_group) so weekly copies don't multiply the credits.
+    faculty_credits: dict = field(default_factory=dict)   # {faculty_id: credits}
+    _credit_seen: set = field(default_factory=set)        # {(fac, course, section, lg)}
 
-    def add_entry(self, e) -> None:
+    def add_entry(self, e, *, credits_by_course: dict | None = None,
+                  online_room_ids: set | None = None) -> None:
         """Reserve the resources of one placed class (EntryD or result dict)."""
         if isinstance(e, dict):
             fac, room, day, slot, is_lab = (
                 e["faculty_id"], e["room_id"], e["day"], e["slot"], e["is_lab"]
             )
+            course_id = e.get("course_id")
+            section_id = e.get("section_id")
+            lg_id = e.get("lab_group_id")
         else:
             fac, room, day, slot, is_lab = e.faculty_id, e.room_id, e.day, e.slot, e.is_lab
+            course_id = e.course_id
+            section_id = e.section_id
+            lg_id = e.lab_group_id
         key = (day, slot)
         self.faculty_busy.add((fac, day, slot))
         bucket = self.lab_used if is_lab else self.theory_used
         bucket[key] = bucket.get(key, 0) + 1
         self.rooms_used.setdefault(key, set()).add(room)
+        if online_room_ids and room in online_room_ids:
+            self.online_used[key] = self.online_used.get(key, 0) + 1
+        # Credit load: count a course's credits once per (teacher, course,
+        # section, lab_group) regardless of how many weekly copies were placed.
+        if credits_by_course and course_id in credits_by_course:
+            ck = (fac, course_id, section_id, lg_id)
+            if ck not in self._credit_seen:
+                self._credit_seen.add(ck)
+                self.faculty_credits[fac] = (
+                    self.faculty_credits.get(fac, 0) + credits_by_course[course_id]
+                )
 
 
-def build_reservations(entries) -> Reservations:
+def build_reservations(entries, *, credits_by_course: dict | None = None,
+                       online_room_ids: set | None = None) -> Reservations:
     """Aggregate reservations from a list of EntryD / result dicts."""
     res = Reservations()
     for e in entries:
-        res.add_entry(e)
+        res.add_entry(e, credits_by_course=credits_by_course,
+                      online_room_ids=online_room_ids)
     return res
