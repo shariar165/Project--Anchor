@@ -11,9 +11,14 @@ def _auth(tokens: dict) -> dict:
 
 @pytest.fixture
 def force_ai_offline(monkeypatch):
-    """Point Ollama at an unreachable address so generation deterministically falls back,
-    regardless of whether a real Ollama is running on the test machine."""
-    monkeypatch.setattr(get_settings(), "ollama_base_url", "http://127.0.0.1:9", raising=False)
+    """Force ALL LLM providers offline so generation deterministically falls back,
+    regardless of whether a real Ollama is running on the test machine and regardless
+    of any Gemini/Groq keys present in the environment. The provider chain is
+    Ollama -> Gemini -> Groq, so every leg must be disabled to reach the template."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ollama_base_url", "http://127.0.0.1:9", raising=False)
+    monkeypatch.setattr(settings, "gemini_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "groq_api_key", "", raising=False)
 
 
 async def _make_admin_and_relogin(client, db_session, email: str, password: str) -> dict:

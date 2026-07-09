@@ -77,12 +77,16 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     notice_ai_model: str = "qwen3:1.7b"
 
-    # Gemini (Google Generative Language API) — PRIMARY generator for the API's own
-    # AI features (notice drafting, routine/timetable NL edits) when GEMINI_API_KEY is
-    # set. Ollama stays as the fallback; both degrade to templated output if unreachable.
+    # AI provider chain for the API's own features (notice drafting, routine/timetable
+    # NL edits): Ollama (primary, above) → Gemini → Groq → templated output. See
+    # app/services/llm_client.py.
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     gemini_base_url: str = "https://generativelanguage.googleapis.com"
+    # Groq (OpenAI-compatible) — reliable cloud fallback (permanent gsk_ keys).
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
 
     # RAG service (the /ai/chat proxy target). rag_internal_secret must match
     # RAG_INTERNAL_SECRET set on the services/rag side, or RAG returns 403.

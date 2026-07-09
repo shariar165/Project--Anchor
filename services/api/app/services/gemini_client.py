@@ -23,6 +23,16 @@ def is_configured() -> bool:
     return bool(get_settings().gemini_api_key)
 
 
+def _auth_headers(key: str) -> dict[str, str]:
+    """Pick the auth scheme by key shape. A permanent AI Studio key ("AIza…")
+    authenticates via `x-goog-api-key`; an "AQ.…"/OAuth *access token* is a Bearer
+    credential and is REJECTED on `x-goog-api-key` — it must go in `Authorization`.
+    Sending an AQ. token on the wrong header is why Gemini silently 400s."""
+    if key.startswith("AIza"):
+        return {"x-goog-api-key": key, "Content-Type": "application/json"}
+    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+
 async def generate(prompt: str, *, temperature: float = 0.2, timeout: float = 60.0) -> str | None:
     """Run a single Gemini generateContent call.
 
@@ -38,7 +48,7 @@ async def generate(prompt: str, *, temperature: float = 0.2, timeout: float = 60
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 url,
-                headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                headers=_auth_headers(key),
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": temperature},

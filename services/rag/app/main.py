@@ -256,8 +256,9 @@ async def health() -> dict[str, Any]:
     if settings.disable_ai_warmup:
         status["embedder"] = "disabled"
         status["vector_store"] = "disabled"
-        status["gemini"] = "disabled"
         status["ollama"] = "disabled"
+        status["gemini"] = "disabled"
+        status["groq"] = "disabled"
         return status
 
     try:
@@ -275,16 +276,21 @@ async def health() -> dict[str, Any]:
 
     try:
         from app.pipeline import llm_client
-        # Force a live re-probe: the availability flags are cached for the life of
-        # the process, so a transient failure (e.g. ngrok tunnel briefly down at
-        # startup) would otherwise pin /health to "unavailable" until restart.
+        # Force a live re-probe: the circuit breaker skips known-down providers for a
+        # cooldown window, so clear it first — a transient failure (e.g. the Ollama box
+        # briefly down at startup) would otherwise pin /health until the window passes.
         llm_client.reset_availability_cache()
-        await llm_client._check_gemini_availability()
-        # Real reason, set by the probe: "ok" | "invalid_key" (401/403 — expired/
+        # Probe all three providers in parallel so /health stays snappy.
+        await asyncio.gather(
+            llm_client._check_ollama_availability(),
+            llm_client._check_gemini_availability(),
+            llm_client._check_groq_availability(),
+        )
+        # Real reasons, set by the probes: "ok" | "invalid_key" (401/403/400 — expired/
         # revoked key) | "unavailable" (network) | "not configured" (no key set).
+        status["ollama"] = llm_client._status["ollama"]
         status["gemini"] = llm_client.gemini_health_status()
-        available = await llm_client._check_availability()
-        status["ollama"] = "ok" if available else "unavailable"
+        status["groq"] = llm_client.groq_health_status()
     except Exception as e:
         status["ollama"] = f"error: {e}"
 
