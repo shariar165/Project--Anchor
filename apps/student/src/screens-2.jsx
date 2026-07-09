@@ -1085,7 +1085,7 @@ function AlertRespondSheet({ status, error, nav, locDenied, onYes, onNo, onClose
     return sheet(
       <>
         <div style={{ width:52, height:52, borderRadius:999, margin:'0 auto 14px',
-                      background:'rgba(74,107,92,0.15)', border:'1px solid rgba(74,107,92,0.4)',
+                      background:'rgba(74,120,160,0.15)', border:'1px solid rgba(74,120,160,0.4)',
                       display:'flex', alignItems:'center', justifyContent:'center' }}>
           <IconCheck size={26} sw={2.4} stroke="var(--sage)"/>
         </div>
@@ -1105,7 +1105,7 @@ function AlertRespondSheet({ status, error, nav, locDenied, onYes, onNo, onClose
     return sheet(
       <>
         <div style={{ width:52, height:52, borderRadius:999, margin:'0 auto 14px',
-                      background:'rgba(74,107,92,0.15)', border:'1px solid rgba(74,107,92,0.4)',
+                      background:'rgba(74,120,160,0.15)', border:'1px solid rgba(74,120,160,0.4)',
                       display:'flex', alignItems:'center', justifyContent:'center' }}>
           <IconCheck size={26} sw={2.4} stroke="var(--sage)"/>
         </div>
@@ -1478,7 +1478,7 @@ function NewsFeature({ item }) {
           className="news-act corr"
           onClick={() => signal('corroborate')}
           disabled={busy}
-          style={{ background: userSig === 'corroborate' ? 'rgba(74,107,92,0.22)' : undefined, fontWeight: userSig === 'corroborate' ? 700 : undefined }}
+          style={{ background: userSig === 'corroborate' ? 'rgba(74,120,160,0.22)' : undefined, fontWeight: userSig === 'corroborate' ? 700 : undefined }}
         >
           <IconThumbUp size={13}/> Corroborate · {counts.corroborate}
         </button>
@@ -1526,7 +1526,7 @@ function NewsCard({ item }) {
           className="news-act corr"
           onClick={() => signal('corroborate')}
           disabled={busy}
-          style={{ background: userSig === 'corroborate' ? 'rgba(74,107,92,0.22)' : undefined, fontWeight: userSig === 'corroborate' ? 700 : undefined }}
+          style={{ background: userSig === 'corroborate' ? 'rgba(74,120,160,0.22)' : undefined, fontWeight: userSig === 'corroborate' ? 700 : undefined }}
         >
           <IconThumbUp size={13}/> Corroborate · {counts.corroborate}
         </button>
@@ -1814,7 +1814,7 @@ function NoticesScreen() {
             }}>
               {n.title}
             </div>
-            <div style={{ marginTop: 8, padding: '10px 12px', background: 'rgba(74,107,92,0.06)', border: '1px solid rgba(74,107,92,0.18)', borderRadius: 10 }}>
+            <div style={{ marginTop: 8, padding: '10px 12px', background: 'rgba(74,120,160,0.06)', border: '1px solid rgba(74,120,160,0.18)', borderRadius: 10 }}>
               <div style={{ fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.45 }}>
                 {n.body.length > 280 ? n.body.slice(0, 280) + '…' : n.body}
               </div>
@@ -2113,7 +2113,7 @@ function ProfileScreen() {
                   <div style={{ marginTop: 4, fontSize: 12.5, color: 'var(--ink-2)' }}>{subtitle}</div>
                   <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {isStudent && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'rgba(184,137,58,0.35)', background: 'rgba(184,137,58,0.08)' }}><IconCheck size={9} sw={3}/> Verified DIU</span>}
-                    {user && user.email_verified && <span className="pill" style={{ color: 'var(--sage)', borderColor: 'rgba(74,107,92,0.28)', background: 'rgba(74,107,92,0.07)' }}><IconCheck size={9} sw={3}/> Email verified</span>}
+                    {user && user.email_verified && <span className="pill" style={{ color: 'var(--sage)', borderColor: 'rgba(74,120,160,0.28)', background: 'rgba(74,120,160,0.07)' }}><IconCheck size={9} sw={3}/> Email verified</span>}
                   </div>
                 </div>
               </div>
@@ -2498,7 +2498,7 @@ var NOTIF_TYPE_META = {
   case:   { Icon: IconFile,   color: 'var(--navy)',  bg: 'var(--cream-2)',        bd: 'var(--mist)' },
   notice: { Icon: IconNews,   color: 'var(--gold)',  bg: 'rgba(184,137,58,0.1)',  bd: 'rgba(184,137,58,0.25)' },
   rating: { Icon: IconStar,   color: 'var(--gold)',  bg: 'rgba(184,137,58,0.1)',  bd: 'rgba(184,137,58,0.25)' },
-  lawyer: { Icon: IconGavel,  color: 'var(--sage)',  bg: 'rgba(74,107,92,0.08)',  bd: 'rgba(74,107,92,0.2)' },
+  lawyer: { Icon: IconGavel,  color: 'var(--sage)',  bg: 'rgba(74,120,160,0.08)',  bd: 'rgba(74,120,160,0.2)' },
   zone:   { Icon: IconMap,    color: 'var(--ember)', bg: 'rgba(196,69,54,0.08)',  bd: 'rgba(196,69,54,0.2)' },
 };
 
@@ -2558,7 +2558,7 @@ function NotificationsScreen() {
       <div key={n.id} onClick={() => handleTap(n)} style={{
         display: 'flex', gap: 12, padding: '13px 14px', cursor: 'pointer',
         borderBottom: i < arr.length - 1 ? '1px solid var(--mist)' : 'none',
-        background: n.read ? 'transparent' : 'rgba(74,107,92,0.05)',
+        background: n.read ? 'transparent' : 'rgba(74,120,160,0.05)',
       }}>
         <div style={{
           width: 34, height: 34, borderRadius: 9, flexShrink: 0, background: meta.bg,
@@ -3197,7 +3197,7 @@ function DeptRatingScreen() {
             </div>
           </div>
         ) : submitted ? (
-          <div style={{ padding: '24px 16px', background: 'rgba(74,107,92,0.07)', border: '1px solid rgba(74,107,92,0.25)', borderRadius: 14, textAlign: 'center' }}>
+          <div style={{ padding: '24px 16px', background: 'rgba(74,120,160,0.07)', border: '1px solid rgba(74,120,160,0.25)', borderRadius: 14, textAlign: 'center' }}>
             <div style={{ fontSize: 26, marginBottom: 8 }}>✓</div>
             <div style={{ fontFamily: 'var(--font-serif)', fontSize: 17, fontWeight: 500, color: 'var(--sage)' }}>Rating submitted</div>
             <div style={{ marginTop: 5, fontSize: 12.5, color: 'var(--muted)', fontFamily: 'var(--font-sans)' }}>

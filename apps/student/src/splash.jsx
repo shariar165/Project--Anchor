@@ -117,7 +117,7 @@ function Splash2({ onAdvance }) {
       <div style={{
         position: 'absolute', inset: 0,
         background:
-          'radial-gradient(380px 280px at 15% 10%, rgba(74,107,92,0.18), transparent 60%),' +
+          'radial-gradient(380px 280px at 15% 10%, rgba(74,120,160,0.18), transparent 60%),' +
           'radial-gradient(420px 320px at 95% 90%, rgba(196,69,54,0.16), transparent 60%)',
       }}/>
       {/* Grain */}

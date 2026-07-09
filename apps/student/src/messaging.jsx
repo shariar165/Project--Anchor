@@ -287,8 +287,8 @@ function ApplyLawyerScreen() {
   const StatusBanner = ({ tone, title, body }) => (
     <div style={{
       padding: 16, borderRadius: 14, marginBottom: 16,
-      background: tone === 'green' ? 'rgba(74,107,92,0.08)' : tone === 'red' ? 'rgba(232,49,42,0.07)' : 'rgba(184,137,58,0.08)',
-      border: '1px solid ' + (tone === 'green' ? 'rgba(74,107,92,0.3)' : tone === 'red' ? 'rgba(232,49,42,0.22)' : 'rgba(184,137,58,0.3)'),
+      background: tone === 'green' ? 'rgba(74,120,160,0.08)' : tone === 'red' ? 'rgba(232,49,42,0.07)' : 'rgba(184,137,58,0.08)',
+      border: '1px solid ' + (tone === 'green' ? 'rgba(74,120,160,0.3)' : tone === 'red' ? 'rgba(232,49,42,0.22)' : 'rgba(184,137,58,0.3)'),
     }}>
       <div className="serif" style={{ fontSize: 16, fontWeight: 500, color: 'var(--navy)' }}>{title}</div>
       <div style={{ marginTop: 6, fontSize: 13, color: 'var(--ink-2)', fontFamily: 'var(--font-sans)', lineHeight: 1.5 }}>{body}</div>

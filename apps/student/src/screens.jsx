@@ -506,7 +506,7 @@ function UserBubble({ text, lang }) {
 function AIBubble({ msg, accent, accentBg, accentBd, lang, go }) {
   const confPct = Math.round((msg.confidence || 0) * 100);
   const confColor = confPct >= 65 ? 'var(--sage-2)' : 'var(--ember)';
-  const confBg   = confPct >= 65 ? 'rgba(74,107,92,0.1)' : 'rgba(196,69,54,0.08)';
+  const confBg   = confPct >= 65 ? 'rgba(74,120,160,0.1)' : 'rgba(196,69,54,0.08)';
   const corpusCites = (msg.citations || []).filter(c => c.source !== 'web');
 
   return (
@@ -601,8 +601,8 @@ function ChatScreen() {
   const inputRef  = _useR(null);
 
   const accent   = mode === 'campus' ? 'var(--sage-2)'              : 'var(--ember-2)';
-  const accentBg = mode === 'campus' ? 'rgba(74,107,92,0.06)'       : 'rgba(196,69,54,0.06)';
-  const accentBd = mode === 'campus' ? 'rgba(74,107,92,0.25)'       : 'rgba(196,69,54,0.25)';
+  const accentBg = mode === 'campus' ? 'rgba(74,120,160,0.06)'       : 'rgba(196,69,54,0.06)';
+  const accentBd = mode === 'campus' ? 'rgba(74,120,160,0.25)'       : 'rgba(196,69,54,0.25)';
 
   const suggestions = mode === 'campus'
     ? (lang === 'BN'
@@ -1467,15 +1467,15 @@ function AlertDuring({ holding, progress, activated, eventId, gpsResult, token, 
           <div style={{
             display: 'flex', alignItems: 'center', gap: 10,
             padding: '12px 14px', borderRadius: 12,
-            background: 'rgba(74,107,92,0.18)', border: '1px solid rgba(74,107,92,0.5)',
+            background: 'rgba(74,120,160,0.18)', border: '1px solid rgba(74,120,160,0.5)',
           }}>
             <div style={{
               width: 30, height: 30, borderRadius: 999, flexShrink: 0,
-              background: 'rgba(74,107,92,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(74,120,160,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}>
-              <IconCheck size={16} sw={2.6} stroke="#9FCFBD"/>
+              <IconCheck size={16} sw={2.6} stroke="#AAC9E5"/>
             </div>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#9FCFBD' }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#AAC9E5' }}>
               {responderCount === 1
                 ? 'Someone is coming to help'
                 : `${responderCount} people are coming to help`}
@@ -1504,8 +1504,8 @@ function AlertDuring({ holding, progress, activated, eventId, gpsResult, token, 
         {/* Actions */}
         <button onClick={onMarkSafe} style={{
           width: '100%', padding: '15px 0', borderRadius: 14,
-          background: 'rgba(74,107,92,0.25)', border: '1px solid rgba(74,107,92,0.5)',
-          color: '#9FCFBD', fontFamily: 'var(--font-sans)',
+          background: 'rgba(74,120,160,0.25)', border: '1px solid rgba(74,120,160,0.5)',
+          color: '#AAC9E5', fontFamily: 'var(--font-sans)',
           fontSize: 14, fontWeight: 600, cursor: 'pointer',
         }}>
           I am safe
@@ -1919,7 +1919,7 @@ function AlertAfter({ eventId, token, go }) {
       )}
 
       {/* Evidence upload */}
-      <div className="card" style={{ background: 'var(--surface)', borderColor: 'rgba(74,107,92,0.3)' }}>
+      <div className="card" style={{ background: 'var(--surface)', borderColor: 'rgba(74,120,160,0.3)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <IconLock size={16} stroke="var(--sage-2)"/>
           <div className="eyebrow" style={{ color: 'var(--sage-2)' }}>Evidence vault · encrypted</div>
@@ -2300,7 +2300,7 @@ function NewsArt({ variant }) {
         {Array.from({length: 4}).map((_, r) => (
           <g key={r} transform={`translate(20 ${20 + r * 40})`}>
             {Array.from({length: 14}).map((_, c) => {
-              const colors = ['rgba(184,137,58,0.7)', 'rgba(74,107,92,0.7)', 'rgba(196,69,54,0.65)', 'rgba(247,243,238,0.5)'];
+              const colors = ['rgba(184,137,58,0.7)', 'rgba(74,120,160,0.7)', 'rgba(196,69,54,0.65)', 'rgba(247,243,238,0.5)'];
               return <rect key={c} x={c * 20} y={(c % 3) * 2} width="16" height={26 - (c % 3) * 2} fill={colors[(c + r) % 4]}/>;
             })}
             <line x1="0" y1="32" x2="280" y2="32" stroke="rgba(247,243,238,0.18)"/>
@@ -2316,7 +2316,7 @@ function NewsArt({ variant }) {
       <circle cx="160" cy="100" r="60" fill="rgba(247,243,238,0.85)"/>
       <circle cx="160" cy="100" r="48" fill="rgba(247,243,238,0.65)" stroke="rgba(11,29,53,0.1)"/>
       <circle cx="160" cy="100" r="20" fill="rgba(184,137,58,0.6)"/>
-      <circle cx="138" cy="92" r="10" fill="rgba(74,107,92,0.7)"/>
+      <circle cx="138" cy="92" r="10" fill="rgba(74,120,160,0.7)"/>
       <circle cx="184" cy="92" r="10" fill="rgba(196,69,54,0.6)"/>
       <circle cx="160" cy="120" r="10" fill="rgba(247,243,238,0.9)"/>
       <rect x="0" y="160" width="320" height="20" fill="rgba(247,243,238,0.08)"/>
@@ -2376,7 +2376,7 @@ function FeedRowMini({ item, onOpen }) {
             disabled={!hasToken || busy}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 3,
-              background: userSig === 'corroborate' ? 'var(--sage)' : 'rgba(74,107,92,0.1)',
+              background: userSig === 'corroborate' ? 'var(--sage)' : 'rgba(74,120,160,0.1)',
               color: userSig === 'corroborate' ? 'white' : 'var(--sage-2)',
               border: 'none', borderRadius: 999, padding: '2px 8px',
               fontSize: 10.5, fontWeight: 600, cursor: hasToken ? 'pointer' : 'default',
@@ -2593,7 +2593,7 @@ function ComposeScreen({ params = {} }) {
         <div style={{
           position: 'sticky', bottom: 80, margin: '0 20px 20px',
           padding: 14, borderRadius: 12, background: '#0F2A1F', color: '#F7F3EE',
-          border: '1px solid rgba(74,107,92,0.6)',
+          border: '1px solid rgba(74,120,160,0.6)',
         }}>
           <div className="eyebrow" style={{ color: 'rgba(247,243,238,0.6)', marginBottom: 4 }}>Submitted</div>
           <div style={{ fontSize: 13.5, lineHeight: 1.45 }}>

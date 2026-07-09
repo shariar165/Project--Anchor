@@ -82,7 +82,7 @@ function DrawerConvItem({ conv, active, accent, accentBg, onSelect, onDelete }) 
 
 function ConversationDrawer({ conversations, activeId, visible, onClose, onSelect, onNew, onDelete, mode }) {
   const accent   = mode === 'campus' ? 'var(--sage)'              : 'var(--ember)';
-  const accentBg = mode === 'campus' ? 'rgba(74,107,92,0.08)'    : 'rgba(196,69,54,0.07)';
+  const accentBg = mode === 'campus' ? 'rgba(74,120,160,0.08)'    : 'rgba(196,69,54,0.07)';
 
   return (
     <>
@@ -282,8 +282,8 @@ function CitationsPanel({ citations, open, onToggle }) {
 
 function LawyerReferralCard({ mode, onGo }) {
   const accent   = mode === 'campus' ? 'var(--sage)'           : 'var(--ember)';
-  const accentBg = mode === 'campus' ? 'rgba(74,107,92,0.06)' : 'rgba(196,69,54,0.05)';
-  const accentBd = mode === 'campus' ? 'rgba(74,107,92,0.22)' : 'rgba(196,69,54,0.22)';
+  const accentBg = mode === 'campus' ? 'rgba(74,120,160,0.06)' : 'rgba(196,69,54,0.05)';
+  const accentBd = mode === 'campus' ? 'rgba(74,120,160,0.22)' : 'rgba(196,69,54,0.22)';
   return (
     <div style={{
       marginTop: 12, padding: '11px 13px', borderRadius: 11,

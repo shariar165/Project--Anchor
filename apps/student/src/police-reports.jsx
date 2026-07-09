@@ -422,7 +422,7 @@ function NewPoliceReportScreen({ params = {} }) {
       <Header title="Finalized" back={false}/>
       <div style={{ padding: '32px 20px 100px' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div style={{ width: 64, height: 64, borderRadius: 18, background: 'rgba(74,107,92,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: 'var(--sage)' }}>
+          <div style={{ width: 64, height: 64, borderRadius: 18, background: 'rgba(74,120,160,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: 'var(--sage)' }}>
             <IconCheck size={30} sw={2.5}/>
           </div>
           <div className="serif" style={{ fontSize: 22, fontWeight: 600, color: 'var(--navy)', marginBottom: 6 }}>{PR_TYPE_LABEL[reportType]} ready</div>
