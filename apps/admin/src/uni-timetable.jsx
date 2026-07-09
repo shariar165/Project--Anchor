@@ -19,6 +19,7 @@ const CONSTRAINT_LABELS = {
   weekly_count:          "Weekly class count",
   max_classes_per_day:   "Max classes per day (per teacher)",
   consecutive_limit:     "Max consecutive slots",
+  weekly_active_days:    "Max active days per week",
   off_day:               "Teacher off-day",
   friday_excluded:       "Friday never scheduled",
   teacher_credit_band:   "Teacher credit band",
@@ -40,7 +41,7 @@ const IMPORT_COLS = {
   courses:     "code, name, credits, weekly_classes, is_lab",
   rooms:       "name, room_type, capacity",
   batches:     "name, program",
-  faculty:     "email, name, rank, max_per_day",
+  faculty:     "email, name, rank, max_per_day, min_credits, max_credits, pref_slot, off_days",
   offerings:   "course_code, batch_name",
   eligibility: "faculty_email, course_code",
 };
@@ -52,8 +53,8 @@ const TEMPLATE_ROWS = {
                 ["CSE102L", "Programming Lab", "1", "1", "true"]],
   rooms:       [["KT-101", "THEORY", "40"], ["AB-Lab-1", "LAB", "30"]],
   batches:     [["61-A", "SWE"], ["62-B", "CSE"]],
-  faculty:     [["jc@diu.edu.bd", "Dr. Jane Cooper", "PROFESSOR", "4"],
-                ["mes@diu.edu.bd", "", "LECTURER", "3"]],
+  faculty:     [["jc@diu.edu.bd", "Dr. Jane Cooper", "PROFESSOR", "4", "3", "6", "1", "Fri"],
+                ["mes@diu.edu.bd", "", "LECTURER", "3", "12", "15", "", ""]],
   offerings:   [["CSE101", "61-A"]],
   eligibility: [["jc@diu.edu.bd", "CSE101"]],
 };
@@ -109,6 +110,10 @@ function describeCore(id) {
     const [c, req, cap, n] = arg.split(":");
     msg = `${c} needs ${req} weekly sessions, but its ${n} eligible teacher${n === "1" ? "" : "s"} can teach at most ${cap} in total.`;
     hint = "Add eligible teachers in Data → Eligibility, raise their max classes/day or off-days in Data → Faculty, or offer the course to fewer batches.";
+  } else if (code.startsWith("insufficient_credit_capacity:")) {
+    const [c, req, cap, n] = arg.split(":");
+    msg = `${c} needs ${req} teacher-credits/week, but its ${n} eligible teacher${n === "1" ? "" : "s"} can carry at most ${cap} in total (by rank credit caps).`;
+    hint = "Add eligible teachers in Data → Eligibility, or raise their max credits in Data → Faculty.";
   } else if (code.startsWith("sole_teacher_overload:")) {
     const parts = arg.split(":");
     msg = `${parts[0]} is the only eligible teacher for ${(parts[1] || "").replace(/\+/g, ", ")} — that requires ${parts[2]} weekly sessions, but they can teach at most ${parts[3]}.`;
@@ -531,6 +536,10 @@ function DataEntityTable({ sub, items, onRefresh }) {
       { key:"email",      label:"Email",     render:r => r.email ? <span className="font-mono text-[12px]">{r.email}</span> : <span className="text-[var(--muted)]">—</span> },
       { key:"rank",       label:"Rank" },
       { key:"max_per_day",label:"Max/day",   align:"right" },
+      { key:"credits",    label:"Credits",   align:"right",
+        render:r => (r.min_credits != null || r.max_credits != null)
+          ? <span className="text-[12px]">{r.min_credits ?? "·"}–{r.max_credits ?? "·"}</span>
+          : <span className="text-[var(--muted)]">rank</span> },
       { key:"active",     label:"Status",    render:r => <Tag tone={r.active?"sage":"mist"}>{r.active?"Active":"Off"}</Tag> },
       { key:"",           label:"",          render:r => delBtn(`${TT_BASE}/faculty/${r.id}`) },
     ]} rows={paged} />
@@ -710,6 +719,10 @@ function AddEntitySlideOver({ sub, onClose, onDone }) {
       { k:"user_id",     label:"User",          type:"user_search" },
       { k:"rank",        label:"Rank",          type:"select", opts:["LECTURER","SENIOR_LECTURER","ASSISTANT_PROF","ASSOCIATE_PROF","PROFESSOR","HOD","PHD_STUDENT","MASTERS_STUDENT"] },
       { k:"max_per_day", label:"Max classes/day", type:"number", placeholder:"4" },
+      { k:"min_credits", label:"Min credits/week", type:"number", placeholder:"blank = rank default (12, or 3 for Prof/HOD)" },
+      { k:"max_credits", label:"Max credits/week", type:"number", placeholder:"blank = rank default (15, or 6 for Prof/HOD)" },
+      { k:"pref_slot",   label:"Preferred slot (0-based)", type:"number", placeholder:"e.g. 1 = 10:00–11:30" },
+      { k:"off_days",    label:"Off days",      type:"days" },
     ],
     batches: [
       { k:"name",    label:"Batch name", placeholder:"Batch 41" },
@@ -734,10 +747,27 @@ function AddEntitySlideOver({ sub, onClose, onDone }) {
             ) : f.type === "checkbox" ? (
               <input type="checkbox" className="accent-[var(--sage)]"
                 onChange={e => set(f.k, e.target.checked)} />
+            ) : f.type === "days" ? (
+              <div className="flex flex-wrap gap-2">
+                {DAY_NAMES.map((d, i) => {
+                  const on = (form[f.k] || []).includes(i);
+                  return (
+                    <button key={d} type="button"
+                      onClick={() => set(f.k, on ? (form[f.k] || []).filter(x => x !== i)
+                                                  : [...(form[f.k] || []), i])}
+                      className={"px-2 py-1 rounded-sm text-[12px] hair border " +
+                        (on ? "bg-[var(--sage)] text-white" : "bg-white text-[var(--muted)]")}>
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
             ) : (
               <input type={f.type || "text"} placeholder={f.placeholder}
                 className="w-full px-2 py-1.5 hair border rounded-sm bg-white text-[13px]"
-                onChange={e => set(f.k, f.type === "number" ? +e.target.value : e.target.value)} />
+                onChange={e => set(f.k, f.type === "number"
+                  ? (e.target.value === "" ? undefined : +e.target.value)
+                  : e.target.value)} />
             )}
           </div>
         ))}
@@ -1109,9 +1139,12 @@ function AddConstraintSlideOver({ termId, onClose, onDone }) {
   const DEFAULT_PARAMS = {
     max_classes_per_day: '{"limit": 4}',
     consecutive_limit:   '{"limit": 3}',
+    weekly_active_days:  '{"limit": 5}',
+    teacher_credit_band: '{}',
     pref_slot_reward:    '{}',
     online_penalty:      '{"penalty": 5}',
     gap_minimize:        '{}',
+    adjacent_lab:        '{}',
   };
 
   function onTypeChange(t) {

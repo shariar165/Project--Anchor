@@ -55,7 +55,52 @@ _BLOCKING_DIAGNOSTIC_PREFIXES = (
     "insufficient_teacher_capacity:",
     "sole_teacher_overload:",
     "insufficient_group_capacity:",
+    "insufficient_credit_capacity:",
 )
+
+# Rank-based weekly credit-load bounds, used when a faculty row leaves
+# min_credits / max_credits unset. Professors and heads of department carry a
+# light teaching load; everyone else carries a full one. Ranks are the values in
+# schemas.timetable.VALID_RANKS.
+_LIGHT_LOAD_RANKS = frozenset({"PROFESSOR", "HOD"})
+_DEFAULT_CREDIT_BOUNDS = {True: (3, 6), False: (12, 15)}  # keyed by is_light_load
+
+
+def default_credit_bounds(rank: str) -> tuple[int, int]:
+    """Rank-default (min, max) weekly credit load — PROFESSOR/HOD → 3–6, else 12–15."""
+    return _DEFAULT_CREDIT_BOUNDS[(rank or "") in _LIGHT_LOAD_RANKS]
+
+
+def rank_credit_bounds(rank: str, min_credits: int | None,
+                       max_credits: int | None) -> tuple[int, int]:
+    """Effective (min, max) from explicit values falling back to the rank default.
+
+    Shared with the validator (timetable_svc) so both use identical thresholds.
+    """
+    default_min, default_max = default_credit_bounds(rank)
+    lo = min_credits if min_credits is not None else default_min
+    hi = max_credits if max_credits is not None else default_max
+    return lo, hi
+
+
+def credit_bounds(f: FacultyD) -> tuple[int, int]:
+    """Effective (min, max) weekly credit load for a teacher."""
+    return rank_credit_bounds(f.rank, f.min_credits, f.max_credits)
+
+
+def _pref_slot_for_rank(rank: str, slots: list) -> int | None:
+    """Default preferred slot for light-load ranks: the 10:00–11:30 block.
+
+    Professors/HODs are preferentially scheduled into the 10:00 slot (req 6).
+    Matches the slot label that starts with "10:00"; falls back to index 1
+    (the second slot in a standard 8:30-start grid) when labels don't match.
+    """
+    if rank not in _LIGHT_LOAD_RANKS:
+        return None
+    for i, label in enumerate(slots):
+        if str(label).strip().startswith("10:00"):
+            return i
+    return 1 if len(slots) > 1 else None
 
 # ── Data containers ───────────────────────────────────────────────────────────
 
@@ -228,7 +273,12 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
         FacultyD(
             id=fp.id, name=fp.name or fp.email,
             off_days=tuple(fp.off_days or []),
-            max_per_day=fp.max_per_day or 4, pref_slot=fp.pref_slot,
+            max_per_day=fp.max_per_day or 4,
+            # Light-load ranks default to the 10:00 slot when none is set.
+            pref_slot=(fp.pref_slot if fp.pref_slot is not None
+                       else _pref_slot_for_rank(fp.rank or "LECTURER", config.slots)),
+            rank=fp.rank or "LECTURER",
+            min_credits=fp.min_credits, max_credits=fp.max_credits,
         )
         for fp in faculty_r.scalars().all()
     ]
@@ -248,7 +298,8 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
             select(TimetableCourse).where(TimetableCourse.id.in_(offered_course_ids))
         )
         courses_by_id = {
-            c.id: CourseD(id=c.id, code=c.code, is_lab=c.is_lab, weekly_classes=c.weekly_classes)
+            c.id: CourseD(id=c.id, code=c.code, is_lab=c.is_lab,
+                          weekly_classes=c.weekly_classes, credits=c.credits or 0)
             for c in courses_r.scalars().all()
         }
 
@@ -342,7 +393,8 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
         diagnostics.append(f"no_lab_groups_for_section:{label}")
     if any_theory and not any(r.room_type in ("THEORY", "ONLINE") for r in rooms):
         diagnostics.append("no_theory_rooms")
-    if any_lab and not any(r.room_type == "LAB" for r in rooms):
+    # Labs may overflow to ONLINE (req 1), so only flag when neither exists.
+    if any_lab and not any(r.room_type in ("LAB", "ONLINE") for r in rooms):
         diagnostics.append("no_lab_rooms")
     for c_id in offered_course_ids:
         course = courses_by_id.get(c_id)
@@ -411,6 +463,32 @@ async def load_solver_data(db: AsyncSession, term_id: uuid.UUID, seed_version: i
                 f":{len(w_teachers)}:{codes}"
             )
 
+    # Credit-capacity pre-check (a necessary condition): only a course's
+    # eligible teachers can carry it, and each can carry at most its max weekly
+    # credits across ALL courses — so a course's total credit demand can never
+    # exceed the summed max_credits of its eligible teachers. Fail fast with an
+    # actionable core instead of handing CP-SAT a provably credit-infeasible
+    # model (whose hard max-credit constraints would only burn the budget).
+    if get_settings().solver_credit_enforce:
+        groups_by_course: dict[uuid.UUID, int] = {}   # distinct (section, lab_group) per course
+        for slot in offering_slots:
+            if slot.copy_idx == 0:
+                groups_by_course[slot.course.id] = groups_by_course.get(slot.course.id, 0) + 1
+        for c_id in sorted(groups_by_course, key=lambda c: courses_by_id[c].code):
+            course = courses_by_id[c_id]
+            required = (course.credits or 0) * groups_by_course[c_id]
+            if required <= 0:
+                continue
+            pool = [fac_by_id[fid] for fid in eligible.get(c_id, []) if fid in fac_by_id]
+            if not pool:
+                continue  # already reported as no_eligibility_for_course
+            capacity = sum(credit_bounds(f)[1] for f in pool)
+            if required > capacity:
+                diagnostics.append(
+                    f"insufficient_credit_capacity:{course.code}"
+                    f":{required}:{capacity}:{len(pool)}"
+                )
+
     # Load constraints
     con_r = await db.execute(
         select(TimetableConstraint).where(
@@ -458,6 +536,11 @@ def solve(
     section_consecutive_limit: int = 0,
     section_course_spread: bool = False,
     section_rule_weight: int = 1000,
+    max_active_days: int = 0,
+    online_penalty_weight: int = 0,
+    credit_enforce: bool = False,
+    credit_under_weight: int = 0,
+    credit_min_soft: bool = False,
 ) -> dict:
     """
     Run CP-SAT over ``data.offerings``. Returns:
@@ -526,13 +609,22 @@ def solve(
             faculty_idx[fid] for fid in fac_ids if fid in faculty_idx
         ]
 
-    # Room pools by type. Theory draws from THEORY (preferred) then ONLINE.
+    # Room pools by type. Physical rooms are preferred; ONLINE rooms are a
+    # shared, heavily-penalised overflow for BOTH theory and lab when the
+    # physical rooms of a type run out in a slot (req 1). Post-pass assigns
+    # physical rooms first (pool order below), so ONLINE is only ever handed out
+    # once every physical room of that type in the slot is taken.
     theory_room_ids = [r.id for r in room_list if r.room_type == "THEORY"]
     online_room_ids = [r.id for r in room_list if r.room_type == "ONLINE"]
     lab_room_ids = [r.id for r in room_list if r.room_type == "LAB"]
-    theory_pool = theory_room_ids + online_room_ids
-    n_theory_cap = len(theory_pool)
-    n_lab_cap = len(lab_room_ids)
+    n_theory_phys = len(theory_room_ids)
+    n_lab_phys = len(lab_room_ids)
+    n_online = len(online_room_ids)
+    theory_pool = theory_room_ids + online_room_ids   # physical first, then online
+    lab_pool = lab_room_ids + online_room_ids          # labs may overflow online too
+    # Total placement capacity of a type in a slot (physical + shared online).
+    n_theory_cap = n_theory_phys + n_online
+    n_lab_cap = n_lab_phys + n_online
 
     x: dict[int, dict[tuple, any]] = {}
     vars_by_offering: dict[int, list] = {}
@@ -594,16 +686,36 @@ def solve(
     for o_idx in range(offering_count):
         model.add_exactly_one(vars_by_offering[o_idx])
 
-    # Per-slot room capacity: concurrent classes of a type ≤ rooms of that type
-    # still free after other groups' reservations.
-    for key, vars_list in theory_by_slot.items():
-        cap = max(n_theory_cap - res.theory_used.get(key, 0), 0)
-        if len(vars_list) > cap:
-            model.add(sum(vars_list) <= cap)
-    for key, vars_list in lab_by_slot.items():
-        cap = max(n_lab_cap - res.lab_used.get(key, 0), 0)
-        if len(vars_list) > cap:
-            model.add(sum(vars_list) <= cap)
+    # Per-slot room capacity with shared ONLINE overflow (req 1). Physical rooms
+    # of a type are the hard floor; any class beyond them in a slot must take a
+    # shared ONLINE room (bounded by the online rooms free after reservations)
+    # and is charged online_penalty_weight so it stays a last resort.
+    online_overflow_terms: list = []
+    for key in set(theory_by_slot) | set(lab_by_slot):
+        t_vars = theory_by_slot.get(key, [])
+        l_vars = lab_by_slot.get(key, [])
+        free_t_phys = max(n_theory_phys - res.theory_used.get(key, 0), 0)
+        free_l_phys = max(n_lab_phys - res.lab_used.get(key, 0), 0)
+        free_online = max(n_online - res.online_used.get(key, 0), 0)
+        if free_online <= 0:
+            # No online capacity here → plain hard physical caps.
+            if len(t_vars) > free_t_phys:
+                model.add(sum(t_vars) <= free_t_phys)
+            if len(l_vars) > free_l_phys:
+                model.add(sum(l_vars) <= free_l_phys)
+            continue
+        d, s = key
+        ov_t = model.new_int_var(0, len(t_vars), f"ov_t_{d}_{s}")
+        ov_l = model.new_int_var(0, len(l_vars), f"ov_l_{d}_{s}")
+        # Classes of a type ≤ physical rooms + the online rooms it overflows into.
+        if t_vars:
+            model.add(sum(t_vars) <= free_t_phys + ov_t)
+        if l_vars:
+            model.add(sum(l_vars) <= free_l_phys + ov_l)
+        # Theory and lab share the same online rooms in this slot.
+        model.add(ov_t + ov_l <= free_online)
+        if online_penalty_weight > 0:
+            online_overflow_terms.append(online_penalty_weight * (ov_t + ov_l))
 
     # No teacher in two places at once
     for vars_list in by_faculty_slot.values():
@@ -657,6 +769,8 @@ def solve(
 
     # ── Perturbation hints (minimal-perturbation re-solve) ────────────────────
     penalty_terms = []
+    # Online-overflow penalties collected during the room-capacity pass above.
+    penalty_terms.extend(online_overflow_terms)
 
     locked_offerings: set[int] = set()
     pinned_offering: int | None = None
@@ -699,12 +813,33 @@ def solve(
 
     # Built-in section-centric spacing rules (student view). High-weight soft so
     # a timetable is always produced; relaxed (and flagged by validate) only when
-    # a grid is too tight to space perfectly.
+    # a grid is too tight to space perfectly. Also applies the per-section weekly
+    # active-day cap (req 2) with the same weight.
     _add_section_rules(
         model, x, data, by_section_slot, penalty_terms,
         section_max_per_day, section_consecutive_limit,
         section_course_spread, section_rule_weight,
+        max_active_days,
     )
+
+    # Teacher weekly active-day cap (req 2) — spans batches, so it reads reserved
+    # days from res_ctx. High-weight soft (shares the section rule weight).
+    _add_teacher_active_days(
+        model, by_faculty_slot, n_d, max_active_days,
+        section_rule_weight, res_ctx, penalty_terms,
+    )
+
+    # Teacher credit load (req 5/6): max hard (cumulative across batches via
+    # reserved credits), min soft (monolith only — a per-batch min misfires).
+    if credit_enforce:
+        _add_credit_rules(
+            model, x, data, faculty_list, res, penalty_terms,
+            credit_under_weight, credit_min_soft,
+        )
+
+    # Professors/HODs preferentially in their (10:00) slot (req 6). Small always-on
+    # reward; the registry `pref_slot_reward` still covers per-teacher prefs.
+    _add_prof_pref(model, x, data, faculty_list, penalty_terms)
 
     if penalty_terms:
         model.minimize(sum(penalty_terms))
@@ -763,13 +898,21 @@ def solve(
                 bucket.setdefault((d, s), []).append(rec)
 
     result_entries = []
+    # Rooms already handed out per slot — seeded from other groups' reservations
+    # and shared across BOTH emits so theory and lab never grab the same ONLINE
+    # room in one slot (they draw from the same online pool). Physical rooms of a
+    # type are listed first in each pool, so ONLINE is only used once physical is
+    # exhausted (the online-overflow penalty already minimised that count).
+    slot_used: dict[tuple, set] = {}
 
     def _emit(buckets: dict, pool: list):
         for key, recs in buckets.items():
-            used = res.rooms_used.get(key, set())
-            avail = [rid for rid in pool if rid not in used] or list(pool)
-            for i, (o_idx, offering, faculty_id, d, s) in enumerate(recs):
-                room_id = avail[i] if i < len(avail) else avail[i % len(avail)]
+            used = slot_used.setdefault(key, set(res.rooms_used.get(key, set())))
+            for (o_idx, offering, faculty_id, d, s) in recs:
+                avail = [rid for rid in pool if rid not in used]
+                room_id = avail[0] if avail else (pool[0] if pool else None)
+                if room_id is not None:
+                    used.add(room_id)
                 # Locks must survive into the new version, or the next re-solve
                 # silently moves cells the admin pinned down.
                 locked = o_idx in locked_offerings or (o_idx == pinned_offering and pin_lock)
@@ -787,7 +930,7 @@ def solve(
                 })
 
     _emit(placed_theory, theory_pool)
-    _emit(placed_lab, lab_room_ids)
+    _emit(placed_lab, lab_pool)
 
     return {
         "status": status_name.lower(),
@@ -841,6 +984,7 @@ def _add_symmetry_breaking(model, x, data: SolverData, n_s: int) -> None:
 def _add_section_rules(
     model, x, data: SolverData, by_section_slot: dict, penalty_terms: list,
     max_per_day: int, consecutive_limit: int, course_spread: bool, weight: int,
+    max_active_days: int = 0,
 ) -> None:
     """Section-centric spacing penalties — what a *student* experiences.
 
@@ -851,10 +995,12 @@ def _add_section_rules(
     stream. Every class a section attends lives in one batch group, so these are
     self-contained — no cross-group reservations needed.
 
-    All three are high-weight soft penalties (``weight`` dominates the small
+    All are high-weight soft penalties (``weight`` dominates the small
     preference penalties): the solver honours them whenever a spacing exists and
     relaxes them minimally otherwise, so a timetable is always produced. Each
-    rule is skipped when its knob is 0 / False, or when ``weight`` <= 0.
+    rule is skipped when its knob is 0 / False, or when ``weight`` <= 0:
+      (a) max classes/day, (b) no >limit back-to-back, (c) no course repeat/day,
+      (d) ≤ max_active_days distinct class days per week (req 2).
     """
     if weight <= 0:
         return
@@ -897,6 +1043,21 @@ def _add_section_rules(
                             model.add(sum(window_vars) - consecutive_limit <= over)
                             penalty_terms.append(weight * over)
 
+            # (d) ≤ max_active_days distinct class-days per week for this stream.
+            if max_active_days and len(by_day) > max_active_days:
+                active_days = []
+                for d, slot_map in by_day.items():
+                    day_vars = [v for vs in slot_map.values() for v in vs]
+                    if not day_vars:
+                        continue
+                    act = model.new_bool_var(f"sec_act_{sec_id}_{lg}_{d}")
+                    model.add(sum(day_vars) <= len(day_vars) * act)   # act=1 if any class
+                    active_days.append(act)
+                if len(active_days) > max_active_days:
+                    over = model.new_int_var(0, len(active_days), f"sec_days_{sec_id}_{lg}")
+                    model.add(sum(active_days) - max_active_days <= over)
+                    penalty_terms.append(weight * over)
+
     # (c) same course must not repeat within a day for a section. Uses offering
     # identity (lost by by_section_slot), grouped by (section, course, lg, day).
     if course_spread:
@@ -916,6 +1077,164 @@ def _add_section_rules(
                 over = model.new_int_var(0, len(vars_list), f"sec_rep_{sec_id}_{course_id}_{lg_id}_{d}")
                 model.add(sum(vars_list) - cap <= over)
                 penalty_terms.append(weight * over)
+
+
+def _add_teacher_active_days(
+    model, by_faculty_slot: dict, n_d: int, max_active_days: int,
+    weight: int, res_ctx: dict, penalty_terms: list,
+) -> None:
+    """Cap the number of distinct weekly days a teacher has classes (req 2).
+
+    High-weight soft, so a timetable is always produced. Spans batch groups: a
+    day a teacher is already booked on by another group (from res_ctx.busy_fds)
+    counts as active here, so the per-week total stays correct end to end.
+    """
+    if weight <= 0 or max_active_days <= 0:
+        return
+    busy_fds = res_ctx.get("busy_fds", set())
+    # (f_idx) -> {day -> [vars]} for THIS model, plus reserved days as constants.
+    by_fac_day: dict[int, dict[int, list]] = {}
+    for (f_idx, d, _s), vars_list in by_faculty_slot.items():
+        by_fac_day.setdefault(f_idx, {}).setdefault(d, []).extend(vars_list)
+    reserved_days: dict[int, set] = {}
+    for (f_idx, d, _s) in busy_fds:
+        reserved_days.setdefault(f_idx, set()).add(d)
+
+    for f_idx in set(by_fac_day) | set(reserved_days):
+        fixed = reserved_days.get(f_idx, set())          # days already active (constants)
+        active_days = []
+        for d, day_vars in by_fac_day.get(f_idx, {}).items():
+            if d in fixed or not day_vars:
+                continue
+            act = model.new_bool_var(f"fac_act_{f_idx}_{d}")
+            model.add(sum(day_vars) <= len(day_vars) * act)   # act=1 if any class that day
+            active_days.append(act)
+        max_possible = len(fixed) + len(active_days)
+        if max_possible > max_active_days:
+            over = model.new_int_var(0, max_possible, f"fac_days_{f_idx}")
+            model.add(len(fixed) + sum(active_days) - max_active_days <= over)
+            penalty_terms.append(weight * over)
+
+
+def _add_credit_rules(
+    model, x, data: SolverData, faculty_list, res, penalty_terms: list,
+    under_weight: int, min_soft: bool,
+) -> None:
+    """Teacher weekly credit-load bounds (req 5/6), counted per section taught.
+
+    A course's credits count once per (teacher, course, section, lab_group) —
+    weekly copies share one teacher (symmetry), so copy 0's assignment vars are
+    the indicator. Cumulative reserved credits from other batch groups
+    (res.faculty_credits) are added as a constant, so the HARD max holds across
+    the whole term. The MIN is applied as a soft penalty only in monolith solves
+    (min_soft): under decomposition a teacher isn't fully loaded until their last
+    batch, so a per-batch min penalty would misfire — the validator surfaces
+    under-load instead.
+    """
+    # f_idx -> list of credit·var terms from copy-0 offerings in THIS model.
+    terms_by_f: dict[int, list] = {}
+    faculty_idx = {fp.id: i for i, fp in enumerate(faculty_list)}
+    for o_idx, offering in enumerate(data.offerings):
+        if offering.copy_idx != 0:
+            continue
+        cr = offering.course.credits or 0
+        if cr <= 0:
+            continue
+        for (f_idx, _d, _s), var in x[o_idx].items():
+            terms_by_f.setdefault(f_idx, []).append(cr * var)
+
+    for f_idx, terms in terms_by_f.items():
+        f = faculty_list[f_idx]
+        reserved = res.faculty_credits.get(f.id, 0)
+        lo, hi = credit_bounds(f)
+        # HARD max (cumulative). reserved already respects hi from prior groups,
+        # so this only bounds what THIS group may still add.
+        if hi is not None:
+            model.add(sum(terms) <= max(hi - reserved, 0))
+        # SOFT min (monolith only).
+        if min_soft and under_weight > 0 and lo and lo > 0:
+            load = sum(terms) + reserved
+            under = model.new_int_var(0, lo, f"cred_under_{f_idx}")
+            model.add(lo - load <= under)
+            penalty_terms.append(under_weight * under)
+
+
+def _add_prof_pref(model, x, data: SolverData, faculty_list, penalty_terms: list,
+                   weight: int = 5) -> None:
+    """Small always-on reward: place PROFESSOR/HOD classes in their pref_slot.
+
+    load_solver_data defaults their pref_slot to the 10:00 block (req 6). Low
+    weight so hard/spacing rules dominate; the registry `pref_slot_reward`
+    constraint still handles per-teacher preferences for everyone else.
+    """
+    if weight <= 0:
+        return
+    for f_idx, f in enumerate(faculty_list):
+        if f.rank not in _LIGHT_LOAD_RANKS or f.pref_slot is None:
+            continue
+        for o_idx in x:
+            for (ff, _d, s), var in x[o_idx].items():
+                if ff == f_idx and s != f.pref_slot:
+                    penalty_terms.append(weight * var)
+
+
+def _soft_gap_minimize(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
+                       scope, params, weight, penalty_terms, res_ctx):
+    """Reward adjacency in a teacher's day to minimise idle gaps (soft #4).
+
+    For each adjacent slot pair, a bonus is granted when both are occupied,
+    nudging a teacher's classes together. A teacher has ≤1 class per slot (hard),
+    so each slot's var-sum is 0/1. Keep the weight small so it never fights the
+    no->2-consecutive rule beyond a gentle preference.
+    """
+    if weight <= 0:
+        return
+    by_fac_day: dict[tuple, dict] = {}
+    for o_idx in x:
+        for (f_idx, d, s), var in x[o_idx].items():
+            by_fac_day.setdefault((f_idx, d), {}).setdefault(s, []).append(var)
+    for (f_idx, d), slot_map in by_fac_day.items():
+        for s in range(data.n_slots - 1):
+            a = slot_map.get(s)
+            b = slot_map.get(s + 1)
+            if not a or not b:
+                continue
+            both = model.new_bool_var(f"gap_{f_idx}_{d}_{s}")
+            model.add(both <= sum(a))
+            model.add(both <= sum(b))
+            penalty_terms.append(-weight * both)   # reward (negative penalty)
+
+
+def _soft_adjacent_lab(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
+                       scope, params, weight, penalty_terms, res_ctx):
+    """Reward the weekly copies of a multi-session lab landing on the same day in
+    consecutive slots (soft #5). Only meaningful for labs with weekly_classes>1.
+    """
+    if weight <= 0:
+        return
+    # (offering_id, section, lg) -> [o_idx of each copy]
+    groups: dict[tuple, list[int]] = {}
+    for o_idx, offering in enumerate(data.offerings):
+        if not offering.course.is_lab or offering.course.weekly_classes < 2:
+            continue
+        lg_id = offering.lab_group.id if offering.lab_group else None
+        groups.setdefault((offering.offering_id, offering.section.id, lg_id), []).append(o_idx)
+
+    for o_idxs in groups.values():
+        if len(o_idxs) < 2:
+            continue
+        # Reward an earlier copy sitting immediately before a later copy same day.
+        for i, oi in enumerate(o_idxs):
+            for oj in o_idxs[i + 1:]:
+                for (fi, di, si), vi in x[oi].items():
+                    cand = [v for (fj, dj, sj), v in x[oj].items()
+                            if dj == di and sj == si + 1]
+                    if not cand:
+                        continue
+                    adj = model.new_bool_var(f"adjlab_{oi}_{oj}_{di}_{si}")
+                    model.add(adj <= vi)
+                    model.add(adj <= sum(cand))
+                    penalty_terms.append(-weight * adj)
 
 
 def _add_perturbation(
@@ -1064,9 +1383,32 @@ def _build_consecutive_limit(model, x, data, faculty_list, room_list, faculty_id
                 model.add(sum(window_vars) <= cap).only_enforce_if(assumption)
 
 
+def _noop_hard(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
+               scope, params, assumption, res_ctx):
+    """Recognised but structurally-guaranteed / built-in constraint type.
+
+    Registered so admin toggles bind to a known key instead of being silently
+    dropped by the ``builder is None`` skip. These invariants are always enforced
+    elsewhere (overlaps/room-type in the core model; credit bands, weekly active
+    days and online overflow as built-in rules), so there is nothing to add here.
+    """
+    return
+
+
+# Built-in / structural constraint types the UI exposes. Enforced in the core
+# model or by built-in rules, not per-registry — registered as no-ops so they
+# are never "silently ignored" and so the infeasible-core machinery still binds
+# their assumption var.
+_STRUCTURAL_TYPES = (
+    "no_overlap_teacher", "no_overlap_section", "no_overlap_room",
+    "room_type_match", "weekly_count", "off_day", "friday_excluded",
+    "teacher_credit_band", "weekly_active_days", "online_penalty",
+)
+
 CONSTRAINT_BUILDERS = {
     "max_classes_per_day": _build_max_per_day,
     "consecutive_limit": _build_consecutive_limit,
+    **{t: _noop_hard for t in _STRUCTURAL_TYPES},
 }
 
 
@@ -1128,11 +1470,29 @@ def _soft_consecutive(model, x, data, faculty_list, room_list, faculty_idx, room
             penalty_terms.append(weight * over)
 
 
+def _noop_soft(model, x, data, faculty_list, room_list, faculty_idx, room_idx,
+               scope, params, weight, penalty_terms, res_ctx):
+    """Soft counterpart of `_noop_hard` — a recognised, built-in-handled type."""
+    return
+
+
 SOFT_BUILDERS = {
     "pref_slot_reward": _soft_pref_slot,
     "online_penalty": _soft_online_penalty,
     "max_classes_per_day": _soft_max_per_day,
     "consecutive_limit": _soft_consecutive,
+    "gap_minimize": _soft_gap_minimize,
+    "adjacent_lab": _soft_adjacent_lab,
+    # Built-in-handled types; registered so a soft toggle isn't silently dropped.
+    "teacher_credit_band": _noop_soft,
+    "weekly_active_days": _noop_soft,
+    "no_overlap_teacher": _noop_soft,
+    "no_overlap_section": _noop_soft,
+    "no_overlap_room": _noop_soft,
+    "room_type_match": _noop_soft,
+    "weekly_count": _noop_soft,
+    "off_day": _noop_soft,
+    "friday_excluded": _noop_soft,
 }
 
 
@@ -1385,6 +1745,11 @@ async def run_solve_job(
                 max_workers=1, mp_context=multiprocessing.get_context("spawn")
             )
 
+        # Credit + online lookups so reserved credits / online-room usage carry
+        # forward across batch groups (max-credit is a whole-term hard bound).
+        credits_by_course = {o.course.id: (o.course.credits or 0) for o in data.offerings}
+        online_room_id_set = {r.id for r in data.rooms if r.room_type == "ONLINE"}
+
         total_sessions = sum(len(g) for g in groups) or 1
         committed: list[list[dict]] = []      # per solved group, parallel to groups[:i]
         statuses: list[str] = []
@@ -1418,7 +1783,10 @@ async def run_solve_job(
                 for g in groups[i + 1:]:
                     for b in _batches_of(g):
                         res_entries.extend(base_by_batch.get(b, []))
-            reservations = build_reservations(res_entries) if res_entries else None
+            reservations = build_reservations(
+                res_entries, credits_by_course=credits_by_course,
+                online_room_ids=online_room_id_set,
+            ) if res_entries else None
 
             # Wide real-world eligibility (100+ teachers/course) is what blew
             # up model size and memory at scale — cap candidates per course.
@@ -1458,6 +1826,13 @@ async def run_solve_job(
                 section_consecutive_limit=settings.solver_section_consecutive_limit,
                 section_course_spread=settings.solver_section_course_spread,
                 section_rule_weight=settings.solver_section_rule_weight,
+                max_active_days=settings.solver_max_active_days,
+                online_penalty_weight=settings.solver_online_penalty_weight,
+                credit_enforce=settings.solver_credit_enforce,
+                credit_under_weight=settings.solver_credit_under_weight,
+                # Min-credit is soft only in a true whole-term monolith (one group,
+                # nothing carried); per-batch a teacher isn't fully loaded yet.
+                credit_min_soft=(len(groups) == 1 and not carried),
             )
             result = await _solve_async(pool, slice_data, kwargs)
             st = result["status"]
