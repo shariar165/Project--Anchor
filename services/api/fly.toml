@@ -1,0 +1,33 @@
+# fly.toml — Anchor Core API
+# Deploy from services/api:  flyctl deploy
+app = "anchor-api"          # <-- change if this name is taken
+primary_region = "sin"       # Singapore — closest low-latency region to Bangladesh
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Run DB migrations once, in a throwaway machine, before the new version goes live.
+[deploy]
+  release_command = "alembic upgrade head"
+
+[env]
+  ENVIRONMENT = "production"
+  PORT = "8000"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "suspend"   # suspend when idle to save money; wakes on request
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"     # bump to 1gb if the API OOMs (it shouldn't — solver runs are light here)
